@@ -7,7 +7,8 @@
  * is simulated and the canvas element is faked.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { readAvatarImage } from './AgentAvatarView.js';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { AgentAvatarView, readAvatarImage } from './AgentAvatarView.js';
 
 function stubDom() {
   // Fake canvas returned by document.createElement('canvas').
@@ -52,8 +53,44 @@ function stubDom() {
 }
 
 afterEach(() => {
+  cleanup();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
+});
+
+describe('unseeded agent faces', () => {
+  it('uses the same folded workspace face as chat instead of a letter badge', async () => {
+    vi.stubGlobal('Path2D', class {});
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
+      setTransform: vi.fn(),
+      clearRect: vi.fn(),
+      save: vi.fn(),
+      restore: vi.fn(),
+      translate: vi.fn(),
+      rotate: vi.fn(),
+      scale: vi.fn(),
+      fill: vi.fn(),
+      clip: vi.fn(),
+      fillRect: vi.fn(),
+      beginPath: vi.fn(),
+      moveTo: vi.fn(),
+      quadraticCurveTo: vi.fn(),
+      lineTo: vi.fn(),
+      closePath: vi.fn(),
+      stroke: vi.fn(),
+      ellipse: vi.fn(),
+    } as unknown as CanvasRenderingContext2D);
+    render(<AgentAvatarView name="测试设计员" avatar="" size={34} />);
+    expect(screen.queryByText('测')).toBeNull();
+    expect(await screen.findByRole('img', { name: '测试设计员' })).toBeTruthy();
+    await waitFor(() => expect(document.querySelector('canvas.agent-workspace-avatar')).toBeTruthy());
+  });
+
+  it('keeps an explicitly chosen text avatar as a letter disk', () => {
+    render(<AgentAvatarView name="测试设计员" avatar="测" size={34} />);
+    expect(screen.getByText('测')).toBeTruthy();
+    expect(document.querySelector('canvas.agent-workspace-avatar')).toBeNull();
+  });
 });
 
 describe('readAvatarImage', () => {

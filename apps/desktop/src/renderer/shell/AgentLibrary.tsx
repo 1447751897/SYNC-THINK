@@ -2295,7 +2295,7 @@ function AgentCard({
               className="agent-card__avatar"
               style={avatarGlowStyle(agent.avatar, agent.name, String(agent.id))}
             >
-              <AgentAvatarView name={agent.name} avatar={agent.avatar} size={38} />
+              <AgentAvatarView name={agent.name} avatar={agent.avatar} size={34} />
             </span>
             <span className="agent-card__copy">
               <span className="agent-card__title-row">

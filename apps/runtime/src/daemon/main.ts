@@ -42,6 +42,7 @@ import { createPipeServer, type PipeServerHandlers } from '../pipe/server.js';
 import { createRuntimeSecureStore, resolveRuntimeDatabasePath } from '../persistence.js';
 import {
   TimerRegistry,
+  type TimerFireContext,
   createDaemonStatus,
   updateDaemonStatus,
   rollDaemonStatusDay,
@@ -170,9 +171,11 @@ export interface DaemonOptions {
 
 function stateDir(dbPath: string): string {
   if (dbPath !== ':memory:') return dirname(dbPath);
-  const dataRoot = process.env.LOCALAPPDATA ?? (process.platform === 'darwin'
-    ? join(homedir(), 'Library', 'Application Support')
-    : join(homedir(), '.sync-think'));
+  const dataRoot =
+    process.env.LOCALAPPDATA ??
+    (process.platform === 'darwin'
+      ? join(homedir(), 'Library', 'Application Support')
+      : join(homedir(), '.sync-think'));
   return join(dataRoot, 'SYNC-THINK');
 }
 
@@ -462,8 +465,7 @@ export async function runDaemon(options: DaemonOptions = {}): Promise<void> {
       });
       return waitForRuntimePipe(installId, RUNTIME_COLD_START_TIMEOUT_MS, {
         isReady: () => runtimeReadyChild === child,
-        shouldAbort: () =>
-          childSpawnFailed || child.exitCode !== null || child.signalCode !== null,
+        shouldAbort: () => childSpawnFailed || child.exitCode !== null || child.signalCode !== null,
       }).then((ready) => {
         if (ready) runtimeReady = true;
         return ready;
@@ -697,9 +699,9 @@ export async function runDaemon(options: DaemonOptions = {}): Promise<void> {
     options.onFire ??
     ((taskId, decision) => {
       console.log(`[daemon] task ${taskId} due → action=${decision.action.type}`);
+      if (decision.action.type !== 'fire') return;
       status = rollDaemonStatusDay(status, now());
       status = updateDaemonStatus(status, { todayFired: status.todayFired + 1 });
-      if (decision.action.type !== 'fire') return;
       // 并发槽位（T9）：占满则入队等待（decideDue 已给出 enqueue）。
       if (!concurrency.acquire(taskId)) {
         queueStore.enqueue(taskId);
@@ -799,16 +801,18 @@ export async function runDaemon(options: DaemonOptions = {}): Promise<void> {
     });
 
   // 到点回调：查询任务 → decideDue 决策 → 交给处理器。
-  const fireTask = (taskId: string, force = false): void => {
+  const fireTask = (taskId: string, force = false, context?: TimerFireContext): void => {
     const task = taskStore.get(taskId);
     if (!task || !task.enabled) return;
     const currentNow = now();
     if (!force && task.nextRunAt && Date.parse(task.nextRunAt) > currentNow.getTime()) return;
-    // 补跑判定（T10）：nextRunAt 已过期 → 限量补跑或顺延。
+    // Only startup/overdue/suspended recovery consumes the latest-only quota.
+    // A normal timer firing slightly after its deadline is still a live trigger.
     const catchupPlan = planCatchupSweep({
       tasks: [task],
       now: currentNow,
       catchupCounts: catchupCounts,
+      trigger: force ? 'timer' : (context?.trigger ?? 'recovery'),
     });
     const catchupAction = catchupPlan.actions[0];
     if (catchupAction?.action === 'defer') {
@@ -816,11 +820,13 @@ export async function runDaemon(options: DaemonOptions = {}): Promise<void> {
       if (catchupAction.nextRunAt) {
         taskStore.update(task.id, { nextRunAt: catchupAction.nextRunAt });
       }
-      console.log(`[daemon] ${taskId} missed beyond catch-up window; deferring`);
+      console.log(
+        `[daemon] ${taskId} recovery deferred: catch-up window exceeded or quota exhausted`,
+      );
       return;
     }
     if (catchupAction?.action === 'catchup') {
-      // 限量补跑（latest_only）：记录计数 + 标记历史后照常触发。
+      // 限量补跑（latest_only）：记录计数后照常触发，结果由执行路径落库。
       catchupCounts.set(task.id, (catchupCounts.get(task.id) ?? 0) + 1);
       console.log(`[daemon] ${taskId} catching up (missed, count=${catchupCounts.get(task.id)})`);
     }
@@ -833,8 +839,14 @@ export async function runDaemon(options: DaemonOptions = {}): Promise<void> {
       now: currentNow,
       maxConcurrent: taskMaxConcurrent(),
     });
-    if (decision.action.type === 'fire') {
+    if (decision.action.type === 'fire' || decision.action.type === 'skip') {
       taskStore.update(task.id, { nextRunAt: decision.nextRunAt ?? null });
+    }
+    if (decision.action.type === 'skip') {
+      const firedAt = context?.scheduledAt ?? task.nextRunAt ?? currentNow.toISOString();
+      const result = { status: 'skipped' as const, firedAt, reason: decision.reason };
+      taskStore.addHistoryEntry({ id: ulid(), taskId: task.id, ...result });
+      taskStore.update(task.id, { lastResult: result });
     }
     if (decision.action.type === 'enqueue') {
       // 并发满 → 排队（DB 持久化，完成自动接上）。不重复入队。
@@ -859,7 +871,8 @@ export async function runDaemon(options: DaemonOptions = {}): Promise<void> {
     const changed = registry.sync(tasks);
     status = updateDaemonStatus(status, { timerCount: registry.size });
     if (changed.length > 0) {
-      for (const taskId of changed) registry.onFire(taskId, () => fireTask(taskId));
+      for (const taskId of changed)
+        registry.onFire(taskId, (context) => fireTask(taskId, false, context));
       console.log(`[daemon] timers synced: ${changed.length} changed (${registry.size} active)`);
     }
     // 崩溃检测（T8）：pending 投递任务 + 桌面管道已死 → runtime-crash 重试一次。

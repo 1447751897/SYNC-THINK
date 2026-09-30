@@ -1,7 +1,7 @@
 import { PROJECTLESS_SCOPE } from './projectless-scope.js';
 // NewMax-style top bar: workspace tabs + full menu from "+"
 // Menu portals to body so overflow:hidden stage boards cannot clip it.
-import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
   Inbox,
@@ -9,6 +9,8 @@ import {
   CalendarClock,
   Check,
   FolderOpen,
+  ChevronRight,
+  ChevronDown,
   FolderPlus,
   Globe,
   PanelBottom,
@@ -20,7 +22,6 @@ import {
   Trash2,
   Users,
   Wrench,
-  Palette,
   X,
 } from 'lucide-react';
 import clsx from 'clsx';
@@ -29,7 +30,7 @@ import { STAGE_LABELS, type ShellStage } from './shell-state.js';
 import { tabTranslate, useMorphingWorkspaceTabs } from './workspace-tab-morph.js';
 import { listenForFrameCoalescedViewportChange } from './viewport-frame.js';
 
-const WORKSPACE_ICON_PRESETS = ['📁', '💼', '🧠', '🚀', '📦', '🛠', '📚', '🧪', '🏠', '⭐'] as const;
+const WorkspaceFormDialog = lazy(() => import('./WorkspaceFormDialog.js'));
 
 const WORKSPACE_TAB_HEIGHT = 31;
 const WORKSPACE_TAB_BASELINE = 30.5;
@@ -241,6 +242,9 @@ export interface TopBarProps {
   /** Always a workspace id when workspaces exist (no 全部). */
   activeWorkspaceId?: string;
   sidebarCollapsed: boolean;
+  /** Main chat uses a project/conversation breadcrumb instead of another tab rail. */
+  chatLayout?: boolean;
+  chatTitle?: string;
   onSelectWorkspace(workspaceId: string): void;
   onOpenFolder(): void;
   onCreateWorkspace(input: { name: string; folderPath: string; icon?: string }): Promise<boolean>;
@@ -281,9 +285,7 @@ export interface TopBarProps {
 
 function ContextStageIcon({ stage }: { stage: NonNullable<TopBarProps['contextStage']> }) {
   const Icon =
-    stage === 'design-system'
-      ? Palette
-      : stage === 'tasks'
+    stage === 'tasks'
       ? CalendarClock
       : stage === 'activity'
         ? Inbox
@@ -299,6 +301,7 @@ function ContextStageIcon({ stage }: { stage: NonNullable<TopBarProps['contextSt
 }
 
 export function TopBar(props: TopBarProps) {
+  const currentWorkspace = props.workspaces.find((workspace) => workspace.workspaceId === props.activeWorkspaceId);
   const [menuOpen, setMenuOpen] = useState(false);
   const [menuAnchor, setMenuAnchor] = useState<HTMLButtonElement | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
@@ -413,6 +416,7 @@ export function TopBar(props: TopBarProps) {
       className={clsx(
         'shell-topbar shell-workspace-tabs relative z-[3] mt-0.5 flex h-8 shrink-0 items-start gap-[3px] pr-[3px] pt-px',
         props.sidebarCollapsed ? 'pl-[3px]' : 'pl-[26px]',
+        props.chatLayout && 'shell-topbar--chat',
       )}
     >
       {props.sidebarCollapsed ? (
@@ -452,6 +456,7 @@ export function TopBar(props: TopBarProps) {
           className="shell-workspace-tabs__rail"
           role="tablist"
           aria-label="工作区"
+          aria-hidden={props.chatLayout ? true : undefined}
           style={{ width: morph.railWidth }}
         >
           {props.activeWorkspaceId &&
@@ -511,7 +516,7 @@ export function TopBar(props: TopBarProps) {
           })}
         </div>
 
-        {workspaceLayout.overflowCount > 0 ? (
+        {!props.chatLayout && workspaceLayout.overflowCount > 0 ? (
           <div className="flex h-[31px] shrink-0 items-start pb-[3px]">
             <button
               type="button"
@@ -545,7 +550,11 @@ export function TopBar(props: TopBarProps) {
             aria-expanded={menuOpen && menuAnchor?.dataset.testid === 'topbar-workspace-menu'}
             onClick={toggleWorkspaceMenu}
           >
-            <Plus size={14} />
+            {props.chatLayout ? <>
+              <FolderOpen size={14} aria-hidden="true" />
+              <span className="shell-chat-breadcrumb__project">{currentWorkspace?.name || '选择工作区'}</span>
+              <ChevronDown size={12} aria-hidden="true" />
+            </> : <Plus size={14} />}
           </button>
           {menuOpen && menuStyle && typeof document !== 'undefined'
             ? createPortal(
@@ -722,6 +731,12 @@ export function TopBar(props: TopBarProps) {
               )
             : null}
         </div>
+        {props.chatLayout ? (
+          <div className="shell-chat-breadcrumb__conversation" data-testid="chat-breadcrumb" title={props.chatTitle || '新对话'}>
+            <ChevronRight size={12} aria-hidden="true" />
+            <span>{props.chatTitle || '新对话'}</span>
+          </div>
+        ) : null}
       </div>
 
       {!props.contextStage && (props.onToggleBottomWorkbench || props.onToggleRightWorkbench) ? (
@@ -776,7 +791,7 @@ export function TopBar(props: TopBarProps) {
       ) : null}
 
       {createOpen ? (
-        <WorkspaceFormDialog
+        <Suspense fallback={<span role="status">正在载入工作区设置…</span>}><WorkspaceFormDialog
           mode="create"
           onPickFolder={props.onPickFolder}
           onClose={() => setCreateOpen(false)}
@@ -787,11 +802,11 @@ export function TopBar(props: TopBarProps) {
               icon: input.icon,
             })
           }
-        />
+        /></Suspense>
       ) : null}
 
       {editing ? (
-        <WorkspaceFormDialog
+        <Suspense fallback={<span role="status">正在载入工作区设置…</span>}><WorkspaceFormDialog
           mode="edit"
           initial={{
             name: editing.name,
@@ -808,7 +823,7 @@ export function TopBar(props: TopBarProps) {
               icon: input.icon ? input.icon : null,
             })
           }
-        />
+        /></Suspense>
       ) : null}
     </header>
   );
@@ -927,181 +942,6 @@ function ProjectTab(props: {
             <X size={11} />
           </span>
         ) : null}
-      </div>
-    </div>
-  );
-}
-
-function WorkspaceFormDialog(props: {
-  mode: 'create' | 'edit';
-  initial?: { name: string; folderPath: string; icon?: string };
-  onPickFolder(): Promise<{ canceled: boolean; path?: string }>;
-  onClose(): void;
-  onSubmit(input: { name: string; folderPath: string; icon?: string }): Promise<boolean>;
-}) {
-  const [name, setName] = useState(props.initial?.name ?? '');
-  const [path, setPath] = useState(props.initial?.folderPath ?? '');
-  const [icon, setIcon] = useState(props.initial?.icon ?? '');
-  const [error, setError] = useState<string | undefined>();
-  const [submitting, setSubmitting] = useState(false);
-
-  const browse = async () => {
-    const picked = await props.onPickFolder();
-    if (picked.canceled || !picked.path) return;
-    setPath(picked.path);
-    if (!name.trim()) {
-      const auto =
-        picked.path
-          .replace(/[\\/]+$/, '')
-          .split(/[\\/]/)
-          .pop() ?? '';
-      if (auto) setName(auto);
-    }
-  };
-
-  const submit = async () => {
-    const n = name.trim();
-    const p = path.trim();
-    if (!n) {
-      setError('请填写工作区名称');
-      return;
-    }
-    if (props.mode === 'create' && !p) {
-      setError('必须选择本地文件夹');
-      return;
-    }
-    setSubmitting(true);
-    setError(undefined);
-    let ok = false;
-    try {
-      ok = await props.onSubmit({
-        name: n,
-        folderPath: p,
-        icon: icon.trim() || undefined,
-      });
-    } catch (err) {
-      ok = false;
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setSubmitting(false);
-    }
-    if (ok) {
-      props.onClose();
-      return;
-    }
-    setError((prev) => prev ?? (props.mode === 'create' ? '创建工作区失败' : '保存工作区失败'));
-  };
-
-  return (
-    <div
-      className="st-backdrop-in fixed inset-0 z-[200] flex items-center justify-center bg-black/50 backdrop-blur-[2px]"
-      data-testid={props.mode === 'create' ? 'create-workspace-dialog' : 'edit-workspace-dialog'}
-      onMouseDown={(e) => {
-        if (submitting) return;
-        if (e.target === e.currentTarget) props.onClose();
-      }}
-    >
-      <div className="st-modal-in w-[440px] rounded-(--radius-card) border border-border bg-overlay p-4 shadow-2xl">
-        <div className="mb-3 flex items-center">
-          <h3 className="flex-1 text-[14px] font-semibold text-text">
-            {props.mode === 'create' ? '新建工作区' : '编辑工作区'}
-          </h3>
-          <button
-            type="button"
-            className="st-icon-motion flex h-7 w-7 items-center justify-center rounded-(--radius-row) text-text-faint hover:bg-hover hover:text-text"
-            onClick={props.onClose}
-            title="关闭"
-          >
-            <X size={15} />
-          </button>
-        </div>
-
-        <label className="mb-3 block">
-          <span className="mb-1 block text-[12px] text-text-secondary">工作区名称</span>
-          <input
-            data-testid="workspace-form-name"
-            className="st-field-input"
-            value={name}
-            onChange={(e) => {
-              setName(e.target.value);
-              setError(undefined);
-            }}
-            placeholder="例如 SYNC-THINK"
-            autoFocus
-          />
-        </label>
-
-        <label className="mb-3 block">
-          <span className="mb-1 block text-[12px] text-text-secondary">路径</span>
-          <div className="flex gap-2">
-            <input
-              data-testid="workspace-form-path"
-              className="st-field-input flex-1"
-              value={path}
-              onChange={(e) => {
-                setPath(e.target.value);
-                setError(undefined);
-              }}
-              placeholder="选择本地文件夹"
-            />
-            <button
-              type="button"
-              data-testid="workspace-form-browse"
-              className="st-row-motion h-[34px] shrink-0 rounded-(--radius-row) border border-border px-3 text-[14px] text-text-secondary hover:bg-hover"
-              onClick={() => void browse()}
-            >
-              浏览
-            </button>
-          </div>
-        </label>
-
-        <div className="mb-3">
-          <span className="mb-1 block text-[12px] text-text-secondary">图标</span>
-          <div className="mb-2 flex flex-wrap gap-1.5">
-            {WORKSPACE_ICON_PRESETS.map((preset) => (
-              <button
-                key={preset}
-                type="button"
-                className={clsx(
-                  'flex h-8 w-8 items-center justify-center rounded-(--radius-row) border text-[15px]',
-                  icon === preset ? 'border-accent bg-accent-soft' : 'border-border hover:bg-hover',
-                )}
-                onClick={() => setIcon(preset)}
-                title={preset}
-              >
-                {preset}
-              </button>
-            ))}
-          </div>
-          <input
-            data-testid="workspace-form-icon"
-            className="st-field-input"
-            value={icon}
-            onChange={(e) => setIcon(e.target.value.slice(0, 8))}
-            placeholder="也可直接输入 emoji"
-          />
-        </div>
-
-        {error ? <div className="mb-3 text-[12px] text-error">{error}</div> : null}
-
-        <div className="flex justify-end gap-2">
-          <button
-            type="button"
-            className="st-row-motion h-8 rounded-(--radius-row) px-3 text-[14px] text-text-secondary hover:bg-hover"
-            onClick={props.onClose}
-          >
-            取消
-          </button>
-          <button
-            type="button"
-            data-testid="workspace-form-submit"
-            disabled={submitting}
-            className="st-row-motion h-8 rounded-(--radius-row) bg-accent px-3 text-[14px] font-medium text-[var(--color-accent-fg)] hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
-            onClick={() => void submit()}
-          >
-            {submitting ? '保存中…' : props.mode === 'create' ? '创建' : '保存'}
-          </button>
-        </div>
       </div>
     </div>
   );

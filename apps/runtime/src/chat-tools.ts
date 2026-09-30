@@ -1,3 +1,4 @@
+import { AGENT_DEFINITION_MUTATIONS, AGENT_DEFINITION_TOOLS, managementToolAllowed, type AgentManagementIntent } from './agent-management-intent.js';
 import { randomUUID } from 'node:crypto';
 import { readFile, stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
@@ -222,7 +223,7 @@ export const CHAT_AGENT_TOOL_SCHEMAS: readonly ProviderToolSchema[] = [
   {
     name: 'create_agent',
     description:
-      'Create a new agent in the SYNC-THINK Agent Library. In full-access mode it is created immediately; in other permission modes the user must approve first (an approval card is shown). Call list_agent_resources first to get valid model ids and approved skill version ids.',
+      'Create a new agent definition only when the user explicitly requested it. A one-shot approval is required in every permission mode, including full-access. Saving does not start a run or add it to a team. Never create helpers for your own tasks. Call list_agent_resources first to get valid model ids and approved skill version ids.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -264,7 +265,7 @@ export const CHAT_AGENT_TOOL_SCHEMAS: readonly ProviderToolSchema[] = [
   {
     name: 'update_agent',
     description:
-      'Update an existing agent in the SYNC-THINK Agent Library (name / persona / description / default model / skill bindings / reasoning effort). In full-access mode it executes immediately; in other permission modes the user must approve first (an approval card is shown). Resolve the target by exact agent id (preferred) or unique agent name. Call list_agent_resources first to see existing agents, valid model ids and approved skill versions. Only pass fields you want to change; skillIds is FULL-REPLACE semantics.',
+      'Update an existing agent definition only when explicitly requested by the user (name / persona / description / default model / skill bindings / reasoning effort). A one-shot approval is required in every permission mode. Changes affect subsequent runs, not the current run. Resolve the target by exact agent id (preferred) or unique agent name. Call list_agent_resources first to see existing agents, valid model ids and approved skill versions. Only pass fields you want to change; skillIds is FULL-REPLACE semantics.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -1792,6 +1793,7 @@ export function toolsForExecutionMode(
     includeProjectTools?: boolean;
     /** Agent-management tools (create_agent / list_agent_resources). */
     includeAgentTools?: boolean;
+    agentManagementIntent?: AgentManagementIntent;
     /** Expose structured collaboration tools only for collaboration sessions. */
     collaborationEnabled?: boolean;
     /** Built-in Computer Use tools backed by Windows UI Automation. */
@@ -1839,6 +1841,10 @@ export function toolsForExecutionMode(
     tools.push(...CHAT_SKILL_TOOL_SCHEMAS);
     tools.push(...CHAT_TEAM_TOOL_SCHEMAS);
   }
+  if (options.agentManagementIntent !== undefined) {
+    for (let i = tools.length - 1; i >= 0; i--) if (AGENT_DEFINITION_TOOLS.has(tools[i].name)) tools.splice(i, 1);
+    if (options.includeAgentTools) tools.push(...CHAT_AGENT_TOOL_SCHEMAS.filter(tool => managementToolAllowed(options.agentManagementIntent!, tool.name)));
+  }
   // Collaboration messaging is available to the main model assistant as well
   // as agent/team runs. The Runtime command path still requires a bound
   // collaboration conversation and injects the sender identity.
@@ -1865,6 +1871,9 @@ export function toolsForExecutionMode(
       seen.add(name);
       tools.push(tool);
     }
+  }
+  if (options.agentManagementIntent && options.agentManagementIntent !== 'none') {
+    for (let i = tools.length - 1; i >= 0; i--) if (['agent_run', 'agent_delegate'].includes(tools[i].name)) tools.splice(i, 1);
   }
   if (options.conversationTrack === 'agent' && options.allowAgentTaskDispatch !== true) {
     const blocked = new Set(['TaskCreate', 'TaskUpdate']);
@@ -1965,6 +1974,7 @@ export function chatToolRequiresApproval(
   toolName: string,
 ): boolean {
   const normalized = normalizeChatExecutionMode(mode);
+  if (AGENT_DEFINITION_MUTATIONS.has(toolName)) return true;
   if (CHAT_BROWSER_WORKFLOW_MUTATING_TOOL_NAMES.has(toolName)) {
     return normalized === 'ask';
   }

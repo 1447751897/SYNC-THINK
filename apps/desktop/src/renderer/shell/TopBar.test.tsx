@@ -317,3 +317,31 @@ describe('TopBar workspace menu', () => {
     }
   });
 });
+
+
+describe('main chat breadcrumb', () => {
+  const props = {
+    workspaces: [{ ...workspace, hidden: false }, workspaceTwo], activeWorkspaceId: 'workspace-1', sidebarCollapsed: false,
+    onSelectWorkspace: vi.fn(), onOpenFolder: vi.fn(), onCreateWorkspace: vi.fn().mockResolvedValue(true),
+    onUpdateWorkspace: vi.fn().mockResolvedValue(true), onDeleteWorkspace: vi.fn().mockResolvedValue(true),
+    onToggleSidebar: vi.fn(), onPickFolder: vi.fn().mockResolvedValue({ canceled: true }),
+  };
+  it('reads canonical project and conversation titles after rename and keeps project switching', () => {
+    const view = render(<TopBar {...props} chatLayout chatTitle="任务一" />);
+    expect(screen.getByTestId('topbar-workspace-menu').textContent).toBe('同步工作区');
+    expect(screen.getByTestId('chat-breadcrumb').textContent).toBe('任务一');
+    view.rerender(<TopBar {...props} workspaces={[{ ...workspace, hidden: false, name: '新名称' }, workspaceTwo]} chatLayout chatTitle="任务新名称" />);
+    expect(screen.getByTestId('topbar-workspace-menu').textContent).toBe('新名称');
+    expect(screen.getByTestId('chat-breadcrumb').textContent).toBe('任务新名称');
+    fireEvent.click(screen.getByTestId('topbar-workspace-menu'));
+    fireEvent.click(screen.getByTestId('workspace-menu-item-workspace-2').querySelector('button')!);
+    expect(props.onSelectWorkspace).toHaveBeenCalledWith('workspace-2');
+  });
+  it('loads the existing workspace edit form through the breadcrumb menu', async () => {
+    render(<TopBar {...props} chatLayout />);
+    fireEvent.click(screen.getByTestId('topbar-workspace-menu'));
+    fireEvent.click(screen.getByTestId('workspace-edit-workspace-1'));
+    expect(await screen.findByTestId('edit-workspace-dialog')).toBeTruthy();
+    expect((screen.getByTestId('workspace-form-name') as HTMLInputElement).value).toBe('同步工作区');
+  });
+});

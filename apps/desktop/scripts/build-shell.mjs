@@ -6,7 +6,6 @@ import {
   copyFileSync,
   cpSync,
   readFileSync,
-  renameSync,
   writeFileSync,
 } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -19,6 +18,7 @@ import {
   assertGeneratedPath,
   assertShellBudget,
   removeGeneratedDirectory,
+  promoteGeneratedDirectory,
   shellBuildOptions,
   summarizeShellBuild,
 } from './shell-build-config.mjs';
@@ -205,7 +205,7 @@ try {
   await buildDesignPreviews(desktopRoot, staging, false);
   assertGeneratedPath(staging, outputRoot);
   removeGeneratedDirectory(outdir, outputRoot);
-  renameSync(staging, outdir);
+  await promoteGeneratedDirectory(staging, outdir, outputRoot);
   console.log(
     `[desktop] ${mode} shell built at ${outdir}; initial JS ${summary.initialJsBytes} bytes, total JS ${summary.totalJsBytes} bytes`,
   );

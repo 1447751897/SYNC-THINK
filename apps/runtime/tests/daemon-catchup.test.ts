@@ -1,9 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ScheduledTask, TaskRule } from '@sync-think/shared';
-import {
-  planCatchupSweep,
-  type CatchupSweepPlan,
-} from '../src/daemon/catchup.js';
+import { planCatchupSweep, type CatchupSweepPlan } from '../src/daemon/catchup.js';
 import { CATCHUP_MAX_PER_TASK, DEFAULT_CATCHUP_WINDOW_MS } from '../src/scheduler-core.js';
 
 function task(rule: TaskRule, overrides: Partial<ScheduledTask> = {}): ScheduledTask {
@@ -26,6 +23,28 @@ describe('planCatchupSweep', () => {
     { kind: 'every', intervalMinutes: 30 },
     { nextRunAt: '2025-01-01T08:00:00.000Z' },
   );
+
+  it.each([
+    ['12:00:00.070', 0],
+    ['13:00:00.207', 1],
+    ['14:00:00.192', 1],
+    ['15:00:00.186', 1],
+  ])('does not consume recovery quota for the live hourly timer at %s', (clock, count) => {
+    const due = '2026-09-30T' + clock.slice(0, 5) + ':00.000Z';
+    const plan = planCatchupSweep({
+      tasks: [
+        task(
+          { kind: 'every', intervalMinutes: 60, windowStart: '12:00', windowEnd: '18:00' },
+          { nextRunAt: due },
+        ),
+      ],
+      now: new Date('2026-09-30T' + clock + 'Z'),
+      catchupCounts: new Map([['task-1', count]]),
+      trigger: 'timer',
+    });
+    expect(plan.actions).toEqual([]);
+    expect(plan.catchupCount).toBe(0);
+  });
 
   it('plans a catchup for a task missed within 24h (not yet caught up)', () => {
     const plan: CatchupSweepPlan = planCatchupSweep({
@@ -96,9 +115,18 @@ describe('planCatchupSweep', () => {
   });
 
   it('handles a mix of catchup and defer across tasks', () => {
-    const a = task({ kind: 'every', intervalMinutes: 30 }, { id: 'a', nextRunAt: '2025-01-01T08:00:00.000Z' });
-    const b = task({ kind: 'every', intervalMinutes: 30 }, { id: 'b', nextRunAt: '2025-01-01T07:00:00.000Z' });
-    const far = task({ kind: 'every', intervalMinutes: 30 }, { id: 'c', nextRunAt: '2024-12-30T10:00:00.000Z' });
+    const a = task(
+      { kind: 'every', intervalMinutes: 30 },
+      { id: 'a', nextRunAt: '2025-01-01T08:00:00.000Z' },
+    );
+    const b = task(
+      { kind: 'every', intervalMinutes: 30 },
+      { id: 'b', nextRunAt: '2025-01-01T07:00:00.000Z' },
+    );
+    const far = task(
+      { kind: 'every', intervalMinutes: 30 },
+      { id: 'c', nextRunAt: '2024-12-30T10:00:00.000Z' },
+    );
     const plan = planCatchupSweep({
       tasks: [a, b, far],
       now: new Date('2025-01-01T10:00:00.000Z'),

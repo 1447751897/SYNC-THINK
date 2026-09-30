@@ -984,47 +984,6 @@
     padding: 4px 7px;
   }
 }
-@media (max-width: 700px) {
-  .task-cal {
-    display: flex;
-    flex-direction: column;
-  }
-  .task-cal__sidebar {
-    padding: 8px 12px;
-    overflow: visible;
-    border-right: 0;
-    border-bottom: 1px solid var(--color-border);
-  }
-  .task-cal__sidebar > :not(.task-cal__scope-trigger) {
-    display: none;
-  }
-  .task-cal__scope-trigger {
-    max-width: 260px;
-  }
-  .task-cal__main {
-    flex: 1;
-  }
-  .task-cal__toolbar {
-    gap: 5px;
-    padding: 9px;
-  }
-  .task-cal__range {
-    order: 2;
-    width: 100%;
-  }
-  .task-cal__time-grid {
-    min-width: 600px;
-  }
-  .task-cal__month {
-    min-width: 560px;
-  }
-  .task-cal__footer > span:last-child {
-    display: none;
-  }
-  .task-panel--calendar .task-panel__subtitle {
-    display: none;
-  }
-}
 @media (prefers-reduced-motion: reduce) {
   .task-cal__scope-menu,
   .task-cal__detail {

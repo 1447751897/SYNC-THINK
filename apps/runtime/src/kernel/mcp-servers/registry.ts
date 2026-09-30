@@ -10,6 +10,7 @@
  * filters `planningDenied` tools out of the visible catalog. The `hostOnly`
  * flag (desktop-automation) keeps a server away from every external kernel.
  */
+import { AGENT_DEFINITION_TOOLS, managementToolAllowed, type AgentManagementIntent } from '../../agent-management-intent.js';
 import { createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import type {
   McpSdkServerConfigWithInstance,
@@ -176,6 +177,7 @@ export function selectKernelMcpRun(options: {
   networkEnabled?: boolean;
   planningMode?: boolean;
   conversationTrack?: ConversationTrack;
+  agentManagementIntent?: AgentManagementIntent;
   collaborationSettings?: unknown;
 }): KernelMcpRunSelection {
   const servers: KernelMcpServerDefinition[] = [];
@@ -204,10 +206,13 @@ export function selectKernelMcpRun(options: {
       options.planningMode ? server.tools.filter((tool) => !tool.planningDenied) : server.tools
     ).filter(
       (tool) =>
+        (!(options.agentManagementIntent && options.agentManagementIntent !== 'none') || !['agent_run', 'agent_delegate'].includes(tool.name)) &&
+        (!AGENT_DEFINITION_TOOLS.has(tool.name) || managementToolAllowed(options.agentManagementIntent ?? 'none', tool.name)) &&
         (tool.name !== 'goal_manage' || currentConditions.hasActiveGoal === true) &&
         (!options.conversationTrack ||
           isCollaborationToolAllowed({
             track: options.conversationTrack,
+            agentManagementIntent: options.agentManagementIntent,
             toolName: tool.name,
             settings: normalizeCollaborationSettings(options.collaborationSettings),
           })),

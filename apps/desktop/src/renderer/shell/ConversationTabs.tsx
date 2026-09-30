@@ -1,11 +1,11 @@
 // Stage conversation tab strip (T1 / O1).
 // Opened subset of the current workspace's conversations — close tab ≠ delete.
 // Tabs are draggable so users can reorder the open set (order is persisted).
+import { lazyPanel } from './lazy-panel.js';
 import { createPortal } from 'react-dom';
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
   Bot,
-  Check,
   Columns2,
   FileDiff,
   FilePlus2,
@@ -16,7 +16,6 @@ import {
   Plus,
   Pencil,
   Rows2,
-  Search,
   SquareTerminal,
   Users,
   X,
@@ -44,7 +43,13 @@ import { PANE_TAB_GLIDE } from './pane-tab-surface.js';
 import { listenForFrameCoalescedViewportChange } from './viewport-frame.js';
 import { pointerDragLeft, tabTranslate, visualIndexFor } from './workspace-tab-morph.js';
 
+const PaneConversationManager = lazyPanel(() => import('./PaneConversationManager.js'), '会话管理');
+
 export interface ConversationTabsProps {
+  /** Conversation-only pane: leave resource/menu actions beside the breadcrumb. */
+  compactHeader?: boolean;
+  /** Main chat navigation is owned by the sidebar; resource tabs remain visible. */
+  hideConversationTabs?: boolean;
   paneId?: string;
   focused?: boolean;
   conversations: readonly Conversation[];
@@ -181,11 +186,7 @@ function usePaneTabWidth(
   return width;
 }
 
-const TRACK_TAB_LABEL: Record<ConversationTrack, string> = {
-  model: '模型对话',
-  agent: '智能体对话',
-  team: '小队对话',
-};
+
 
 function useAnchoredMenuStyle(
   open: boolean,
@@ -254,7 +255,8 @@ function beginResourceDrag(
 
 export function ConversationTabs(props: ConversationTabsProps) {
   const byId = new Map(props.conversations.map((c) => [String(c.id), c] as const));
-  const tabs = props.openIds.map((id) => byId.get(id)).filter((c): c is Conversation => Boolean(c));
+  const allConversationTabs = props.openIds.map((id) => byId.get(id)).filter((c): c is Conversation => Boolean(c));
+  const tabs = props.hideConversationTabs ? [] : allConversationTabs;
   /** Tab context menu (right-click) — { id, x, y } anchored at cursor. */
   const [ctxMenu, setCtxMenu] = useState<{ id: string; x: number; y: number } | null>(null);
   /** Split picker dropdown anchored at the strip-right split button. */
@@ -263,7 +265,6 @@ export function ConversationTabs(props: ConversationTabsProps) {
   const [newResourceMenuOpen, setNewResourceMenuOpen] = useState(false);
   /** Searchable manager remains fixed while the tab strip itself scrolls. */
   const [tabManagerOpen, setTabManagerOpen] = useState(false);
-  const [tabManagerQuery, setTabManagerQuery] = useState('');
   const newResourceAnchorRef = useRef<HTMLDivElement>(null);
   const newResourceMenuRef = useRef<HTMLDivElement>(null);
   const splitPickerAnchorRef = useRef<HTMLDivElement>(null);
@@ -314,7 +315,7 @@ export function ConversationTabs(props: ConversationTabsProps) {
    */
   const openSet = new Set(props.openIds);
   const splitCandidates = [
-    ...tabs.filter((c) => String(c.id) !== props.activeId),
+    ...allConversationTabs.filter((c) => String(c.id) !== props.activeId),
     ...props.conversations.filter(
       (c) => !openSet.has(String(c.id)) && String(c.id) !== props.activeId,
     ),
@@ -322,18 +323,13 @@ export function ConversationTabs(props: ConversationTabsProps) {
   const paneSuffix = props.paneId ? `-${props.paneId}` : '';
   const canSplit = props.canSplit !== false;
   const paneResourceTabCount =
-    tabs.length +
+    allConversationTabs.length +
     (props.fileTabs?.length ?? 0) +
     (props.terminalTabs?.length ?? 0) +
     (props.browserTabs?.length ?? 0) +
     (props.reviewTabs?.length ?? 0);
-  const paneTabWidth = usePaneTabWidth(tabClusterRef, newResourceAnchorRef, paneResourceTabCount);
-  const normalizedTabQuery = tabManagerQuery.trim().toLocaleLowerCase();
-  const managedTabs = normalizedTabQuery
-    ? tabs.filter((conversation) =>
-        (conversation.title?.trim() || '新对话').toLocaleLowerCase().includes(normalizedTabQuery),
-      )
-    : tabs;
+  const paneTabWidth = usePaneTabWidth(tabClusterRef, newResourceAnchorRef, paneResourceTabCount - allConversationTabs.length + tabs.length);
+
 
   useEffect(() => {
     const activeTab = tabTrackRef.current?.querySelector<HTMLElement>('[data-active="true"]');
@@ -461,6 +457,7 @@ export function ConversationTabs(props: ConversationTabsProps) {
   return (
     <div
       data-testid="conversation-tabs"
+      data-compact-header={props.compactHeader ? 'true' : undefined}
       data-pane-tab-bar="true"
       className="shell-conversation-tabs relative flex h-10 shrink-0 items-center gap-[3px] p-1"
       style={{ '--shell-pane-tab-glide': PANE_TAB_GLIDE } as React.CSSProperties}
@@ -929,7 +926,6 @@ export function ConversationTabs(props: ConversationTabsProps) {
                 const next = !tabManagerOpen;
                 setTabManagerOpen(next);
                 if (next) {
-                  setTabManagerQuery('');
                   setNewResourceMenuOpen(false);
                   setSplitPickerDirection(null);
                 }
@@ -947,91 +943,17 @@ export function ConversationTabs(props: ConversationTabsProps) {
                     style={tabManagerStyle}
                     onMouseDown={(event) => event.stopPropagation()}
                   >
-                    <div className="shell-tab-manager__header">
-                      <strong>对话标签</strong>
-                      <span>{tabs.length}</span>
-                    </div>
-                    <label className="shell-tab-manager__search">
-                      <Search size={13} aria-hidden="true" />
-                      <input
-                        type="search"
-                        aria-label="搜索已打开的对话"
-                        placeholder="搜索已打开的对话"
-                        value={tabManagerQuery}
-                        onChange={(event) => setTabManagerQuery(event.target.value)}
-                        autoFocus
-                      />
-                    </label>
-                    <div className="shell-tab-manager__list">
-                      {managedTabs.length > 0 ? (
-                        managedTabs.map((conversation) => {
-                          const id = String(conversation.id);
-                          const label = conversation.title?.trim() || '新对话';
-                          const active = id === props.activeId;
-                          const Icon = TRACK_TAB_ICON[conversation.track] ?? MessageSquare;
-                          return (
-                            <div
-                              key={id}
-                              className="shell-tab-manager__row"
-                              data-active={active ? 'true' : 'false'}
-                            >
-                              <button
-                                type="button"
-                                className="shell-tab-manager__select"
-                                aria-label={`切换到 ${label}`}
-                                onClick={() => {
-                                  setTabManagerOpen(false);
-                                  props.onSelect(id);
-                                }}
-                              >
-                                <Icon size={13} />
-                                <span title={label}>{label}</span>
-                                <small>{TRACK_TAB_LABEL[conversation.track]}</small>
-                                {active ? <Check size={13} /> : null}
-                              </button>
-                              <button
-                                type="button"
-                                className="shell-tab-manager__close"
-                                aria-label={`关闭标签 ${label}`}
-                                title={`关闭 ${label}`}
-                                onClick={() => props.onClose(id)}
-                              >
-                                <X size={12} />
-                              </button>
-                            </div>
-                          );
-                        })
-                      ) : (
-                        <div className="shell-tab-manager__empty">没有匹配的对话</div>
-                      )}
-                    </div>
-                    <div className="shell-tab-manager__footer">
-                      <button
-                        type="button"
-                        disabled={!props.activeId || tabs.length <= 1}
-                        onClick={() => {
-                          for (const conversation of tabs) {
-                            const id = String(conversation.id);
-                            if (id !== props.activeId) props.onClose(id);
-                          }
-                          setTabManagerOpen(false);
-                        }}
-                      >
-                        关闭其他标签
-                      </button>
-                      {props.onClosePane ? (
-                        <button
-                          type="button"
-                          data-testid={`pane-menu-close-pane${paneSuffix}`}
-                          onClick={() => {
-                            setTabManagerOpen(false);
-                            props.onClosePane?.();
-                          }}
-                        >
-                          关闭窗格
-                        </button>
-                      ) : null}
-                    </div>
+                    <PaneConversationManager
+                      conversations={allConversationTabs}
+                      activeId={props.activeId}
+                      paneSuffix={paneSuffix}
+                      onSelect={props.onSelect}
+                      onClose={props.onClose}
+                      onClosePane={props.onClosePane}
+                      onDismiss={() => setTabManagerOpen(false)}
+                      onDragStart={beginConversationDrag}
+                      onDragEnd={clearConversationMorph}
+                    />
                   </div>,
                   document.body,
                 )

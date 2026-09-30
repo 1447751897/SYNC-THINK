@@ -105,6 +105,14 @@ describe('AgentLibrary shared visual structure', () => {
     expect(document.querySelector('.agent-meta-grid')).toBeTruthy();
   });
 
+  it('renders the same folded face as chat when an agent has no stored avatar', async () => {
+    renderLibrary(undefined, { agents: [{ ...agent, avatar: '' }] });
+    expect(screen.queryByText('A')).toBeNull();
+    await waitFor(() =>
+      expect(document.querySelector('.agent-card__avatar canvas.agent-workspace-avatar')).toBeTruthy(),
+    );
+  });
+
   it('starts a conversation without opening the edit dialog', () => {
     const onStartConversation = vi.fn();
     renderLibrary(onStartConversation);

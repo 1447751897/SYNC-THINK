@@ -85,6 +85,9 @@ export interface ComposerEditorProps {
   onRemovePastedReference?: (id: string) => void;
   ariaLabel?: string;
   ariaDescribedBy?: string;
+  ariaControls?: string;
+  ariaActiveDescendant?: string;
+  ariaAutocomplete?: 'none' | 'inline' | 'list' | 'both';
   inputId?: string;
   inputName?: string;
   inputElementRef?: Ref<HTMLTextAreaElement>;
@@ -313,6 +316,9 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorPro
       onRemovePastedReference,
       ariaLabel = '消息',
       ariaDescribedBy,
+      ariaControls,
+      ariaActiveDescendant,
+      ariaAutocomplete,
       inputId,
       inputName,
       inputElementRef,
@@ -557,6 +563,9 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorPro
           attributesCompartmentRef.current.of(
             EditorView.contentAttributes.of({
               'aria-label': ariaLabel,
+              ...(ariaControls ? { 'aria-controls': ariaControls } : {}),
+              ...(ariaActiveDescendant ? { 'aria-activedescendant': ariaActiveDescendant } : {}),
+              ...(ariaAutocomplete ? { 'aria-autocomplete': ariaAutocomplete } : {}),
               ...(ariaDescribedBy ? { 'aria-describedby': ariaDescribedBy } : {}),
               'aria-disabled': enhancingLocked ? 'true' : 'false',
               spellcheck: spellCheck ? 'true' : 'false',
@@ -716,6 +725,9 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorPro
           attributesCompartmentRef.current.reconfigure(
             EditorView.contentAttributes.of({
               'aria-label': ariaLabel,
+              ...(ariaControls ? { 'aria-controls': ariaControls } : {}),
+              ...(ariaActiveDescendant ? { 'aria-activedescendant': ariaActiveDescendant } : {}),
+              ...(ariaAutocomplete ? { 'aria-autocomplete': ariaAutocomplete } : {}),
               ...(ariaDescribedBy ? { 'aria-describedby': ariaDescribedBy } : {}),
               'aria-disabled': enhancingLocked ? 'true' : 'false',
               spellcheck: spellCheck ? 'true' : 'false',
@@ -731,6 +743,9 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorPro
       syncTrailingActionPosition();
     }, [
       ariaDescribedBy,
+      ariaControls,
+      ariaActiveDescendant,
+      ariaAutocomplete,
       ariaLabel,
       chatFontSize,
       enhancingLocked,

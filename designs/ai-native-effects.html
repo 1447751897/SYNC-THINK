@@ -1,0 +1,1733 @@
+<!doctype html>
+<!--
+  SYNC-THINK · AI 原生界面效果设计稿（v1）
+
+  目的：评估 beautifului.dev/harness 那套「AI 原生交互」效果，
+        用 SYNC-THINK 自己的设计语言（真主题令牌 + 真动效关键帧）改写。
+
+  用法：
+    - 直接用浏览器打开本文件即可（file://）。
+    - 主题令牌全部来自真实构建的 shell.css，换主题会实时跟随。
+    - 每个效果块右上角有「重播」按钮；顶部开关可对比动效开/关。
+    - 这只是设计稿，不含任何真实数据流，全部是前端模拟。
+
+  映射关系（harness 组件 → SYNC-THINK 现状）：
+    Loading State   → shell-chat-skeleton / shell-loading-pixel-on（已存在，本稿统一呈现）
+    Thinking        → shell-process-group + __reasoning（已存在，本稿加标签页）
+    Tool Chips      → shell-delegated-agent__tools + shell-chip-in（已存在）
+    Task Rows       → shell-delegated-agent 状态行（已存在）
+    Streaming Text  → chat-stream（已存在，本稿加内联来源 + Follow-ups）
+    Approval Card   → shell-newmax-approval-*（已存在）
+    Diff / Records / Filter Table → 缺失，本稿补齐
+    Context Cards / Recommendation → 缺失，本稿补齐
+-->
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SYNC-THINK · AI 原生界面效果设计稿</title>
+    <link rel="stylesheet" href="../apps/desktop/dist/renderer-shell/shell.css" />
+    <style>
+      /* ── 画布：复刻真聊天列的背景与宽度 ─────────────────────────── */
+      html,
+      body {
+        margin: 0;
+        min-height: 100%;
+      }
+      body {
+        background: var(--color-chat);
+        color: var(--color-text);
+        font-family: var(--font-sans);
+        -webkit-font-smoothing: antialiased;
+      }
+      .aie-page {
+        max-width: 860px;
+        margin: 0 auto;
+        padding: 40px 24px 120px;
+      }
+
+      /* ── 通用：磨砂面板（照搬 shell-harness-trace 的面板配方）────── */
+      .aie-panel {
+        position: relative;
+        border: 1px solid color-mix(in srgb, var(--color-border) 46%, transparent);
+        border-radius: 12px;
+        background: color-mix(in srgb, var(--color-elevated) 58%, transparent);
+        backdrop-filter: blur(14px) saturate(1.12);
+        overflow: hidden;
+      }
+
+      /* 效果块：编号标签 + 标题 + 重播 */
+      .aie-block {
+        margin-bottom: 26px;
+      }
+      .aie-block__head {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 10px;
+      }
+      .aie-block__num {
+        font-size: 10px;
+        letter-spacing: 0.1em;
+        color: var(--color-text-faint);
+      }
+      .aie-block__title {
+        font-size: 14px;
+        font-weight: 600;
+      }
+      .aie-block__hint {
+        margin-left: auto;
+        font-size: 11px;
+        color: var(--color-text-faint);
+      }
+      .aie-replay {
+        flex: 0 0 auto;
+        padding: 4px 10px;
+        border: 1px solid color-mix(in srgb, var(--color-border) 60%, transparent);
+        border-radius: 999px;
+        background: transparent;
+        color: var(--color-text-secondary);
+        font-size: 11px;
+        cursor: pointer;
+        transition:
+          border-color 150ms ease,
+          color 150ms ease,
+          background-color 150ms ease;
+      }
+      .aie-replay:hover {
+        border-color: color-mix(in srgb, var(--color-accent) 40%, var(--color-border));
+        color: var(--color-text);
+        background: color-mix(in srgb, var(--color-accent) 8%, transparent);
+      }
+
+      /* ── 顶部控制条 ───────────────────────────────────────────── */
+      .aie-toolbar {
+        position: sticky;
+        top: 0;
+        z-index: 20;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 26px;
+        padding: 10px 14px;
+        border: 1px solid color-mix(in srgb, var(--color-border) 46%, transparent);
+        border-radius: 12px;
+        background: color-mix(in srgb, var(--color-elevated) 78%, transparent);
+        backdrop-filter: blur(14px) saturate(1.12);
+      }
+      .aie-toolbar__brand {
+        font-size: 13px;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+      }
+      .aie-toolbar__sub {
+        font-size: 11px;
+        color: var(--color-text-faint);
+      }
+      .aie-motion-toggle {
+        margin-left: auto;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 11px;
+        color: var(--color-text-secondary);
+      }
+      .aie-switch {
+        position: relative;
+        width: 38px;
+        height: 21px;
+        border: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
+        border-radius: 999px;
+        background: color-mix(in srgb, var(--color-text) 10%, transparent);
+        cursor: pointer;
+        transition: background-color 180ms ease;
+      }
+      .aie-switch::after {
+        content: '';
+        position: absolute;
+        top: 2px;
+        left: 2px;
+        width: 15px;
+        height: 15px;
+        border-radius: 50%;
+        background: var(--color-text);
+        transition: transform 180ms cubic-bezier(0.22, 1, 0.36, 1);
+      }
+      html[data-motion='off'] .aie-switch::after {
+        transform: translateX(0);
+      }
+      html[data-motion='on'] .aie-switch {
+        background: color-mix(in srgb, var(--color-accent) 45%, transparent);
+      }
+      html[data-motion='on'] .aie-switch::after {
+        transform: translateX(17px);
+      }
+
+      /* ── 01 Loading：像素网格 + 骨架屏 ────────────────────────── */
+      .aie-loading {
+        display: flex;
+        align-items: center;
+        gap: 18px;
+        padding: 20px;
+      }
+      .aie-pixel-grid {
+        display: grid;
+        grid-template-columns: repeat(5, 9px);
+        grid-template-rows: repeat(5, 9px);
+        gap: 3px;
+      }
+      .aie-pixel-grid i {
+        border-radius: 2px;
+        background: color-mix(in srgb, var(--color-accent) 26%, var(--color-border));
+        animation: aie-pixel-on 1.4s ease-in-out infinite;
+      }
+      @keyframes aie-pixel-on {
+        0%,
+        100% {
+          opacity: 0.18;
+          transform: scale(0.9);
+        }
+        50% {
+          opacity: 1;
+          transform: scale(1);
+          background: color-mix(in srgb, var(--color-accent) 70%, var(--color-border));
+        }
+      }
+      .aie-loading__copy {
+        min-width: 0;
+        flex: 1;
+      }
+      .aie-loading__label {
+        display: flex;
+        align-items: baseline;
+        gap: 8px;
+        font-size: 13px;
+        font-weight: 600;
+      }
+      .aie-loading__elapsed {
+        font-variant-numeric: tabular-nums;
+        font-size: 12px;
+        font-weight: 500;
+        color: var(--color-accent);
+      }
+      .aie-loading__sub {
+        margin-top: 4px;
+        font-size: 11.5px;
+        color: var(--color-text-faint);
+      }
+      .aie-skel {
+        margin-top: 14px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .aie-skel i {
+        display: block;
+        height: 11px;
+        border-radius: 999px;
+        background: color-mix(in srgb, var(--color-text) 7%, transparent);
+        animation: aie-skel-shimmer 1.6s ease-in-out infinite;
+      }
+      .aie-skel i:nth-child(1) {
+        width: 88%;
+      }
+      .aie-skel i:nth-child(2) {
+        width: 62%;
+        animation-delay: 120ms;
+      }
+      .aie-skel i:nth-child(3) {
+        width: 74%;
+        animation-delay: 240ms;
+      }
+      @keyframes aie-skel-shimmer {
+        0%,
+        100% {
+          opacity: 0.45;
+        }
+        50% {
+          opacity: 1;
+        }
+      }
+
+      /* ── 02 Thinking：可折叠轨迹 + 标签页 ────────────────────── */
+      .aie-thinking {
+        padding: 0;
+      }
+      .aie-thinking__head {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        padding: 12px 16px;
+        cursor: pointer;
+        user-select: none;
+      }
+      .aie-thinking__dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--color-accent);
+        animation: aie-thinking-pulse 1.8s ease-in-out infinite;
+      }
+      @keyframes aie-thinking-pulse {
+        0%,
+        100% {
+          opacity: 0.35;
+          box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-accent) 40%, transparent);
+        }
+        50% {
+          opacity: 1;
+          box-shadow: 0 0 0 5px color-mix(in srgb, var(--color-accent) 0%, transparent);
+        }
+      }
+      .aie-thinking__title {
+        font-size: 13px;
+        font-weight: 600;
+      }
+      .aie-thinking__meta {
+        font-size: 11px;
+        color: var(--color-text-faint);
+      }
+      .aie-thinking__chev {
+        margin-left: auto;
+        color: var(--color-text-faint);
+        transition: transform 180ms ease;
+      }
+      .aie-thinking.is-open .aie-thinking__chev {
+        transform: rotate(180deg);
+      }
+      .aie-thinking__body {
+        display: none;
+        padding: 0 16px 14px;
+        border-top: 1px solid color-mix(in srgb, var(--color-border) 30%, transparent);
+      }
+      .aie-thinking.is-open .aie-thinking__body {
+        display: block;
+        animation: aie-content-in 200ms ease-out;
+      }
+      @keyframes aie-content-in {
+        from {
+          opacity: 0;
+          transform: translateY(-4px);
+        }
+        to {
+          opacity: 1;
+          transform: none;
+        }
+      }
+      /* 滑动标签页（复刻 SlidingTabs 的药丸机制） */
+      .aie-tabs {
+        position: relative;
+        display: flex;
+        gap: 2px;
+        margin: 12px 0 10px;
+        padding: 3px;
+        border-radius: 9px;
+        background: color-mix(in srgb, var(--color-text) 6%, transparent);
+      }
+      .aie-tabs__pill {
+        position: absolute;
+        top: 3px;
+        left: 3px;
+        z-index: 0;
+        height: calc(100% - 6px);
+        border-radius: 7px;
+        background: color-mix(in srgb, var(--color-elevated) 92%, var(--color-text));
+        box-shadow: 0 1px 3px color-mix(in srgb, var(--color-shadow) 40%, transparent);
+        transition:
+          transform 200ms cubic-bezier(0.22, 1, 0.36, 1),
+          width 200ms cubic-bezier(0.22, 1, 0.36, 1);
+      }
+      .aie-tabs button {
+        position: relative;
+        z-index: 1;
+        flex: 1;
+        padding: 6px 10px;
+        border: 0;
+        border-radius: 7px;
+        background: transparent;
+        color: var(--color-text-secondary);
+        font-size: 12px;
+        cursor: pointer;
+        transition: color 150ms ease;
+      }
+      .aie-tabs button[aria-selected='true'] {
+        color: var(--color-text);
+        font-weight: 600;
+      }
+      .aie-trace {
+        font-size: 12.5px;
+        line-height: 1.65;
+        color: var(--color-text-secondary);
+      }
+      .aie-trace-step {
+        display: flex;
+        gap: 9px;
+        padding: 5px 0;
+        opacity: 0;
+        animation: aie-row-enter 240ms ease-out forwards;
+      }
+      .aie-trace-step:nth-child(1) {
+        animation-delay: 40ms;
+      }
+      .aie-trace-step:nth-child(2) {
+        animation-delay: 120ms;
+      }
+      .aie-trace-step:nth-child(3) {
+        animation-delay: 200ms;
+      }
+      .aie-trace-step:nth-child(4) {
+        animation-delay: 280ms;
+      }
+      @keyframes aie-row-enter {
+        from {
+          opacity: 0;
+          transform: translateY(6px);
+        }
+        to {
+          opacity: 1;
+          transform: none;
+        }
+      }
+      .aie-trace-step__n {
+        flex: 0 0 16px;
+        height: 16px;
+        border-radius: 5px;
+        background: color-mix(in srgb, var(--color-accent) 16%, transparent);
+        color: var(--color-accent);
+        font-size: 10px;
+        font-weight: 700;
+        line-height: 16px;
+        text-align: center;
+      }
+      .aie-trace code {
+        padding: 1px 5px;
+        border-radius: 5px;
+        background: color-mix(in srgb, var(--color-text) 8%, transparent);
+        font-size: 11.5px;
+      }
+
+      /* ── 03 Tool Chips + Task Rows ──────────────────────────── */
+      .aie-tools {
+        padding: 14px 16px;
+      }
+      .aie-chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-bottom: 14px;
+      }
+      .aie-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 4px 10px;
+        border: 1px solid color-mix(in srgb, var(--color-border) 55%, transparent);
+        border-radius: 999px;
+        background: color-mix(in srgb, var(--color-elevated) 60%, transparent);
+        font-size: 11.5px;
+        color: var(--color-text-secondary);
+        opacity: 0;
+        animation: aie-chip-in 260ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+      }
+      @keyframes aie-chip-in {
+        from {
+          opacity: 0;
+          transform: translateY(5px) scale(0.96);
+        }
+        to {
+          opacity: 1;
+          transform: none;
+        }
+      }
+      .aie-chip i {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: var(--color-success);
+      }
+      .aie-chip--running i {
+        background: var(--color-accent);
+        animation: aie-spin 900ms linear infinite;
+      }
+      @keyframes aie-spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+      .aie-tasks {
+        display: flex;
+        flex-direction: column;
+        border-top: 1px solid color-mix(in srgb, var(--color-border) 30%, transparent);
+      }
+      .aie-task {
+        display: grid;
+        grid-template-columns: 18px minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 10px;
+        padding: 9px 0;
+        border-bottom: 1px solid color-mix(in srgb, var(--color-border) 22%, transparent);
+        opacity: 0;
+        animation: aie-row-enter 240ms ease-out forwards;
+      }
+      .aie-task__icon {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 16px;
+        height: 16px;
+      }
+      .aie-task__icon svg {
+        width: 14px;
+        height: 14px;
+      }
+      .aie-task__name {
+        min-width: 0;
+        font-size: 12.5px;
+      }
+      .aie-task__name small {
+        display: block;
+        margin-top: 2px;
+        font-size: 10.5px;
+        color: var(--color-text-faint);
+      }
+      .aie-task__status {
+        font-size: 11px;
+        color: var(--color-text-faint);
+        font-variant-numeric: tabular-nums;
+      }
+      .aie-task__bar {
+        grid-column: 2 / 4;
+        height: 3px;
+        border-radius: 999px;
+        background: color-mix(in srgb, var(--color-text) 8%, transparent);
+        overflow: hidden;
+      }
+      .aie-task__bar i {
+        display: block;
+        height: 100%;
+        width: 0%;
+        border-radius: 999px;
+        background: var(--color-accent);
+        transition: width 700ms cubic-bezier(0.22, 1, 0.36, 1);
+      }
+      .aie-task.is-done .aie-task__bar i {
+        background: var(--color-success);
+      }
+      .aie-task.is-failed .aie-task__bar i {
+        background: var(--color-error);
+      }
+      .aie-spin-icon {
+        animation: aie-spin 900ms linear infinite;
+        color: var(--color-accent);
+      }
+      .aie-ok {
+        color: var(--color-success);
+      }
+      .aie-err {
+        color: var(--color-error);
+      }
+
+      /* ── 04 Streaming Text ─────────────────────────────────── */
+      .aie-stream {
+        padding: 16px;
+      }
+      .aie-bubble {
+        display: flex;
+        gap: 10px;
+      }
+      .aie-bubble__av {
+        flex: 0 0 28px;
+        width: 28px;
+        height: 28px;
+        border-radius: 9px;
+        background: color-mix(in srgb, var(--color-accent) 22%, var(--color-elevated));
+        font-size: 12px;
+        font-weight: 700;
+        line-height: 28px;
+        text-align: center;
+        color: var(--color-accent);
+      }
+      .aie-bubble__body {
+        min-width: 0;
+        flex: 1;
+      }
+      .aie-bubble__who {
+        margin-bottom: 4px;
+        font-size: 11.5px;
+        font-weight: 600;
+        color: var(--color-text-faint);
+      }
+      .aie-stream-text {
+        font-size: 13px;
+        line-height: 1.72;
+        color: var(--color-text);
+        white-space: pre-wrap;
+      }
+      .aie-stream-text .aie-caret {
+        display: inline-block;
+        width: 7px;
+        height: 14px;
+        vertical-align: -2px;
+        background: var(--color-accent);
+        animation: aie-caret 800ms steps(1) infinite;
+      }
+      @keyframes aie-caret {
+        0%,
+        50% {
+          opacity: 1;
+        }
+        51%,
+        100% {
+          opacity: 0;
+        }
+      }
+      .aie-sources {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-top: 12px;
+      }
+      .aie-source {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 4px 9px 4px 5px;
+        border: 1px solid color-mix(in srgb, var(--color-border) 55%, transparent);
+        border-radius: 8px;
+        background: color-mix(in srgb, var(--color-elevated) 60%, transparent);
+        font-size: 11px;
+        color: var(--color-text-secondary);
+        opacity: 0;
+        animation: aie-chip-in 260ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+      }
+      .aie-source i {
+        width: 14px;
+        height: 14px;
+        border-radius: 4px;
+      }
+      .aie-followups {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 7px;
+        margin-top: 12px;
+      }
+      .aie-followup {
+        padding: 6px 12px;
+        border: 1px solid color-mix(in srgb, var(--color-border) 55%, transparent);
+        border-radius: 999px;
+        background: transparent;
+        color: var(--color-text-secondary);
+        font-size: 11.5px;
+        cursor: pointer;
+        opacity: 0;
+        animation: aie-row-enter 240ms ease-out forwards;
+        transition:
+          border-color 150ms ease,
+          color 150ms ease,
+          background-color 150ms ease;
+      }
+      .aie-followup:hover {
+        border-color: color-mix(in srgb, var(--color-accent) 45%, var(--color-border));
+        color: var(--color-text);
+        background: color-mix(in srgb, var(--color-accent) 8%, transparent);
+      }
+
+      /* ── 05 Approval Card ───────────────────────────────────── */
+      .aie-approval {
+        padding: 16px;
+        max-width: 520px;
+      }
+      .aie-approval__q {
+        font-size: 13.5px;
+        font-weight: 600;
+      }
+      .aie-approval__sub {
+        margin-top: 5px;
+        font-size: 11.5px;
+        color: var(--color-text-faint);
+      }
+      .aie-approval__opts {
+        display: flex;
+        flex-direction: column;
+        gap: 7px;
+        margin-top: 12px;
+      }
+      .aie-opt {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 10px 12px;
+        border: 1px solid color-mix(in srgb, var(--color-border) 50%, transparent);
+        border-radius: 10px;
+        background: color-mix(in srgb, var(--color-elevated) 40%, transparent);
+        cursor: pointer;
+        transition:
+          border-color 150ms ease,
+          background-color 150ms ease;
+      }
+      .aie-opt:hover {
+        border-color: color-mix(in srgb, var(--color-accent) 40%, var(--color-border));
+      }
+      .aie-opt input {
+        accent-color: var(--color-accent);
+      }
+      .aie-opt__label {
+        font-size: 12.5px;
+      }
+      .aie-opt__hint {
+        margin-left: auto;
+        font-size: 10.5px;
+        color: var(--color-text-faint);
+      }
+      .aie-approval__foot {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-top: 14px;
+      }
+      .aie-approval__step {
+        font-size: 11px;
+        color: var(--color-text-faint);
+        font-variant-numeric: tabular-nums;
+      }
+      .aie-btn {
+        padding: 7px 16px;
+        border-radius: 9px;
+        font-size: 12px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: all 150ms ease;
+      }
+      .aie-btn--ghost {
+        border: 1px solid color-mix(in srgb, var(--color-border) 60%, transparent);
+        background: transparent;
+        color: var(--color-text-secondary);
+      }
+      .aie-btn--ghost:hover {
+        color: var(--color-text);
+        border-color: var(--color-border-strong, var(--color-border));
+      }
+      .aie-btn--primary {
+        margin-left: auto;
+        border: 1px solid color-mix(in srgb, var(--color-accent) 70%, var(--color-accent));
+        background: var(--color-accent);
+        color: var(--color-accent-fg);
+      }
+      .aie-btn--primary:hover {
+        filter: brightness(1.06);
+      }
+      .aie-btn:disabled {
+        opacity: 0.45;
+        cursor: not-allowed;
+      }
+
+      /* ── 06 Recommendation Card（缺件，补）──────────────────── */
+      .aie-reco {
+        padding: 16px;
+        max-width: 520px;
+      }
+      .aie-reco__q {
+        font-size: 13.5px;
+        font-weight: 600;
+      }
+      .aie-reco__main {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-top: 12px;
+        padding: 11px 12px;
+        border: 1px solid color-mix(in srgb, var(--color-accent) 34%, var(--color-border));
+        border-radius: 10px;
+        background: color-mix(in srgb, var(--color-accent) 7%, transparent);
+      }
+      .aie-reco__main-text {
+        min-width: 0;
+        flex: 1;
+        font-size: 12.5px;
+      }
+      .aie-reco__main-text small {
+        display: block;
+        margin-top: 3px;
+        font-size: 10.5px;
+        color: var(--color-text-faint);
+      }
+      .aie-meter {
+        flex: 0 0 84px;
+      }
+      .aie-meter__track {
+        height: 5px;
+        border-radius: 999px;
+        background: color-mix(in srgb, var(--color-text) 9%, transparent);
+        overflow: hidden;
+      }
+      .aie-meter__track i {
+        display: block;
+        height: 100%;
+        width: 0%;
+        border-radius: 999px;
+        background: linear-gradient(
+          90deg,
+          color-mix(in srgb, var(--color-accent) 55%, var(--color-border)),
+          var(--color-accent)
+        );
+        transition: width 900ms cubic-bezier(0.22, 1, 0.36, 1);
+      }
+      .aie-meter__label {
+        margin-top: 5px;
+        font-size: 10px;
+        color: var(--color-text-faint);
+      }
+      .aie-reco__alts {
+        margin-top: 10px;
+        display: flex;
+        flex-direction: column;
+      }
+      .aie-reco__alt {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        padding: 8px 4px;
+        font-size: 12px;
+        color: var(--color-text-secondary);
+        border-bottom: 1px solid color-mix(in srgb, var(--color-border) 22%, transparent);
+      }
+      .aie-reco__alt:last-child {
+        border-bottom: 0;
+      }
+      .aie-reco__alt-tag {
+        margin-left: auto;
+        font-size: 10px;
+        padding: 2px 7px;
+        border-radius: 999px;
+        background: color-mix(in srgb, var(--color-text) 8%, transparent);
+        color: var(--color-text-faint);
+      }
+
+      /* ── 07 Context Cards（缺件，补）────────────────────────── */
+      .aie-context {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+        gap: 10px;
+        padding: 14px 16px;
+      }
+      .aie-ctx-card {
+        padding: 11px 12px;
+        border: 1px solid color-mix(in srgb, var(--color-border) 45%, transparent);
+        border-radius: 10px;
+        background: color-mix(in srgb, var(--color-elevated) 45%, transparent);
+        opacity: 0;
+        animation: aie-row-enter 240ms ease-out forwards;
+      }
+      .aie-ctx-card:nth-child(1) {
+        animation-delay: 60ms;
+      }
+      .aie-ctx-card:nth-child(2) {
+        animation-delay: 150ms;
+      }
+      .aie-ctx-card h4 {
+        margin: 0 0 5px;
+        font-size: 12px;
+        font-weight: 600;
+      }
+      .aie-ctx-card p {
+        margin: 0 0 8px;
+        font-size: 11.5px;
+        line-height: 1.6;
+        color: var(--color-text-secondary);
+      }
+      .aie-ctx-card__src {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        font-size: 10px;
+        color: var(--color-text-faint);
+      }
+      .aie-ctx-card__src i {
+        width: 5px;
+        height: 5px;
+        border-radius: 50%;
+        background: var(--color-accent);
+      }
+
+      /* ── 08 Diff Table（缺件，补）────────────────────────────── */
+      .aie-diff {
+        padding: 14px 16px;
+      }
+      .aie-diff__title {
+        font-size: 12.5px;
+        font-weight: 600;
+        margin-bottom: 10px;
+      }
+      table.aie-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 12px;
+      }
+      table.aie-table th {
+        text-align: left;
+        padding: 7px 10px;
+        font-size: 10.5px;
+        font-weight: 600;
+        letter-spacing: 0.05em;
+        color: var(--color-text-faint);
+        border-bottom: 1px solid color-mix(in srgb, var(--color-border) 40%, transparent);
+      }
+      table.aie-table td {
+        padding: 8px 10px;
+        border-bottom: 1px solid color-mix(in srgb, var(--color-border) 22%, transparent);
+      }
+      table.aie-table tr:last-child td {
+        border-bottom: 0;
+      }
+      .aie-diff tr.is-changed td {
+        background: color-mix(in srgb, var(--color-accent) 7%, transparent);
+        animation: aie-sweep 1.6s ease-out;
+      }
+      @keyframes aie-sweep {
+        0% {
+          background: color-mix(in srgb, var(--color-accent) 26%, transparent);
+        }
+        100% {
+          background: color-mix(in srgb, var(--color-accent) 7%, transparent);
+        }
+      }
+      .aie-diff .del {
+        color: var(--color-error);
+        text-decoration: line-through;
+        text-decoration-thickness: 1px;
+      }
+      .aie-diff .ins {
+        color: var(--color-success);
+        font-weight: 600;
+      }
+      .aie-diff__foot {
+        display: flex;
+        gap: 9px;
+        margin-top: 12px;
+        align-items: center;
+      }
+      .aie-diff__count {
+        font-size: 11px;
+        color: var(--color-text-faint);
+      }
+
+      /* ── 09 Records Table（缺件，补）────────────────────────── */
+      .aie-records {
+        padding: 14px 16px;
+      }
+      table.aie-table th.aie-sortable {
+        cursor: pointer;
+        user-select: none;
+        transition: color 150ms ease;
+      }
+      table.aie-table th.aie-sortable:hover {
+        color: var(--color-text);
+      }
+      .aie-arrow {
+        display: inline-block;
+        margin-left: 4px;
+        opacity: 0;
+        transform: translateY(-2px);
+        transition: all 180ms ease;
+      }
+      th[aria-sort] .aie-arrow {
+        opacity: 1;
+        transform: none;
+      }
+      th[aria-sort='descending'] .aie-arrow {
+        transform: rotate(180deg);
+      }
+      .aie-tag {
+        display: inline-block;
+        margin-right: 4px;
+        padding: 2px 7px;
+        border-radius: 999px;
+        background: color-mix(in srgb, var(--color-text) 8%, transparent);
+        font-size: 10px;
+        color: var(--color-text-secondary);
+      }
+      .aie-strength {
+        display: inline-flex;
+        gap: 2px;
+      }
+      .aie-strength i {
+        width: 12px;
+        height: 4px;
+        border-radius: 999px;
+        background: color-mix(in srgb, var(--color-text) 14%, transparent);
+      }
+      .aie-strength i.on {
+        background: var(--color-accent);
+      }
+      .aie-strength.s4 i.on {
+        background: var(--color-success);
+      }
+      .aie-records tbody tr {
+        animation: aie-row-enter 200ms ease-out backwards;
+      }
+      .aie-records tbody tr:nth-child(1) {
+        animation-delay: 30ms;
+      }
+      .aie-records tbody tr:nth-child(2) {
+        animation-delay: 70ms;
+      }
+      .aie-records tbody tr:nth-child(3) {
+        animation-delay: 110ms;
+      }
+      .aie-records tbody tr:nth-child(4) {
+        animation-delay: 150ms;
+      }
+      .aie-records tbody tr:nth-child(5) {
+        animation-delay: 190ms;
+      }
+
+      /* ── 10 Filter Table（缺件，补）─────────────────────────── */
+      .aie-filter {
+        padding: 14px 16px;
+      }
+      .aie-filter__chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-bottom: 11px;
+      }
+      .aie-fchip {
+        padding: 4px 11px;
+        border: 1px solid color-mix(in srgb, var(--color-border) 55%, transparent);
+        border-radius: 999px;
+        background: transparent;
+        color: var(--color-text-secondary);
+        font-size: 11.5px;
+        cursor: pointer;
+        transition: all 150ms ease;
+      }
+      .aie-fchip[aria-pressed='true'] {
+        border-color: color-mix(in srgb, var(--color-accent) 60%, var(--color-accent));
+        background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+        color: var(--color-text);
+        font-weight: 600;
+      }
+      .aie-filter__count {
+        margin-bottom: 8px;
+        font-size: 11px;
+        color: var(--color-text-faint);
+      }
+      .aie-filter tbody tr {
+        animation: aie-row-enter 200ms ease-out backwards;
+      }
+      .aie-filter tbody tr.is-hidden {
+        display: none;
+      }
+
+      /* ── 动效关闭：对标本项目 prefers-reduced-motion 约定 ───── */
+      html[data-motion='off'] *,
+      html[data-motion='off'] *::before,
+      html[data-motion='off'] *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+      }
+      html[data-motion='off'] .aie-trace-step,
+      html[data-motion='off'] .aie-chip,
+      html[data-motion='off'] .aie-source,
+      html[data-motion='off'] .aie-followup,
+      html[data-motion='off'] .aie-ctx-card,
+      html[data-motion='off'] .aie-task,
+      html[data-motion='off'] .aie-records tbody tr,
+      html[data-motion='off'] .aie-filter tbody tr {
+        opacity: 1 !important;
+      }
+
+      @media (max-width: 720px) {
+        .aie-page {
+          padding: 24px 14px 80px;
+        }
+        .aie-loading {
+          flex-direction: column;
+          align-items: flex-start;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="aie-page">
+      <!-- 顶部控制条 -->
+      <div class="aie-toolbar">
+        <div>
+          <div class="aie-toolbar__brand">SYNC-THINK · 效果设计稿</div>
+          <div class="aie-toolbar__sub">AI 原生界面 · 对照 beautifului.dev/harness · v1</div>
+        </div>
+        <div class="aie-motion-toggle">
+          <span>动效</span>
+          <button
+            type="button"
+            class="aie-switch"
+            id="aie-motion-switch"
+            role="switch"
+            aria-checked="true"
+            aria-label="动效开关"
+          ></button>
+        </div>
+      </div>
+
+      <!-- 01 Loading State -->
+      <section class="aie-block" id="aie-loading">
+        <div class="aie-block__head">
+          <span class="aie-block__num">01</span>
+          <span class="aie-block__title">Loading State</span>
+          <span class="aie-block__hint">像素网格 + shimmer + 计时</span>
+          <button type="button" class="aie-replay" data-replay="loading">重播</button>
+        </div>
+        <div class="aie-panel aie-loading">
+          <div class="aie-pixel-grid" aria-hidden="true"></div>
+          <div class="aie-loading__copy">
+            <div class="aie-loading__label">
+              正在整理工作区 <span class="aie-loading__elapsed" data-elapsed>0.0s</span>
+            </div>
+            <div class="aie-loading__sub">读取 3 个文件 · 索引 214 个符号</div>
+            <div class="aie-skel" aria-hidden="true"><i></i><i></i><i></i></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 02 Thinking -->
+      <section class="aie-block" id="aie-thinking">
+        <div class="aie-block__head">
+          <span class="aie-block__num">02</span>
+          <span class="aie-block__title">Thinking</span>
+          <span class="aie-block__hint">可折叠轨迹 · 标签页</span>
+          <button type="button" class="aie-replay" data-replay="thinking">重播</button>
+        </div>
+        <div class="aie-panel aie-thinking is-open" data-thinking>
+          <div class="aie-thinking__head" data-thinking-toggle>
+            <span class="aie-thinking__dot" aria-hidden="true"></span>
+            <span class="aie-thinking__title">推理轨迹</span>
+            <span class="aie-thinking__meta">4 步 · 2.4s</span>
+            <svg
+              class="aie-thinking__chev"
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2.2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="m6 9 6 6 6-6" />
+            </svg>
+          </div>
+          <div class="aie-thinking__body">
+            <div class="aie-tabs" role="tablist" aria-label="推理轨迹分类" data-tabs>
+              <span class="aie-tabs__pill" aria-hidden="true"></span>
+              <button type="button" role="tab" aria-selected="true" data-tab="steps">步骤</button>
+              <button type="button" role="tab" aria-selected="false" data-tab="reasoning">推理</button>
+              <button type="button" role="tab" aria-selected="false" data-tab="search">搜索</button>
+              <button type="button" role="tab" aria-selected="false" data-tab="coding">编码</button>
+            </div>
+            <div class="aie-trace" data-trace-pane="steps">
+              <div class="aie-trace-step">
+                <span class="aie-trace-step__n">1</span>
+                <span>读取工作区清单，识别 <code>apps/desktop</code> 为当前目标。</span>
+              </div>
+              <div class="aie-trace-step">
+                <span class="aie-trace-step__n">2</span>
+                <span>检索设计令牌约束：禁止裸十六进制颜色。</span>
+              </div>
+              <div class="aie-trace-step">
+                <span class="aie-trace-step__n">3</span>
+                <span>定位到 <code>AgentLibrary.tsx</code> 的渲染层与 <code>shell.css</code> 末段。</span>
+              </div>
+              <div class="aie-trace-step">
+                <span class="aie-trace-step__n">4</span>
+                <span>规划改动：只改呈现层，不动数据流。</span>
+              </div>
+            </div>
+            <div class="aie-trace" data-trace-pane="reasoning" hidden>
+              <div class="aie-trace-step">
+                <span class="aie-trace-step__n">1</span>
+                <span>列表视图错位 174px：疑似 flex 主轴被旧规则改成 row。</span>
+              </div>
+              <div class="aie-trace-step">
+                <span class="aie-trace-step__n">2</span>
+                <span>验证假设：删除遗留规则后行宽应回到卡片内容宽。</span>
+              </div>
+              <div class="aie-trace-step">
+                <span class="aie-trace-step__n">3</span>
+                <span>抽屉 24px 偏移是入场动画首帧，非布局错误。</span>
+              </div>
+            </div>
+            <div class="aie-trace" data-trace-pane="search" hidden>
+              <div class="aie-trace-step">
+                <span class="aie-trace-step__n">1</span>
+                <span>搜索 <code>flex-direction: row</code> 命中 <code>.agent-grid[data-view='list']</code>。</span>
+              </div>
+              <div class="aie-trace-step">
+                <span class="aie-trace-step__n">2</span>
+                <span>搜索 <code>capability-drawer</code> 几何作为对照基线。</span>
+              </div>
+            </div>
+            <div class="aie-trace" data-trace-pane="coding" hidden>
+              <div class="aie-trace-step">
+                <span class="aie-trace-step__n">1</span>
+                <span>删除 3 段遗留列表视图规则（29 行）。</span>
+              </div>
+              <div class="aie-trace-step">
+                <span class="aie-trace-step__n">2</span>
+                <span>重跑构建：total JS 3059590，预算未超。</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 03 Tool Chips + Task Rows -->
+      <section class="aie-block" id="aie-tools">
+        <div class="aie-block__head">
+          <span class="aie-block__num">03</span>
+          <span class="aie-block__title">Tool Chips + Task Rows</span>
+          <span class="aie-block__hint">工具调用压缩 · 实时任务状态</span>
+          <button type="button" class="aie-replay" data-replay="tools">重播</button>
+        </div>
+        <div class="aie-panel aie-tools">
+          <div class="aie-chips" data-chips>
+            <span class="aie-chip" style="animation-delay: 0ms"><i></i>read_file ×3</span>
+            <span class="aie-chip aie-chip--running" style="animation-delay: 90ms"><i></i>grep flex-direction</span>
+            <span class="aie-chip" style="animation-delay: 180ms"><i></i>build:shell</span>
+            <span class="aie-chip" style="animation-delay: 270ms"><i></i>vitest run</span>
+          </div>
+          <div class="aie-tasks" data-tasks>
+            <div class="aie-task">
+              <span class="aie-task__icon">
+                <svg class="aie-ok" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5" /></svg>
+              </span>
+              <span class="aie-task__name">核对设计令牌<small>28 处违规全为既有，本次新增 0</small></span>
+              <span class="aie-task__status">完成</span>
+              <span class="aie-task__bar"><i style="width: 100%"></i></span>
+            </div>
+            <div class="aie-task">
+              <span class="aie-task__icon">
+                <svg class="aie-spin-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-6.219-8.56" /></svg>
+              </span>
+              <span class="aie-task__name">修复列表错位<small>删除遗留 flex-direction:row</small></span>
+              <span class="aie-task__status" data-task-status>进行中</span>
+              <span class="aie-task__bar"><i data-task-bar></i></span>
+            </div>
+            <div class="aie-task is-failed">
+              <span class="aie-task__icon">
+                <svg class="aie-err" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12" /></svg>
+              </span>
+              <span class="aie-task__name">外置更新日志<small>预算仍剩 410 字节，待拆 chunk</small></span>
+              <span class="aie-task__status">失败</span>
+              <span class="aie-task__bar"><i style="width: 62%"></i></span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 04 Streaming Text -->
+      <section class="aie-block" id="aie-stream">
+        <div class="aie-block__head">
+          <span class="aie-block__num">04</span>
+          <span class="aie-block__title">Streaming Text</span>
+          <span class="aie-block__hint">流式 + 内联来源 + Follow-ups</span>
+          <button type="button" class="aie-replay" data-replay="stream">重播</button>
+        </div>
+        <div class="aie-panel aie-stream">
+          <div class="aie-bubble">
+            <div class="aie-bubble__av">A</div>
+            <div class="aie-bubble__body">
+              <div class="aie-bubble__who">前端小张</div>
+              <div class="aie-stream-text" data-stream-text></div>
+              <div class="aie-sources" data-sources hidden>
+                <span class="aie-source" style="animation-delay: 0ms"><i style="background: #1f7a5f"></i>shell.css:44061</span>
+                <span class="aie-source" style="animation-delay: 90ms"><i style="background: #2f6fec"></i>AgentLibrary.tsx</span>
+                <span class="aie-source" style="animation-delay: 180ms"><i style="background: #e56d24"></i>构建产物 dist</span>
+              </div>
+              <div class="aie-followups" data-followups hidden>
+                <button type="button" class="aie-followup" style="animation-delay: 0ms">还有哪些遗留规则？</button>
+                <button type="button" class="aie-followup" style="animation-delay: 70ms">对比能力页抽屉几何</button>
+                <button type="button" class="aie-followup" style="animation-delay: 140ms">预算还剩多少？</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 05 Approval Card -->
+      <section class="aie-block" id="aie-approval">
+        <div class="aie-block__head">
+          <span class="aie-block__num">05</span>
+          <span class="aie-block__title">Approval Card</span>
+          <span class="aie-block__hint">人在回路 · 需要确认才执行</span>
+          <button type="button" class="aie-replay" data-replay="approval">重播</button>
+        </div>
+        <div class="aie-panel aie-approval">
+          <div class="aie-approval__q">这次改动要提交到哪个分支？</div>
+          <div class="aie-approval__sub">智能体在执行写入前需要你确认，可随时跳过。</div>
+          <div class="aie-approval__opts" role="radiogroup" aria-label="分支选择">
+            <label class="aie-opt">
+              <input type="radio" name="aie-branch" value="feat" checked />
+              <span class="aie-opt__label">当前分支 codex/integrate-local-newmax</span>
+              <span class="aie-opt__hint">推荐</span>
+            </label>
+            <label class="aie-opt">
+              <input type="radio" name="aie-branch" value="new" />
+              <span class="aie-opt__label">新建分支 agent-library-v2</span>
+              <span class="aie-opt__hint">更干净</span>
+            </label>
+            <label class="aie-opt">
+              <input type="radio" name="aie-branch" value="main" />
+              <span class="aie-opt__label">直接进 main</span>
+              <span class="aie-opt__hint">有风险</span>
+            </label>
+          </div>
+          <div class="aie-approval__foot">
+            <span class="aie-approval__step">第 1 / 2 步</span>
+            <button type="button" class="aie-btn aie-btn--ghost">跳过</button>
+            <button type="button" class="aie-btn aie-btn--primary">继续</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- 06 Recommendation Card -->
+      <section class="aie-block" id="aie-reco">
+        <div class="aie-block__head">
+          <span class="aie-block__num">06</span>
+          <span class="aie-block__title">Recommendation Card</span>
+          <span class="aie-block__hint">置信度 meter · 备选方案</span>
+          <button type="button" class="aie-replay" data-replay="reco">重播</button>
+        </div>
+        <div class="aie-panel aie-reco">
+          <div class="aie-reco__q">要我把这条改动提交吗？</div>
+          <div class="aie-reco__main">
+            <div class="aie-reco__main-text">
+              提交「删除遗留列表视图规则」
+              <small>3 个文件 · +88 / −329 行 · 测试 18/18 通过</small>
+            </div>
+            <div class="aie-meter">
+              <div class="aie-meter__track"><i data-meter></i></div>
+              <div class="aie-meter__label">高置信度</div>
+            </div>
+          </div>
+          <div class="aie-reco__alts">
+            <div class="aie-reco__alt">
+              <span>再跑一遍设计令牌检查</span>
+              <span class="aie-reco__alt-tag">稳妥</span>
+            </div>
+            <div class="aie-reco__alt">
+              <span>先外置更新日志再提交</span>
+              <span class="aie-reco__alt-tag">需先拆包</span>
+            </div>
+            <div class="aie-reco__alt">
+              <span>全部回滚</span>
+              <span class="aie-reco__alt-tag">无信号</span>
+            </div>
+          </div>
+          <div class="aie-approval__foot">
+            <button type="button" class="aie-btn aie-btn--ghost">其他方案</button>
+            <button type="button" class="aie-btn aie-btn--primary">接受并提交</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- 07 Context Cards -->
+      <section class="aie-block" id="aie-context">
+        <div class="aie-block__head">
+          <span class="aie-block__num">07</span>
+          <span class="aie-block__title">Context Cards</span>
+          <span class="aie-block__hint">带来源的检索块</span>
+          <button type="button" class="aie-replay" data-replay="context">重播</button>
+        </div>
+        <div class="aie-panel">
+          <div class="aie-context">
+            <div class="aie-ctx-card">
+              <h4>设计令牌约束</h4>
+              <p>组件必须消费主题令牌，不得使用裸十六进制颜色，否则预设主题无法重映射调色板。</p>
+              <span class="aie-ctx-card__src"><i></i>shell.css · 文件头注释</span>
+            </div>
+            <div class="aie-ctx-card">
+              <h4>构建预算</h4>
+              <p>totalJsBytes 上限 3,060,000。本次构建后剩 410 字节，正解是外置更新日志与拆分 SettingsPage chunk。</p>
+              <span class="aie-ctx-card__src"><i></i>shell-build-config.mjs · 6 处注释</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 08 Diff Table -->
+      <section class="aie-block" id="aie-diff">
+        <div class="aie-block__head">
+          <span class="aie-block__num">08</span>
+          <span class="aie-block__title">Diff Table</span>
+          <span class="aie-block__hint">AI 提议的批量表格改动</span>
+          <button type="button" class="aie-replay" data-replay="diff">重播</button>
+        </div>
+        <div class="aie-panel aie-diff">
+          <div class="aie-diff__title">提议的规则清理</div>
+          <table class="aie-table">
+            <thead>
+              <tr><th>规则</th><th>状态</th><th>理由</th></tr>
+            </thead>
+            <tbody>
+              <tr class="is-changed">
+                <td><span class="del">.agent-grid[data-view='list'] .agent-card</span> → <span class="ins">已删除</span></td>
+                <td><span class="ins">删除</span></td>
+                <td>遗留规则，导致行错位 174px</td>
+              </tr>
+              <tr>
+                <td>.agent-grid__header</td>
+                <td>保留</td>
+                <td>表头与行共用列模板</td>
+              </tr>
+              <tr class="is-changed">
+                <td><span class="del">.agent-dialog（居中 760×760）</span> → <span class="ins">.agent-dialog（右侧抽屉 520）</span></td>
+                <td><span class="ins">改写</span></td>
+                <td>与能力页详情抽屉几何对齐</td>
+              </tr>
+              <tr>
+                <td>.agent-empty</td>
+                <td>保留</td>
+                <td>空态仍在使用</td>
+              </tr>
+            </tbody>
+          </table>
+          <div class="aie-diff__foot">
+            <span class="aie-diff__count">2 处改动</span>
+            <button type="button" class="aie-btn aie-btn--ghost">拒绝</button>
+            <button type="button" class="aie-btn aie-btn--primary">接受</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- 09 Records Table -->
+      <section class="aie-block" id="aie-records">
+        <div class="aie-block__head">
+          <span class="aie-block__num">09</span>
+          <span class="aie-block__title">Records Table</span>
+          <span class="aie-block__hint">可排序 · 标签 · 关联强度</span>
+        </div>
+        <div class="aie-panel aie-records">
+          <table class="aie-table" data-records>
+            <thead>
+              <tr>
+                <th class="aie-sortable" data-key="name">名称<span class="aie-arrow">↑</span></th>
+                <th class="aie-sortable" data-key="tags">标签<span class="aie-arrow">↑</span></th>
+                <th class="aie-sortable" data-key="last">最近交互<span class="aie-arrow">↑</span></th>
+                <th class="aie-sortable" data-key="strength">关联强度<span class="aie-arrow">↑</span></th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- 10 Filter Table -->
+      <section class="aie-block" id="aie-filter">
+        <div class="aie-block__head">
+          <span class="aie-block__num">10</span>
+          <span class="aie-block__title">Filter Table</span>
+          <span class="aie-block__hint">筛选 chip · 实时计数</span>
+        </div>
+        <div class="aie-panel aie-filter">
+          <div class="aie-filter__chips" role="group" aria-label="按状态筛选">
+            <button type="button" class="aie-fchip" data-filter="all" aria-pressed="true">全部</button>
+            <button type="button" class="aie-fchip" data-filter="running" aria-pressed="false">进行中</button>
+            <button type="button" class="aie-fchip" data-filter="done" aria-pressed="false">已完成</button>
+            <button type="button" class="aie-fchip" data-filter="failed" aria-pressed="false">失败</button>
+          </div>
+          <div class="aie-filter__count" data-filter-count></div>
+          <table class="aie-table">
+            <thead>
+              <tr><th>任务</th><th>状态</th><th>耗时</th></tr>
+            </thead>
+            <tbody>
+              <tr data-status="done"><td>核对设计令牌</td><td>完成</td><td>0.8s</td></tr>
+              <tr data-status="running"><td>修复列表错位</td><td>进行中</td><td>1.4s</td></tr>
+              <tr data-status="failed"><td>外置更新日志</td><td>失败</td><td>2.1s</td></tr>
+              <tr data-status="done"><td>抽屉几何对照</td><td>完成</td><td>0.5s</td></tr>
+              <tr data-status="running"><td>截图验证</td><td>进行中</td><td>0.9s</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+
+    <script>
+      (function () {
+        'use strict';
+
+        var motionOn = true;
+        var switchEl = document.getElementById('aie-motion-switch');
+        function setMotion(on) {
+          motionOn = on;
+          document.documentElement.dataset.motion = on ? 'on' : 'off';
+          switchEl.setAttribute('aria-checked', String(on));
+        }
+        setMotion(true);
+        switchEl.addEventListener('click', function () {
+          setMotion(!motionOn);
+        });
+
+        /* ── 01 loading 计时 ── */
+        var elapsedTimer = null;
+        function startElapsed() {
+          var el = document.querySelector('[data-elapsed]');
+          if (!el) return;
+          var t0 = performance.now();
+          clearInterval(elapsedTimer);
+          elapsedTimer = setInterval(function () {
+            el.textContent = ((performance.now() - t0) / 1000).toFixed(1) + 's';
+          }, 100);
+        }
+        startElapsed();
+
+        /* ── 02 thinking 折叠 ── */
+        var thinking = document.querySelector('[data-thinking]');
+        var thinkingToggle = document.querySelector('[data-thinking-toggle]');
+        thinkingToggle.addEventListener('click', function () {
+          thinking.classList.toggle('is-open');
+        });
+
+        /* ── 02 标签页滑动药丸 ── */
+        var tabs = document.querySelectorAll('[data-tabs] button');
+        var pill = document.querySelector('[data-tabs] .aie-tabs__pill');
+        function positionPill() {
+          var active = document.querySelector('[data-tabs] button[aria-selected="true"]');
+          if (!active || !pill) return;
+          pill.style.width = active.offsetWidth + 'px';
+          pill.style.transform = 'translateX(' + active.offsetLeft + 'px)';
+        }
+        function selectTab(btn) {
+          tabs.forEach(function (t) {
+            t.setAttribute('aria-selected', String(t === btn));
+          });
+          document.querySelectorAll('[data-trace-pane]').forEach(function (p) {
+            p.hidden = p.dataset.tracePane !== btn.dataset.tab;
+          });
+          positionPill();
+          // 重播该面板的阶梯入场
+          var pane = document.querySelector('[data-trace-pane="' + btn.dataset.tab + '"]:not([hidden])');
+          if (pane) {
+            pane.querySelectorAll('.aie-trace-step').forEach(function (s) {
+              s.style.animation = 'none';
+              void s.offsetWidth;
+              s.style.animation = '';
+            });
+          }
+        }
+        tabs.forEach(function (t) {
+          t.addEventListener('click', function () {
+            selectTab(t);
+          });
+        });
+        positionPill();
+        window.addEventListener('resize', positionPill);
+
+        /* ── 03 task row 进度动画 ── */
+        function playTasks() {
+          var bar = document.querySelector('[data-task-bar]');
+          var status = document.querySelector('[data-task-status]');
+          if (!bar) return;
+          bar.style.width = '0%';
+          if (status) status.textContent = '进行中';
+          var task = bar.closest('.aie-task');
+          task.classList.remove('is-done');
+          setTimeout(function () {
+            bar.style.width = '76%';
+          }, 120);
+          setTimeout(function () {
+            bar.style.width = '100%';
+            task.classList.add('is-done');
+            if (status) status.textContent = '完成';
+          }, 1500);
+        }
+
+        /* ── 04 streaming 文本 ── */
+        var STREAM_TEXT =
+          '错位的原因是旧列表视图规则把卡片改成了横向 flex，\n' +
+          '行于是按内容宽收缩。删掉那 29 行遗留规则后，\n' +
+          '行宽回到卡片内容宽，六列对齐误差降到 1px。';
+        var streamTimer = null;
+        function playStream() {
+          var el = document.querySelector('[data-stream-text]');
+          var srcs = document.querySelector('[data-sources]');
+          var fus = document.querySelector('[data-followups]');
+          if (!el) return;
+          clearInterval(streamTimer);
+          el.innerHTML = '<span class="aie-caret"></span>';
+          srcs.hidden = true;
+          fus.hidden = true;
+          var i = 0;
+          streamTimer = setInterval(function () {
+            i += 2;
+            var slice = STREAM_TEXT.slice(0, i);
+            el.innerHTML = '';
+            el.appendChild(document.createTextNode(slice));
+            var caret = document.createElement('span');
+            caret.className = 'aie-caret';
+            el.appendChild(caret);
+            if (i >= STREAM_TEXT.length) {
+              clearInterval(streamTimer);
+              el.textContent = STREAM_TEXT;
+              srcs.hidden = false;
+              srcs.querySelectorAll('.aie-source').forEach(function (s) {
+                s.style.animation = 'none';
+                void s.offsetWidth;
+                s.style.animation = '';
+              });
+              setTimeout(function () {
+                fus.hidden = false;
+                fus.querySelectorAll('.aie-followup').forEach(function (f) {
+                  f.style.animation = 'none';
+                  void f.offsetWidth;
+                  f.style.animation = '';
+                });
+              }, 350);
+            }
+          }, 24);
+        }
+
+        /* ── 06 meter ── */
+        function playMeter() {
+          var m = document.querySelector('[data-meter]');
+          if (!m) return;
+          m.style.width = '0%';
+          setTimeout(function () {
+            m.style.width = '86%';
+          }, 150);
+        }
+
+        /* ── 09 records 排序 ── */
+        var RECORDS = [
+          { name: '前端小张', tags: ['Skill ×2', 'MCP ×1'], last: 2, strength: 4 },
+          { name: '代码审查员', tags: ['Skill ×1', 'MCP ×2'], last: 5, strength: 3 },
+          { name: '数据观察员', tags: ['Skill ×1'], last: 11, strength: 2 },
+          { name: '文档助手', tags: ['工作区'], last: 34, strength: 1 },
+          { name: '发布管家', tags: ['Skill ×3', 'MCP ×1'], last: 1, strength: 4 },
+        ];
+        var sortKey = 'name';
+        var sortDir = 1;
+        var tbody = document.querySelector('[data-records] tbody');
+        function renderRecords() {
+          RECORDS.slice().sort(function (a, b) {
+            var av = a[sortKey];
+            var bv = b[sortKey];
+            if (typeof av === 'string') return av.localeCompare(bv, 'zh-CN') * sortDir;
+            return (av - bv) * sortDir;
+          }).forEach(function (r) {
+            var tr = document.createElement('tr');
+            var cells =
+              '<td>' + r.name + '</td>' +
+              '<td>' + r.tags.map(function (t) { return '<span class="aie-tag">' + t + '</span>'; }).join('') + '</td>' +
+              '<td>' + r.last + ' 天前</td>' +
+              '<td><span class="aie-strength s' + r.strength + '">' +
+              [1, 2, 3, 4].map(function (n) {
+                return '<i class="' + (n <= r.strength ? 'on' : '') + '"></i>';
+              }).join('') +
+              '</span></td>';
+            tr.innerHTML = cells;
+            tbody.appendChild(tr);
+          });
+        }
+        document.querySelectorAll('[data-records] th').forEach(function (th) {
+          th.addEventListener('click', function () {
+            var key = th.dataset.key;
+            if (sortKey === key) {
+              sortDir = -sortDir;
+            } else {
+              sortKey = key;
+              sortDir = 1;
+            }
+            document.querySelectorAll('[data-records] th').forEach(function (h) {
+              if (h === th) {
+                h.setAttribute('aria-sort', sortDir === 1 ? 'ascending' : 'descending');
+              } else {
+                h.removeAttribute('aria-sort');
+              }
+            });
+            tbody.innerHTML = '';
+            renderRecords();
+          });
+        });
+        renderRecords();
+
+        /* ── 10 filter ── */
+        document.querySelectorAll('.aie-fchip').forEach(function (chip) {
+          chip.addEventListener('click', function () {
+            document.querySelectorAll('.aie-fchip').forEach(function (c) {
+              c.setAttribute('aria-pressed', String(c === chip));
+            });
+            var f = chip.dataset.filter;
+            var rows = document.querySelectorAll('.aie-filter tbody tr');
+            var shown = 0;
+            rows.forEach(function (tr) {
+              var match = f === 'all' || tr.dataset.status === f;
+              tr.classList.toggle('is-hidden', !match);
+              if (match) {
+                shown++;
+                tr.style.animation = 'none';
+                void tr.offsetWidth;
+                tr.style.animation = '';
+              }
+            });
+            document.querySelector('[data-filter-count]').textContent =
+              '显示 ' + shown + ' / ' + rows.length + ' 条';
+          });
+        });
+        document.querySelector('.aie-fchip[data-filter="all"]').click();
+
+        /* ── 重播 ── */
+        var REPLAYS = {
+          loading: function () {
+            startElapsed();
+          },
+          thinking: function () {
+            thinking.classList.add('is-open');
+            var first = document.querySelector('[data-tabs] button[data-tab="steps"]');
+            selectTab(first);
+          },
+          tools: function () {
+            document.querySelectorAll('[data-chips] .aie-chip').forEach(function (c) {
+              c.style.animation = 'none';
+              void c.offsetWidth;
+              c.style.animation = '';
+            });
+            playTasks();
+          },
+          stream: playStream,
+          approval: function () {
+            document.querySelector('input[name="aie-branch"][value="feat"]').checked = true;
+          },
+          reco: playMeter,
+          context: function () {
+            document.querySelectorAll('.aie-ctx-card').forEach(function (c) {
+              c.style.animation = 'none';
+              void c.offsetWidth;
+              c.style.animation = '';
+            });
+          },
+          diff: function () {
+            document.querySelectorAll('.aie-diff tr.is-changed').forEach(function (tr) {
+              tr.style.animation = 'none';
+              void tr.offsetWidth;
+              tr.style.animation = '';
+            });
+          },
+        };
+        document.querySelectorAll('[data-replay]').forEach(function (btn) {
+          btn.addEventListener('click', function () {
+            var fn = REPLAYS[btn.dataset.replay];
+            if (fn) fn();
+          });
+        });
+
+        /* 首次入场播放 */
+        playTasks();
+        playStream();
+        playMeter();
+      })();
+    </script>
+  </body>
+</html>

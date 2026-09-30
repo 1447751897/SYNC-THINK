@@ -1,3 +1,4 @@
+import { COLLABORATION_EXECUTION_VERSION } from '@sync-think/shared';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CollaborationCommand, CollaborationResponse, CollaborationSnapshot } from '@sync-think/shared';
 
@@ -17,6 +18,7 @@ export function collaborationErrorMessage(cause: unknown): string {
 interface ConversationScope {
   conversationId: string;
   revision: number;
+  executionVersion?: number;
 }
 
 /** Snapshots and errors belong to one visit to one conversation, never another tab. */
@@ -30,8 +32,9 @@ export function useCollaborationChat(conversationId: string, active = true) {
     if (owner !== currentScope.current || !next || next.conversation.id !== owner.conversationId || next.revision < owner.revision) return;
     // Update the high-water mark before React batches state updates. Visibility changes do not reset it.
     owner.revision = next.revision;
+    owner.executionVersion = executionVersion;
     setSnapshot({ scope: owner, value: next });
-    setError({ scope: owner, message: executionVersion === 2 ? '' : '后台仍在使用旧版协作引擎。结束执行后，请到「设置 → 任务 → 守护进程」停止并启动服务。刷新或只关闭窗口不会更新后台。' });
+    setError({ scope: owner, message: executionVersion === COLLABORATION_EXECUTION_VERSION ? '' : '后台仍在使用旧版协作引擎。结束执行后，请到「设置 → 任务 → 守护进程」停止并启动服务。刷新或只关闭窗口不会更新后台。' });
   }, []);
   const reportError = useCallback((owner: ConversationScope, cause: unknown) => {
     if (owner === currentScope.current) setError({ scope: owner, message: collaborationErrorMessage(cause) });
@@ -72,6 +75,7 @@ export function useCollaborationChat(conversationId: string, active = true) {
 
   const command = useCallback(async (request: CollaborationCommand) => {
     try {
+      if (['members', 'start-workflow', 'dispatch'].includes(request.action) && scope.executionVersion !== COLLABORATION_EXECUTION_VERSION) throw new Error('当前后台版本尚未支持成员拓扑与小队工作链，请先结束执行并重启守护进程。');
       const response = await collaborationRequest(request);
       accept(scope, response.snapshot, response.executionVersion);
       return response;

@@ -1,3 +1,5 @@
+import { COLLABORATION_EXECUTION_VERSION } from '@sync-think/shared';
+import { agentManagementIntent, managementToolAllowed, AGENT_DEFINITION_TOOLS, AGENT_DEFINITION_MUTATIONS, type AgentManagementIntent } from './agent-management-intent.js';
 import { buildCollaborationExecutionContext } from './collaboration-workflow.js';
 import { existingArtifactHash, submitCollaborationArtifact } from './collaboration-artifacts.js';
 import { parseTaskPlanHistoryPayload } from '@sync-think/protocol';
@@ -9257,9 +9259,11 @@ export class Runtime {
             })
           : { conversations: this.conversationStore.list(options) };
       const previews = this.conversationStore.listMessagePreviews(page.conversations.map((c) => c.id));
+      const chatPresence = this.conversationStore.listChatPresence(page.conversations.map((c) => c.id));
       const response: ListConversationsResponse = {
         conversations: page.conversations.map((record) => ({
           ...toConversationSummary(record),
+          hasMessages: chatPresence.has(record.id),
           ...(previews.has(record.id) ? { lastMessagePreview: previews.get(record.id) } : {}),
         })),
         ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
@@ -10053,6 +10057,7 @@ export class Runtime {
     }
     try {
       const updated = this.conversationStore.rename(payload.conversationId, payload.title);
+      this.collaborationChatHost?.refreshConversationMetadata(payload.conversationId);
       const response: ConversationResponse = { conversation: toConversationSummary(updated) };
       socket.write(
         encodeFrame({
@@ -19587,7 +19592,7 @@ export class Runtime {
       // Renderer requests are user-scoped. Agent-originated collaboration
       // commands use the runtime-owned service path and provide their member
       // identity through the execution adapter rather than the pipe payload.
-      const response = { ...this.collaborationChatHost.command(command), executionVersion: 2 };
+      const response = { ...this.collaborationChatHost.command(command), executionVersion: COLLABORATION_EXECUTION_VERSION };
       if (command.action === 'create' && !command.workspaceId && response.snapshot) {
         const conversation = this.conversationStore?.get(response.snapshot.conversation.id as ConversationId);
         if (conversation) this.projectlessStorage.ensure(conversation);
@@ -20984,6 +20989,7 @@ export class Runtime {
               const collaborationDenial = currentRun.track
                 ? resolveCollaborationToolDenial({
                     track: currentRun.track,
+                    agentManagementIntent: this.managementIntentForRun(currentRun),
                     toolName: toolCall.name,
                     settings: normalizeCollaborationSettings(
                       this.appSettingStore?.get(COLLABORATION_SETTINGS_KEY)?.value,
@@ -21322,14 +21328,14 @@ export class Runtime {
         globalAgentId: modelConversation ? undefined : member?.agentId, skillContextMode: 'run',
       });
       const parentConversation = this.conversationStore?.get(input.snapshot.conversation.id);
-      const boundTeam = parentConversation?.track === 'team' ? this.teamStore?.get(parentConversation.targetRef as TeamId) : undefined;
+      const boundTeam = member?.teamSnapshot ?? (parentConversation?.track === 'team' ? this.teamStore?.get(parentConversation.targetRef as TeamId) : undefined);
       prepared.run.projectContextPromptBlocks = [...(prepared.run.projectContextPromptBlocks ?? []),
         buildCollaborationExecutionContext(input.snapshot, input.task, input.attempt, input.task.kind === 'reply' ? boundTeam : undefined)];
       // Read claims must stay read-only even if the conversation allows writes.
       if (this.collaborationThreadScopes.get(threadId)?.readOnly) {
         prepared.run.delegatedReadOnly = true;
         // Match advertised tools to the dispatch guard; otherwise models attempt writes we reject.
-        prepared.run.delegatedToolAllowlist = [...DELEGATED_READONLY_TOOLS, ...['collaboration_start_workflow', 'collaboration_dispatch_tasks', 'collaboration_submit_artifact'].filter(name => this.isCollaborationControlToolAllowed(prepared.run, name))];
+        prepared.run.delegatedToolAllowlist = [...DELEGATED_READONLY_TOOLS, ...['collaboration_start_workflow', 'collaboration_dispatch_tasks', 'collaboration_submit_artifact', 'list_agent_resources', 'create_agent', 'update_agent'].filter(name => this.isCollaborationControlToolAllowed(prepared.run, name))];
       }
       if (input.task.deliverable?.kind === 'file' && this.collaborationThreadScopes.get(threadId)?.readOnly) {
         return { output: '', runId: String(runId), threadId, error: { code: 'collaboration.file_delivery_readonly', category: 'permission',
@@ -22551,6 +22557,7 @@ export class Runtime {
     const selection = selectKernelMcpRun({
       kernelId: request.kernelId,
       conversationTrack: run.track,
+      agentManagementIntent: this.managementIntentForRun(run),
       collaborationSettings: this.appSettingStore?.get(COLLABORATION_SETTINGS_KEY)?.value,
       executionMode: this.resolveChatExecutionMode(run.threadId),
       networkEnabled,
@@ -22711,6 +22718,7 @@ export class Runtime {
     if (run.track) {
       const collaborationDenial = resolveCollaborationToolDenial({
         track: run.track,
+        agentManagementIntent: this.managementIntentForRun(run),
         toolName: call.tool,
         settings: normalizeCollaborationSettings(
           this.appSettingStore?.get(COLLABORATION_SETTINGS_KEY)?.value,
@@ -23589,12 +23597,12 @@ export class Runtime {
       argumentsJson: JSON.stringify(call.input ?? {}),
     };
     const approvalArguments = call.input ?? {};
-    const allowedScopes = toolApprovalScopesFor({
+    const allowedScopes = AGENT_DEFINITION_MUTATIONS.has(call.tool) ? ['once' as ToolApprovalScope] : toolApprovalScopesFor({
       toolName: call.tool,
       arguments: approvalArguments,
     });
     if (
-      this.toolApprovalPolicy.isAllowed({
+      !AGENT_DEFINITION_MUTATIONS.has(call.tool) && this.toolApprovalPolicy.isAllowed({
         conversationId: this.resolveConversationIdForThread(threadId) ?? threadId,
         toolName: call.tool,
         arguments: approvalArguments,
@@ -26975,6 +26983,9 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     if (this.runtimeStopped) {
       return JSON.stringify({ ok: false, error: 'agent_delegate: Runtime is shutting down.' });
     }
+    if (this.managementIntentForRun(input.run) !== 'none' || input.run.delegationParentRunId) {
+      return JSON.stringify({ ok: false, error: 'agent_delegation.scope_required：管理轮次只保存配置，不自动启动；委派成员不自行扩展协作范围。' });
+    }
     const admission = this.delegationAdmission.prepare({
       threadId: input.run.threadId,
       toolName: input.toolCall.name,
@@ -27249,7 +27260,20 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     return reconcileDelegatedRecord(record, events, this.demoRuns.has(record.childRunId));
   }
 
+  private managementIntentForRun(run: DemoRunState): AgentManagementIntent {
+    if (run.delegationParentRunId || run.planningMode) return 'none';
+    const scope = this.collaborationThreadScopes.get(run.threadId);
+    if (!scope) return agentManagementIntent(run.userText);
+    if (scope.taskKind !== 'reply') return 'none';
+    const message = scope.input.snapshot.messages.find(item => item.id === scope.input.task.originMessageId);
+    const sender = scope.input.snapshot.members.find(member => member.id === message?.senderMemberId);
+    return sender?.kind === 'user' && message?.kind === 'chat'
+      ? agentManagementIntent(message.blocks.filter(block => block.type === 'text').map(block => block.text ?? '').join('\n')) : 'none';
+  }
+
   private isCollaborationControlToolAllowed(run: DemoRunState, name: string): boolean {
+    if (managementToolAllowed(this.managementIntentForRun(run), name)) return true;
+    if (this.managementIntentForRun(run) !== 'none') return false;
     const scope = this.collaborationThreadScopes.get(run.threadId);
     if (!scope || run.planningMode) return false;
     if (name === 'collaboration_submit_artifact') return scope.taskKind === 'task' && Boolean(scope.input.task.deliverable);
@@ -27262,17 +27286,18 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     toolCall: import('@sync-think/adapters').ProviderToolCall;
     args: Record<string, unknown>;
   }): string {
+    if (this.managementIntentForRun(input.run) !== 'none') return JSON.stringify({ ok: false, error: '智能体定义管理轮次只保存配置；执行或派发请另行发起。' });
     const host = this.collaborationChatHost;
     const conversationId = this.resolveConversationIdForThread(input.run.threadId);
     if (!host || !conversationId) {
       return JSON.stringify({ ok: false, error: '当前运行不在协作会话中。' });
     }
-    const actorMemberId =
+    const actorMemberId = this.collaborationThreadScopes.get(input.run.threadId)?.input.task.assigneeMemberId ?? (
       input.run.track === 'model'
         ? 'assistant:main'
         : input.run.globalAgentId
           ? `agent:${input.run.globalAgentId}`
-          : undefined;
+          : undefined);
     if (!actorMemberId) {
       return JSON.stringify({ ok: false, error: '协作运行缺少发送者身份。' });
     }
@@ -27386,6 +27411,9 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     run: DemoRunState;
     toolCall: import('@sync-think/adapters').ProviderToolCall;
   }): string {
+    if (AGENT_DEFINITION_TOOLS.has(input.toolCall.name) && !managementToolAllowed(this.managementIntentForRun(input.run), input.toolCall.name)) {
+      return JSON.stringify({ ok: false, error: 'agent_management.user_request_required：请由用户明确提出创建或修改要求；执行任务不自行招募新智能体。' });
+    }
     let args: Record<string, unknown> = {};
     try {
       args = JSON.parse(input.toolCall.argumentsJson || '{}') as Record<string, unknown>;
@@ -28627,13 +28655,13 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     signal: AbortSignal;
   }): Promise<{ decision: 'approve' | 'deny'; approvalId: string }> {
     const rawArguments = parseToolApprovalArguments(input.toolCall.argumentsJson);
-    const allowedScopes = toolApprovalScopesFor({
+    const allowedScopes = AGENT_DEFINITION_MUTATIONS.has(input.toolCall.name) ? ['once' as ToolApprovalScope] : toolApprovalScopesFor({
       toolName: input.toolCall.name,
       arguments: rawArguments,
       risk: input.approvalRisk,
     });
     if (
-      this.toolApprovalPolicy.isAllowed({
+      !AGENT_DEFINITION_MUTATIONS.has(input.toolCall.name) && this.toolApprovalPolicy.isAllowed({
         conversationId: this.resolveConversationIdForThread(input.threadId) ?? input.threadId,
         toolName: input.toolCall.name,
         arguments: rawArguments,
@@ -30943,7 +30971,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     );
     const delegatedReadOnly = run.delegatedReadOnly === true;
     const agentToolsEnabled = Boolean(
-      options.toolsEnabled && this.globalAgentStore && !delegatedReadOnly,
+      options.toolsEnabled && this.globalAgentStore && (run.track === 'model' || this.managementIntentForRun(run) !== 'none') && (!delegatedReadOnly || this.managementIntentForRun(run) !== 'none'),
     );
     const dynamicAgentToolsEnabled = Boolean(
       options.toolsEnabled &&
@@ -30987,6 +31015,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
             includeWebSearchTools: webSearchMode === 'external',
             includeProjectTools: hasProjectTools,
             includeAgentTools: agentToolsEnabled,
+            agentManagementIntent: this.managementIntentForRun(run),
             collaborationEnabled: this.isCollaborationConversationForThread(run.threadId),
             includeDesktopTools: desktopToolsEnabled,
             includeBrowserWorkflowTools: browserWorkflowToolsEnabled,
@@ -31041,42 +31070,22 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
             : 'Permission mode is workspace/full-access: ordinary Computer Use actions execute without an extra approval card.',
         ].join('\n')
       : undefined;
-    const agentCreationPrompt = agentToolsEnabled
+    const agentCreationPrompt = agentToolsEnabled && this.managementIntentForRun(run) !== 'none'
       ? [
-          'Agent Library tools are ENABLED: list_available_agents / get_agent / agent_run 可运行已有智能体；list_agent_resources / create_agent / update_agent / archive_agent 仅用于受控管理。',
-          '- 当用户询问当前工作区已激活/可用/可调用的智能体时，MUST call list_available_agents and answer from its live runtime result. Never search AGENTS.md, repository files, logs, or session directories for activation state.',
-          '- 模型需要协作时，FIRST call list_available_agents，再用返回的 exact agentId 调用 agent_run。agent_run 会立即返回 childRunId，子智能体在后台继续执行，进度和最终结果会回写当前对话；不要同步轮询或重复启动同一任务。agent_run 只允许复用当前工作区已激活的已有智能体，绝不创建临时智能体。',
-          '- When the user asks to 创建智能体 / 新建智能体 / 入库, FIRST call list_agent_resources to get valid model ids and approved skill versions, THEN call create_agent with a complete draft (name, persona, description, defaultModelId, skillIds).',
-          '- When the user asks to 修改/调整某个智能体, FIRST call list_agent_resources to confirm the target agent id, THEN call update_agent with ONLY the fields to change. skillIds is full-replace: include the complete final set.',
-          '- When the user asks to 删除/归档某个智能体, use archive_agent (soft-delete, restorable in the Agent Library). There is NO hard-delete tool; never claim you deleted permanently. The agent of the CURRENT conversation cannot be archived.',
-          executionMode === 'full-access'
-            ? '- Permission mode is full-access: create/update/archive execute immediately without extra confirmation. Still show the user exactly what you changed.'
-            : '- Permission mode is NOT full-access: create_agent / update_agent / archive_agent will pause and show the user an approval card. Wait for their decision; if denied, do not retry — hand them the draft/diff instead.',
-          '- skillIds must be approved skill version ids from list_agent_resources. Never invent ids.',
-          '- Resolve update/archive targets by exact agent id when possible; names must be unique or the call fails.',
-          '- Do NOT search the repository for a hidden createAgent API — use these tools.',
-          'Skill capability-center tools are ENABLED (list_skills, read_skill, create_skill, update_skill, delete_skill, import_remote_skill):',
-          '- When the user asks to 创建 Skill, write a complete SKILL.md (frontmatter: name / description / version / optional allowed-tools + markdown body with the workflow rules), then call create_skill.',
-          '- When the user asks to 修改 Skill, FIRST call read_skill to get the current source, edit it, bump the version, and call update_skill. Old versions are kept; equipped agents stay on their pinned version until rebound.',
-          '- When the user asks to 删除/卸载 Skill, call list_skills to find the exact skillVersionId, then delete_skill. If it is still equipped by an agent the call fails — report that instead of retrying.',
-          '- Importing only parses text; scripts are never executed. Expanding allowed-tools enqueues a separate permission approval automatically.',
-          '- When the user gives a remote SKILL.md URL, call import_remote_skill; it records market origin metadata and returns the exact immutable version.',
-          executionMode === 'full-access'
-            ? '- Skill mutations execute immediately in full-access mode.'
-            : '- Skill mutations (create_skill / update_skill / delete_skill) pause on an approval card outside full-access. If denied, hand the user the SKILL.md draft instead.',
-          'Remote MCP registry is ENABLED (list_mcp_tools, register_remote_mcp): call register_remote_mcp with name + endpoint metadata only. Never ask the user for a key in chat and never put a key in tool arguments; after registration, tell the user to configure the key in the capability center password field. Discovery is best effort; do not claim a tool is available when discoveryError is returned.',
-          'Team Library tools are ENABLED (list_teams, create_team, update_team, delete_team):',
-          '- When the user asks to 创建小队/组队, FIRST call list_teams and list_agent_resources to confirm existing teams and valid agent ids, THEN call create_team with a complete draft (name, mission, strategy, members with agent/title/role/dependsOn).',
-          '- When the user asks to 修改某个小队, FIRST call list_teams to confirm the target team id, THEN call update_team with ONLY the fields to change. members is full-replace: include the complete final roster.',
-          '- When the user asks to 删除某个小队, use delete_team. It fails while the team still has runs or is referenced by conversations — report that instead of retrying. The team of the CURRENT conversation cannot be deleted.',
-          executionMode === 'full-access'
-            ? '- Team mutations execute immediately in full-access mode.'
-            : '- Team mutations (create_team / update_team / delete_team) pause on an approval card outside full-access. If denied, hand the user the roster draft instead.',
+          '用户本轮明确要求创建或修改智能体。先用 list_agent_resources 核对实际模型、技能和目标 ID，再使用对应的 create_agent 或 update_agent。',
+          '提交配置草稿后等待用户逐次审批；即使完全访问模式也要确认。拒绝或取消后不重试同一变更。',
+          'update_agent 仅提交变更字段；skillIds 是完整替换。共享智能体修改会影响后续使用，必须说明范围。',
+          '创建/修改配置与执行任务分离：禁止为自己的任务自行创建助手；保存后不自动运行、不自动加入小队。不得改用终端、文件或其他接口绕过管理授权。',
         ].join('\n')
-      : [
-          'Agent Library tools are unavailable in this Runtime.',
-          '- If the user asks to 创建智能体, offer a concrete draft (name, persona, default model, skills) they can save manually in the Agent Library UI.',
-        ].join('\n');
+      : '本轮没有用户发起的智能体定义管理请求。不创建或修改智能体配置；如确有需要，先向用户说明并等待其明确要求。';
+    const libraryResourcesPrompt = agentToolsEnabled && run.track === 'model' && !delegatedReadOnly ? [
+      '已有智能体目录：查询激活状态用 list_available_agents，查看配置用 get_agent；不从仓库文件猜测目录状态。agent_run 仅复用已激活的已有智能体，返回 childRunId 后等待回写，不轮询或重复启动；定义管理轮次不派发执行。',
+      'archive_agent 是可恢复归档，不是永久删除。精确定位目标 ID，当前对话绑定的智能体不归档。',
+      '技能管理使用 list_skills/read_skill/create_skill/update_skill/delete_skill/import_remote_skill；编辑前读取原文并提升版本，旧版本保留；导入只解析不执行脚本，权限扩展另行审批。',
+      '小队管理使用 list_teams/create_team/update_team/delete_team；成员 ID 从 list_available_agents 获取，只引用已有成员。members 是完整替换，删除被历史或会话引用的小队会失败。',
+      '远程 MCP 注册使用 register_remote_mcp，只传端点元数据；密钥由用户在能力中心密码框配置，不放入聊天和工具参数。发现失败不宣称工具就绪。',
+      executionMode === 'full-access' ? '技能/小队/归档沿用完全访问授权；create_agent/update_agent 仍逐次确认。' : '技能、小队和归档变更等待权限审批；被拒绝后不重试同一变更。',
+    ].join('\n') : undefined;
     const planToolPrompt = delegatedReadOnly ? 'Workspace tools are read-only; update_task_plan and file mutations are not available. Use supplied collaboration controls for orchestration and artifact delivery, otherwise reply in chat.' : [
       'Task checklist (update_task_plan):',
       '- For any request needing 2+ distinct steps, call update_task_plan FIRST with the full step list (first step in_progress), and call it again with the FULL updated list每当 a step completes or the plan changes.',
@@ -31123,6 +31132,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       ...(isExplicitExcalidrawRequest(run.userText) ? [EXCALIDRAW_OUTPUT_CONTRACT] : []),
       INLINE_VISUALIZATION_OUTPUT_CONTRACT,
       agentCreationPrompt,
+      libraryResourcesPrompt,
       dynamicDelegationPrompt,
       planToolPrompt,
       browserWorkflowPrompt,
@@ -31268,7 +31278,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     );
     const delegatedReadOnly = run.delegatedReadOnly === true;
     const agentToolsEnabled = Boolean(
-      options.toolsEnabled && this.globalAgentStore && !delegatedReadOnly,
+      options.toolsEnabled && this.globalAgentStore && (run.track === 'model' || this.managementIntentForRun(run) !== 'none') && (!delegatedReadOnly || this.managementIntentForRun(run) !== 'none'),
     );
     const dynamicAgentToolsEnabled = Boolean(
       options.toolsEnabled &&
@@ -31308,6 +31318,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
               includeWebSearchTools: webSearchMode === 'external',
               includeProjectTools: hasProjectTools,
               includeAgentTools: agentToolsEnabled,
+            agentManagementIntent: this.managementIntentForRun(run),
               collaborationEnabled: this.isCollaborationConversationForThread(run.threadId),
               includeDesktopTools: desktopToolsEnabled,
               includeBrowserWorkflowTools: browserWorkflowToolsEnabled,

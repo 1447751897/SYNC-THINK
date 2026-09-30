@@ -1,6 +1,16 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
 import * as Menu from '@radix-ui/react-dropdown-menu';
+import {
+  closestCenter,
+  DndContext,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from '@dnd-kit/core';
+import { SortableContext, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
 import { Archive, ArrowLeft, Check, ChevronDown, MessageSquare, MoreHorizontal, PanelLeft, Pin, Plus, Search, Settings2, Store, Users, X } from 'lucide-react';
 import type { CollaborationSnapshot, Conversation, GlobalAgent, Team } from '@sync-think/shared';
 import type { WorkspaceSummary } from '@sync-think/protocol';
@@ -10,13 +20,23 @@ import { CollaborationChatView } from './CollaborationChatView.js';
 import { AgentWorkspaceAvatar } from './AgentWorkspaceAvatar.js';
 import { AvatarCluster, collaborationGroupTitle } from './collaboration-identity.js';
 import { collaborationRequest } from './use-collaboration-chat.js';
-import { isAgentActive } from './agent-contacts.js';
+import { hasAgentChatMessages, isAgentActive } from './agent-contacts.js';
 import { PROJECTLESS_SCOPE, runtimeWorkspaceId } from './projectless-scope.js';
 import { useKeepAliveActive } from './KeepAliveLayer.js';
 import './agent-workspace.css';
 import { preservePromotedDraft } from './collaboration-draft.js';
 import { AgentModelRepair } from './AgentModelRepair.js';
 import { isAgentConversation, type AgentWorkspaceNavigation } from './conversation-surface.js';
+import {
+  buildAgentWorkspaceContacts,
+  readContactOrder,
+  readPinnedAgents,
+  reorderContactIds,
+  togglePinnedAgent,
+  writeContactOrder,
+  writePinnedAgents,
+  type AgentWorkspaceContact,
+} from './agent-workspace-contacts.js';
 
 const WorkspaceTeamLibrary = lazy(() => import('./TeamLibrary.js').then(module => ({ default: module.TeamLibrary })));
 const NO_TEAMS: readonly Team[] = [];
@@ -32,6 +52,7 @@ export interface AgentWorkspaceProps {
   navigation?: AgentWorkspaceNavigation;
   onNavigationHandled?(): void;
   conversationActivity?: ReadonlyMap<string, { running: boolean; unread: boolean }>;
+  onResultsViewed?(conversationId: string, runIds: readonly string[]): void;
   onExit(): void;
   onSelectWorkspace(id: string): void;
   onRefresh(): Promise<unknown> | void;
@@ -42,7 +63,7 @@ export interface AgentWorkspaceProps {
   onArchive(id: string): void;
   onUnarchive(id: string): void;
   renderAgentLibrary?(onBack: () => void, onStartConversation: (agentId: string) => void, initialAgentId?: string): ReactNode;
-  renderLegacyConversation?(conversation: Conversation, onEditAgent: (id: string) => void, agents: readonly GlobalAgent[]): ReactNode;
+  renderLegacyConversation?(conversation: Conversation, onEditAgent: (id: string) => void, agents: readonly GlobalAgent[], onResultsViewed?: (runIds: readonly string[]) => void): ReactNode;
 }
 const selectionKey = (scope: string) => `sync-think.agent-workspace.selection.v1:${scope}`;
 function readSelected(scope: string) {
@@ -67,6 +88,58 @@ export function agentContactConversations(conversations: readonly Conversation[]
     seen.add(conversation.targetRef);
     return [conversations.find(item => item.id === selectedId && item.targetRef === conversation.targetRef && item.collaborationKind !== 'group' && item.track !== 'team') ?? conversation];
   });
+}
+
+function SortableWorkspaceRow({
+  id,
+  disabled,
+  className,
+  children,
+}: {
+  id: string;
+  disabled: boolean;
+  className: string;
+  children: (bind: { attributes: object; listeners: object | undefined }) => ReactNode;
+}) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id, disabled });
+  return (
+    <div
+      ref={setNodeRef}
+      style={{ transform: CSS.Transform.toString(transform), transition }}
+      className={`${className}${isDragging ? ' is-dragging' : ''}${disabled ? '' : ' is-sortable'}`}
+      data-testid="workspace-contact"
+      data-contact-id={id}
+    >
+      {children({
+        attributes: disabled ? {} : attributes,
+        listeners: disabled ? undefined : listeners,
+      })}
+    </div>
+  );
+}
+
+function WorkspaceRowMenu({ label, children }: { label: string; children: ReactNode }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <Menu.Root open={open} onOpenChange={setOpen} modal={false}>
+      <Menu.Trigger asChild>
+        <button
+          type="button"
+          className="aw-row-menu"
+          aria-label={label}
+          onPointerDown={event => event.stopPropagation()}
+          onClick={() => { if (!open) setOpen(true); }}
+        >
+          <MoreHorizontal size={16} />
+        </button>
+      </Menu.Trigger>
+      <Menu.Portal>
+        <Menu.Content className="aw-menu" side="right" align="start" sideOffset={8} onCloseAutoFocus={event => event.preventDefault()}>
+          {children}
+        </Menu.Content>
+      </Menu.Portal>
+    </Menu.Root>
+  );
 }
 
 export default function AgentWorkspace(props: AgentWorkspaceProps) {
@@ -98,6 +171,7 @@ export default function AgentWorkspace(props: AgentWorkspaceProps) {
   const [upgradeError, setUpgradeError] = useState<{ id: string; busy: boolean; message: string }>();
   const [upgradeRevision, setUpgradeRevision] = useState(0);
   const refreshRef = useRef(props.onRefresh); refreshRef.current = props.onRefresh;
+  const [chatEvidence, setChatEvidence] = useState<Record<string, string>>({});
   const [rosters, setRosters] = useState<Record<string, CollaborationSnapshot['members']>>({});
   const [openError, setOpenError] = useState('');
   const navigationSequence = useRef(0);
@@ -114,6 +188,13 @@ export default function AgentWorkspace(props: AgentWorkspaceProps) {
   const [activationReady, setActivationReady] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
   const workspaceId = props.workspaceId;
+  const [contactOrder, setContactOrder] = useState(() => readContactOrder(workspaceId));
+  const [pinnedAgentIds, setPinnedAgentIds] = useState(() => readPinnedAgents(workspaceId));
+  useEffect(() => {
+    setContactOrder(readContactOrder(workspaceId));
+    setPinnedAgentIds(readPinnedAgents(workspaceId));
+  }, [workspaceId]);
+  const contactSensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 8 } }));
   useEffect(() => {
     if (!active) return;
     const search = () => setSearching(true);
@@ -141,8 +222,8 @@ export default function AgentWorkspace(props: AgentWorkspaceProps) {
   const available = useMemo(() => agents.filter(a => isAgentActive(a, workspaceId, activations)), [agents, workspaceId, activations]);
   const conversations = useMemo(() => {
     const all = newConversation && !props.conversations.some(c => c.id === newConversation.id) ? [newConversation, ...props.conversations] : props.conversations;
-    return agentWorkspaceConversations(all.map(c => c.collaborationKind && promoted[c.id] ? promoted[c.id] : c), workspaceId);
-  }, [props.conversations, workspaceId, newConversation, promoted]);
+    return agentWorkspaceConversations(all.map(c => { const current = c.collaborationKind && promoted[c.id] ? { ...c, ...promoted[c.id] } : c; return chatEvidence[c.id] ? { ...current, hasMessages: true, lastMessageAt: chatEvidence[c.id] } : current; }), workspaceId);
+  }, [props.conversations, workspaceId, newConversation, promoted, chatEvidence]);
   const selected = conversations.find(c => c.id === selectedId) ?? conversations.find(c => !c.archivedAt);
   const needsUpgrade = selected?.collaborationKind === 'direct' && Boolean(props.renderLegacyConversation);
   const upgradeId = needsUpgrade ? selected?.id : undefined;
@@ -163,22 +244,38 @@ export default function AgentWorkspace(props: AgentWorkspaceProps) {
     return () => { cancelled = true; };
   }, [active, upgradeId, upgradeRevision]);
   const searchTerm = query.trim().toLocaleLowerCase();
-  const matching = conversations.filter(c => Boolean(c.archivedAt) === showArchived && `${c.title} ${c.lastMessagePreview ?? ''} ${agents.find(a => a.id === c.targetRef)?.name ?? ''}`.toLocaleLowerCase().includes(searchTerm));
+  const matching = conversations.filter(c => hasAgentChatMessages(c) && Boolean(c.archivedAt) === showArchived && `${c.title} ${c.lastMessagePreview ?? ''} ${agents.find(a => a.id === c.targetRef)?.name ?? ''}`.toLocaleLowerCase().includes(searchTerm));
   const groupedAgents = new Set(teams.flatMap(team => team.members.map(member => member.agentId as string)));
-  const directAgentContacts = showArchived ? [] : available.flatMap(agent => {
-    if (groupedAgents.has(agent.id)) return [];
-    const history = conversations.filter(c => !c.archivedAt && c.collaborationKind !== 'group' && c.track !== 'team' && c.targetRef === agent.id);
-    const agentText = `${agent.name} ${agent.description} ${history.map(c => `${c.title} ${c.lastMessagePreview ?? ''}`).join(' ')}`.toLocaleLowerCase();
-    if (searchTerm && !agentText.includes(searchTerm)) return [];
-    return [{ agent, history, conversation: history.find(c => c.id === selected?.id) ?? history[0] }];
-  });
-  const groupChats = showArchived ? [] : matching.filter(c => {
-    const belongsToTeamSection = c.track === 'team' && teams.some(team => team.id === c.targetRef);
-    return !belongsToTeamSection && c.collaborationKind === 'group';
-  });
+  const teamIds = new Set(teams.map(team => team.id));
+  const contacts = showArchived
+    ? []
+    : buildAgentWorkspaceContacts({
+        agents: available,
+        conversations,
+        groupedAgentIds: groupedAgents,
+        teamIds,
+        selectedId: selected?.id,
+        searchTerm,
+        order: contactOrder,
+        pinnedAgentIds: new Set(pinnedAgentIds),
+      });
   const archivedChats = showArchived ? matching : [];
+  const dragDisabled = Boolean(searchTerm);
+  const onContactDragEnd = (event: DragEndEvent) => {
+    const overId = event.over ? String(event.over.id) : '';
+    const activeId = String(event.active.id);
+    if (!overId || overId === activeId || dragDisabled) return;
+    const next = reorderContactIds(contacts.map((item) => item.id), activeId, overId);
+    setContactOrder(next);
+    writeContactOrder(workspaceId, next);
+  };
+  const pinAgentContact = (agentId: string) => {
+    const next = togglePinnedAgent(pinnedAgentIds, agentId);
+    setPinnedAgentIds(next);
+    writePinnedAgents(workspaceId, next);
+  };
   const startAgentChat = (id: string) => { setInitialAgentId(id); setPicker(true); };
-  const conversationLabel = (conversation: Conversation) => conversation.track === 'team' ? teams.find(team => team.id === conversation.targetRef)?.name ?? conversation.title : agentConversationName(conversation, agents);
+  const conversationLabel = (conversation: Conversation) => agentConversationName(conversation, agents);
   const selectedTeam = selected?.track === 'team' ? teams.find(team => team.id === selected.targetRef) : undefined;
   const selectedAgent = agents.find(agent => selected?.targetRef === agent.id);
   const open = (id: string) => {
@@ -195,6 +292,8 @@ export default function AgentWorkspace(props: AgentWorkspaceProps) {
     try { localStorage.setItem(selectionKey(workspaceId), id); } catch { /* session-only */ }
   };
   const rememberSnapshot = (snapshot: CollaborationSnapshot) => {
+    const message = snapshot.messages.findLast(item => item.kind === 'chat' && snapshot.members.some(member => member.id === item.senderMemberId && member.kind === 'user'));
+    if (message) setChatEvidence(current => current[snapshot.conversation.id] === message.createdAt ? current : { ...current, [snapshot.conversation.id]: message.createdAt });
     setRosters(current => current[snapshot.conversation.id] === snapshot.members ? current : { ...current, [snapshot.conversation.id]: snapshot.members });
   };
   useEffect(() => { if (searching) searchRef.current?.focus(); }, [searching]);
@@ -253,27 +352,64 @@ export default function AgentWorkspace(props: AgentWorkspaceProps) {
     const visibleMembers = matchGroup ? members : members.filter(({ agent, title }) => (agent.name + ' ' + title).toLocaleLowerCase().includes(term));
     return matchGroup || visibleMembers.length ? [{ team, members, visibleMembers }] : [];
   });
-  const renderConversationRow = (c: Conversation, directHistory: readonly Conversation[] = []) => {
+  const conversationActivity = (items: readonly Conversation[]) => ({
+    running: items.some(item => props.conversationActivity?.get(item.id)?.running),
+    unread: items.some(item => props.conversationActivity?.get(item.id)?.unread),
+  });
+  const renderConversationBody = (
+    c: Conversation,
+    directHistory: readonly Conversation[],
+    pinned: boolean,
+    drag?: { attributes: object; listeners: object | undefined },
+  ) => {
     const agent = agents.find(a => a.id === c.targetRef);
-    const roster = rosters[c.id]?.filter(m => m.active && m.kind !== 'user').map(m => ({ ...m, avatar: agents.find(a => a.id === m.agentId)?.avatar ?? m.avatar }));
+    const roster = rosters[c.id]?.filter(m => m.active && m.kind !== 'user' && !m.teamParticipantId).map(m => ({ ...m, avatar: m.kind === 'team' ? m.avatar : agents.find(a => a.id === m.agentId)?.avatar ?? m.avatar }));
     const label = conversationLabel(c);
     const direct = c.collaborationKind !== 'group' && c.track !== 'team';
     const history = direct ? directHistory : [];
-    const activity = { running: (direct ? history : [c]).some(item => props.conversationActivity?.get(item.id)?.running), unread: (direct ? history : [c]).some(item => props.conversationActivity?.get(item.id)?.unread) };
-    return <div key={c.id} className={`aw-conversation${selected?.id === c.id ? ' is-selected' : ''}`}>
-      <button className="aw-conversation__select" aria-current={selected?.id === c.id ? 'page' : undefined} onClick={() => open(c.id)}>
+    const activity = conversationActivity(direct ? history : [c]);
+    return <>
+      <button type="button" className="aw-conversation__select" aria-current={selected?.id === c.id ? 'page' : undefined} {...drag?.attributes} {...drag?.listeners} onClick={() => open(c.id)}>
         <span className="aw-conversation__avatar">{roster && roster.length > 1 ? <AvatarCluster members={roster} size={23} max={3} animate /> : <AgentWorkspaceAvatar name={label} avatar={agent?.avatar} size={34} animate state={activity.running ? 'working' : 'idle'} />}{c.collaborationKind === 'group' && !roster && <Users size={12} className="aw-group-badge" />}</span>
         <span className="aw-conversation__copy"><span className="aw-conversation__title">{label}</span><span className={activity.running ? 'aw-conversation__preview is-running' : 'aw-conversation__preview'}>{activity.running ? '正在协作…' : c.lastMessagePreview || (c.collaborationKind === 'group' ? '一起开始一场对话' : '开始聊聊你的想法')}</span></span>
-        {activity.unread && <span className="aw-unread" aria-label="未读" />}{c.pinnedAt && <Pin size={12} className="aw-pinned" aria-label="已置顶" />}
+        {activity.unread && <span className="aw-unread" aria-label="未读" />}{pinned && <Pin size={12} className="aw-pinned" aria-label="已置顶" />}
       </button>
-      <Menu.Root><Menu.Trigger asChild><button className="aw-row-menu" aria-label={`${label}的会话选项`}><MoreHorizontal size={16} /></button></Menu.Trigger><Menu.Portal><Menu.Content className="aw-menu" side="right" align="start" sideOffset={8}>
+      <WorkspaceRowMenu label={`${label}的选项`}>
         {direct && agent && <><Menu.Item onSelect={() => editAgent(agent.id)}>编辑智能体</Menu.Item><Menu.Item onSelect={() => startAgentChat(agent.id)}>新建对话</Menu.Item></>}
-        {history.length > 1 && <Menu.Sub><Menu.SubTrigger>历史会话 · {history.length}</Menu.SubTrigger><Menu.Portal><Menu.SubContent className="aw-menu" sideOffset={8}>{history.map(item => <Menu.Item key={item.id} onSelect={() => open(item.id)}>{item.title || '未命名会话'}{item.id === selected?.id ? ' ✓' : ''}</Menu.Item>)}</Menu.SubContent></Menu.Portal></Menu.Sub>}
-        <Menu.Item onSelect={() => props.onTogglePin(c.id, !c.pinnedAt)}>{c.pinnedAt ? '取消置顶' : '置顶会话'}</Menu.Item>
+        {history.length > 1 && <Menu.Sub><Menu.SubTrigger>历史会话 · {history.length}</Menu.SubTrigger><Menu.Portal><Menu.SubContent className="aw-menu" sideOffset={8}>{history.map(item => <Menu.Item key={item.id} onSelect={() => open(item.id)}>{item.title || '未命名会话'}{props.conversationActivity?.get(item.id)?.unread ? ' · 未读' : ''}{item.id === selected?.id ? ' ✓' : ''}</Menu.Item>)}</Menu.SubContent></Menu.Portal></Menu.Sub>}
+        <Menu.Item onSelect={() => props.onTogglePin(c.id, !c.pinnedAt)}>{pinned ? '取消置顶' : '置顶'}</Menu.Item>
         <Menu.Item onSelect={() => props.onRename(c.id, c.title)}>重命名会话</Menu.Item>
         <Menu.Item onSelect={() => c.archivedAt ? props.onUnarchive(c.id) : props.onArchive(c.id)}>{c.archivedAt ? '移出归档' : '归档会话'}</Menu.Item>
-      </Menu.Content></Menu.Portal></Menu.Root>
-    </div>;
+      </WorkspaceRowMenu>
+    </>;
+  };
+  const renderConversationRow = (c: Conversation, directHistory: readonly Conversation[] = []) => (
+    <div key={c.id} className={`aw-conversation${selected?.id === c.id ? ' is-selected' : ''}`}>
+      {renderConversationBody(c, directHistory, Boolean(c.pinnedAt))}
+    </div>
+  );
+  const renderContact = (contact: AgentWorkspaceContact) => {
+    if (contact.kind === 'agent' && !contact.conversation) {
+      const { agent, pinned } = contact;
+      return <SortableWorkspaceRow key={contact.id} id={contact.id} disabled={dragDisabled} className="aw-conversation">
+        {bind => <>
+          <button type="button" className="aw-conversation__select" {...bind.attributes} {...bind.listeners} onClick={() => startAgentChat(agent.id)}>
+            <span className="aw-conversation__avatar"><AgentWorkspaceAvatar name={agent.name} avatar={agent.avatar} size={34} animate /></span>
+            <span className="aw-conversation__copy"><span className="aw-conversation__title">{agent.name}</span><span className="aw-conversation__preview">{agent.description || '开始聊聊你的想法'}</span></span>
+            {pinned && <Pin size={12} className="aw-pinned" aria-label="已置顶" />}
+          </button>
+          <WorkspaceRowMenu label={`${agent.name}的选项`}>
+            <Menu.Item onSelect={() => editAgent(agent.id)}>编辑智能体</Menu.Item>
+            <Menu.Item onSelect={() => pinAgentContact(agent.id)}>{pinned ? '取消置顶' : '置顶'}</Menu.Item>
+          </WorkspaceRowMenu>
+        </>}
+      </SortableWorkspaceRow>;
+    }
+    const conversation = contact.kind === 'group' ? contact.conversation : contact.conversation!;
+    const history = contact.kind === 'agent' ? contact.history : [];
+    return <SortableWorkspaceRow key={contact.id} id={contact.id} disabled={dragDisabled} className={`aw-conversation${selected?.id === conversation.id ? ' is-selected' : ''}`}>
+      {bind => renderConversationBody(conversation, history, contact.pinned, bind)}
+    </SortableWorkspaceRow>;
   };
   return <section className={`agent-chat-workspace${sidebarOpen ? ' is-sidebar-open' : ''}`} aria-label="智能体工作区" data-testid="agent-workspace">
     <button className="agent-chat-workspace__scrim" aria-label="关闭会话列表" onClick={() => setSidebarOpen(false)} tabIndex={sidebarOpen ? 0 : -1} />
@@ -309,18 +445,17 @@ export default function AgentWorkspace(props: AgentWorkspaceProps) {
           })}
           {!teams.length && <button className="aw-team-empty" onClick={() => setTeamsOpen(true)}>创建团队，把智能体组织在一起工作</button>}
 
-          {directAgentContacts.length > 0 && <div className="aw-section-heading"><span>单个智能体</span></div>}
-          {directAgentContacts.map(({ agent, conversation: directConversation, history }) => directConversation ? renderConversationRow(directConversation, history) : <div key={agent.id} className="aw-conversation">
-            <button className="aw-conversation__select" onClick={() => startAgentChat(agent.id)}><span className="aw-conversation__avatar"><AgentWorkspaceAvatar name={agent.name} avatar={agent.avatar} size={34} animate /></span><span className="aw-conversation__copy"><span className="aw-conversation__title">{agent.name}</span><span className="aw-conversation__preview">{agent.description || '开始聊聊你的想法'}</span></span></button>
-            <button className="aw-row-menu" aria-label={`编辑${agent.name}`} onClick={() => editAgent(agent.id)}><Settings2 size={15} /></button>
-          </div>)}
-
-          {groupChats.length > 0 && <div className="aw-section-heading"><span>群聊</span><button className="aw-icon" aria-label="新建群聊" title="选择多个智能体创建群聊" onClick={() => setPicker(true)}><Plus size={15} /></button></div>}
-          {groupChats.map(c => renderConversationRow(c))}
+          {(contacts.length > 0 || !searchTerm) && <div className="aw-section-heading"><span>智能体</span><button type="button" className="aw-icon" aria-label="新建群聊" title="选择多个智能体创建群聊" onClick={() => setPicker(true)}><Plus size={15} /></button></div>}
+          <DndContext sensors={contactSensors} collisionDetection={closestCenter} onDragEnd={onContactDragEnd}>
+            <SortableContext items={contacts.map(item => item.id)} strategy={verticalListSortingStrategy}>
+              {contacts.map(renderContact)}
+            </SortableContext>
+          </DndContext>
         </>}
         {archivedChats.map(c => renderConversationRow(c))}
-        {!props.loading && !teamSections.length && !directAgentContacts.length && !groupChats.length && !archivedChats.length && <p className="aw-list-empty">{query ? '没有匹配的会话' : showArchived ? '还没有归档会话' : '从上方 + 开始一场对话'}</p>}
+        {!props.loading && !teamSections.length && !contacts.length && !archivedChats.length && <p className="aw-list-empty">{query ? '没有匹配的会话' : showArchived ? '还没有归档会话' : '从上方 + 开始一场对话'}</p>}
       </div>
+      <button className="aw-text-button aw-existing-chat" onClick={() => { setInitialAgentId(undefined); setPicker(true); }}><MessageSquare size={16} />与已有智能体聊天</button>
       <button className="aw-create-agent" onClick={createAgent}><Plus size={16} />创建智能体</button>
       <footer className="agent-chat-workspace__footer">
         <button className="aw-footer-link" onClick={props.onExit}><ArrowLeft size={17} />返回工作台</button>
@@ -333,14 +468,14 @@ export default function AgentWorkspace(props: AgentWorkspaceProps) {
       {teamsOpen ? <div className="aw-team-library"><header><button className="aw-icon" aria-label="返回智能体聊天" onClick={() => setTeamsOpen(false)}><ArrowLeft size={18} /></button><strong>管理团队</strong><span>成员加入团队后，可以整队执行，也可以单独交流。</span></header><Suspense fallback={<p className="aw-list-empty">正在打开小队…</p>}><WorkspaceTeamLibrary teams={teams} agents={agents} onRefresh={() => { void props.onRefresh(); }} onStartConversation={id => { const team = teams.find(t => t.id === id); if (team) void startTeam(team); }} /></Suspense></div> : <>
 
       {selected && <AgentModelRepair key={selected.id} agents={selectedTeam ? agents.filter(a => selectedTeam.members.some(m => m.agentId === a.id)) : selectedAgent && selected.collaborationKind !== 'group' ? [selectedAgent] : agents.filter(a => rosters[selected.id]?.some(m => m.active && m.agentId === a.id))} models={props.models} onSaved={saveAgent} onSettings={props.onSettings} />}
-      {needsUpgrade && (!upgradeError || upgradeError.id !== selected?.id || !upgradeError.busy) ? <main className="aw-welcome" aria-label="升级单聊"><p role={upgradeError ? 'alert' : 'status'}>{upgradeError?.id === selected?.id ? upgradeError.message : '正在保留历史记录并打开完整聊天…'}</p>{upgradeError?.id === selected?.id && <button className="collab-pill" onClick={() => setUpgradeRevision(v => v + 1)}>重试打开</button>}</main> : (selected?.collaborationKind || selected?.track === 'team') ? <>{needsUpgrade && <div className="collab-notice">{upgradeError?.message}<button className="collab-pill" onClick={() => setUpgradeRevision(v => v + 1)}>切换完整聊天</button></div>}<CollaborationChatView workspace key={selected.id} conversation={{ ...selected, title: conversationLabel(selected) }} agents={agents} models={props.models} onEditAgent={editAgent} active={active} onOpenConversation={open} onAgentsChanged={saveAgent} onSnapshot={rememberSnapshot} onOpenSidebar={() => setSidebarOpen(true)} onNewChat={() => setPicker(true)} projectFolder={props.workspaces.find(w => w.workspaceId === selected.workspaceId)?.folderPath} /></> : selected && props.renderLegacyConversation ? <div className="aw-legacy"><header><button className="aw-mobile-toggle aw-icon" aria-label="打开会话列表" onClick={() => setSidebarOpen(true)}><PanelLeft size={18} /></button><button className="aw-legacy__identity" aria-label={selectedAgent ? `编辑${selectedAgent.name}` : selectedTeam ? `管理${selectedTeam.name}` : '会话信息'} disabled={!selectedAgent && !selectedTeam} onClick={() => selectedAgent ? editAgent(selectedAgent.id) : setTeamsOpen(true)}><AgentWorkspaceAvatar name={conversationLabel(selected)} avatar={selectedAgent?.avatar ?? selectedTeam?.avatar} size={24} animate /><span>{conversationLabel(selected)}</span></button><Menu.Root><Menu.Trigger asChild><button className="aw-icon" aria-label="聊天设置"><MoreHorizontal size={18} /></button></Menu.Trigger><Menu.Portal><Menu.Content className="aw-menu" sideOffset={8}>{selectedAgent && <Menu.Item onSelect={() => editAgent(selectedAgent.id)}>编辑智能体</Menu.Item>}<Menu.Item onSelect={() => { if (selectedTeam) void startTeam(selectedTeam, true); else { setInitialAgentId(selectedAgent?.id); setPicker(true); } }}>新建对话</Menu.Item><Menu.Item onSelect={manage}>管理智能体</Menu.Item></Menu.Content></Menu.Portal></Menu.Root></header><Suspense fallback={<p className="aw-list-empty">正在打开会话…</p>}>{props.renderLegacyConversation(selected, editAgent, agents)}</Suspense></div> : <main className="aw-welcome" aria-label="智能体聊天">
+      {needsUpgrade && (!upgradeError || upgradeError.id !== selected?.id || !upgradeError.busy) ? <main className="aw-welcome" aria-label="升级单聊"><p role={upgradeError ? 'alert' : 'status'}>{upgradeError?.id === selected?.id ? upgradeError.message : '正在保留历史记录并打开完整聊天…'}</p>{upgradeError?.id === selected?.id && <button className="collab-pill" onClick={() => setUpgradeRevision(v => v + 1)}>重试打开</button>}</main> : (selected?.collaborationKind || selected?.track === 'team') ? <>{needsUpgrade && <div className="collab-notice">{upgradeError?.message}<button className="collab-pill" onClick={() => setUpgradeRevision(v => v + 1)}>切换完整聊天</button></div>}<CollaborationChatView workspace key={selected.id} conversation={{ ...selected, title: conversationLabel(selected) }} agents={agents} teams={teams} models={props.models} onEditAgent={editAgent} active={active} onOpenConversation={open} onAgentsChanged={saveAgent} onSnapshot={rememberSnapshot} onResultsViewed={runIds => props.onResultsViewed?.(selected.id, runIds)} onOpenSidebar={() => setSidebarOpen(true)} onNewChat={() => setPicker(true)} projectFolder={props.workspaces.find(w => w.workspaceId === selected.workspaceId)?.folderPath} /></> : selected && props.renderLegacyConversation ? <div className="aw-legacy"><header><button className="aw-mobile-toggle aw-icon" aria-label="打开会话列表" onClick={() => setSidebarOpen(true)}><PanelLeft size={18} /></button><button className="aw-legacy__identity" aria-label={selectedAgent ? `编辑${selectedAgent.name}` : selectedTeam ? `管理${selectedTeam.name}` : '会话信息'} disabled={!selectedAgent && !selectedTeam} onClick={() => selectedAgent ? editAgent(selectedAgent.id) : setTeamsOpen(true)}><AgentWorkspaceAvatar name={conversationLabel(selected)} avatar={selectedAgent?.avatar ?? selectedTeam?.avatar} size={24} animate /><span>{conversationLabel(selected)}</span></button><Menu.Root><Menu.Trigger asChild><button className="aw-icon" aria-label="聊天设置"><MoreHorizontal size={18} /></button></Menu.Trigger><Menu.Portal><Menu.Content className="aw-menu" sideOffset={8}>{selectedAgent && <Menu.Item onSelect={() => editAgent(selectedAgent.id)}>编辑智能体</Menu.Item>}<Menu.Item onSelect={() => { if (selectedTeam) void startTeam(selectedTeam, true); else { setInitialAgentId(selectedAgent?.id); setPicker(true); } }}>新建对话</Menu.Item><Menu.Item onSelect={manage}>管理智能体</Menu.Item></Menu.Content></Menu.Portal></Menu.Root></header><Suspense fallback={<p className="aw-list-empty">正在打开会话…</p>}>{props.renderLegacyConversation(selected, editAgent, agents, runIds => props.onResultsViewed?.(selected.id, runIds))}</Suspense></div> : <main className="aw-welcome" aria-label="智能体聊天">
         <header><button className="aw-mobile-toggle aw-icon" aria-label="打开会话列表" onClick={() => setSidebarOpen(true)}><PanelLeft size={18} /></button><span>智能体</span><button className="aw-icon" aria-label="选择聊天成员" onClick={() => setPicker(true)}><Plus size={18} /></button></header>
         <div className="aw-welcome__body"><AvatarCluster members={available.slice(0, 3)} size={64} max={3} animate /><h1>{available.length ? '几个头脑，一场对话' : '让想法，多一种可能'}</h1><p>{available.length ? '和一位智能体深入交流，或把不同专长聚在一起。' : '添加你的第一位智能体，再一起开始。'}</p><button className="aw-primary" disabled={props.loading} onClick={available.length ? () => setPicker(true) : createAgent}>{available.length ? '开始聊天' : '添加智能体'}<Plus size={16} /></button></div>
         <div className="aw-welcome__hint">单聊、群聊与协作任务，都留在同一个地方。</div>
       </main>}
       </>}
     </div>
-    {profile && (profile === 'create' || profileAgent) && <aside className="collab-panel aw-profile-panel" aria-label={profile === 'create' ? '创建智能体' : '智能体设置'}><header><strong>{profile === 'create' ? '创建智能体' : profileAgent?.name}</strong><button className="aw-icon" aria-label="关闭智能体编辑" onClick={() => setProfile(null)}><X size={16} /></button></header><AgentEditorPanel key={profile} workspace creating={profile === 'create'} agent={profileAgent} member={{ id: profile, agentId: profileAgent?.id, name: profileAgent?.name ?? '新智能体', avatar: profileAgent?.avatar ?? '', kind: 'agent', role: '成员', active: true }} models={props.models} onSaved={saveAgent} onCreated={agent => { saveAgent(agent); setProfile(agent.id); }} onAdvanced={manage} onModelSettings={props.onSettings} />{profileAgent && <button className="aw-text-button aw-profile-chat" onClick={() => startAgentChat(profileAgent.id)}>与 {profileAgent.name} 开始新对话</button>}</aside>}
+    {profile && (profile === 'create' || profileAgent) && <aside className="collab-panel aw-profile-panel" aria-label={profile === 'create' ? '创建智能体' : '智能体设置'}><header><strong>{profile === 'create' ? '创建智能体' : profileAgent?.name}</strong><button className="aw-icon" aria-label="关闭智能体编辑" onClick={() => setProfile(null)}><X size={16} /></button></header>{profile === 'create' && <button type="button" className="aw-text-button aw-profile-chat" onClick={() => { setInitialAgentId(undefined); setPicker(true); }}><MessageSquare size={16} />与已有智能体聊天</button>}<AgentEditorPanel key={profile} workspace creating={profile === 'create'} agent={profileAgent} member={{ id: profile, agentId: profileAgent?.id, name: profileAgent?.name ?? '新智能体', avatar: profileAgent?.avatar ?? '', kind: 'agent', role: '成员', active: true }} models={props.models} onSaved={saveAgent} onCreated={agent => { saveAgent(agent); setProfile(agent.id); }} onAdvanced={manage} onModelSettings={props.onSettings} />{profileAgent && <button className="aw-text-button aw-profile-chat" onClick={() => startAgentChat(profileAgent.id)}>与 {profileAgent.name} 开始新对话</button>}</aside>}
     <AgentChatPicker onCreateAgent={createAgent} initialAgentId={initialAgentId} open={picker} onClose={() => { setPicker(false); setInitialAgentId(undefined); }} agents={available} loading={!activationReady || props.loading} warning={activationError} workspaceId={workspaceId} onManage={manage} onCreated={(snapshot, selectedAgents, direct) => {
       const c = snapshot.conversation;
       const now = c.createdAt;
@@ -360,22 +495,24 @@ export function AgentChatPicker({ onCreateAgent, initialAgentId, open, onClose, 
   const [ids, setIds] = useState<string[]>([]);
   const [query, setQuery] = useState('');
   const [title, setTitle] = useState('');
+  const [coordinatorId, setCoordinatorId] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const receipt = useRef<{ key: string; id: string }>();
   const submitting = useRef(false);
-  useEffect(() => { if (open) { setIds(initialAgentId ? [initialAgentId] : []); setTitle(''); setQuery(''); setError(''); receipt.current = undefined; } }, [open, initialAgentId]);
+  useEffect(() => { if (open) { setIds(initialAgentId ? [initialAgentId] : []); setCoordinatorId(initialAgentId ?? ''); setTitle(''); setQuery(''); setError(''); receipt.current = undefined; } }, [open, initialAgentId]);
   const selected = ids.flatMap(id => agents.find(a => a.id === id) ?? []);
+  const coordinator = selected.find(agent => agent.id === coordinatorId) ?? selected[0];
   const visible = agents.filter(a => `${a.name} ${a.description}`.toLocaleLowerCase().includes(query.toLocaleLowerCase()));
   const create = async () => {
     if (!selected.length || submitting.current || loading) return;
     const kind = selected.length === 1 ? 'direct' : 'group';
     const label = title.trim() || (kind === 'direct' ? selected[0].name : collaborationGroupTitle(selected.map(a => a.name)));
-    const key = JSON.stringify([workspaceId, ids, label]);
+    const key = JSON.stringify([workspaceId, ids, label, coordinator?.id]);
     if (receipt.current?.key !== key) receipt.current = { key, id: crypto.randomUUID() };
     submitting.current = true; setBusy(true); setError('');
     try {
-      const result = await collaborationRequest({ action: 'create', clientRequestId: receipt.current.id, kind, title: label, workspaceId: runtimeWorkspaceId(workspaceId), agentIds: selected.map(a => a.id), coordinatorAgentId: selected[0].id });
+      const result = await collaborationRequest({ action: 'create', clientRequestId: receipt.current.id, kind, title: label, workspaceId: runtimeWorkspaceId(workspaceId), agentIds: selected.map(a => a.id), coordinatorAgentId: coordinator.id });
       if (!result.snapshot) throw new Error('服务尚未返回会话，请重试。');
       if (kind === 'direct') {
         const promoted = await collaborationRequest({ action: 'promote-direct', conversationId: result.snapshot.conversation.id });
@@ -392,7 +529,7 @@ export function AgentChatPicker({ onCreateAgent, initialAgentId, open, onClose, 
     <label className="aw-picker__search"><Search size={16} /><input aria-label="搜索智能体" placeholder="搜索智能体…" value={query} onChange={e => setQuery(e.target.value)} /></label>
     <div className="aw-picker__agents">{visible.map(a => <button type="button" className={`aw-agent-chip${ids.includes(a.id) ? ' is-selected' : ''}`} key={a.id} aria-pressed={ids.includes(a.id)} disabled={busy} onClick={() => setIds(current => current.includes(a.id) ? current.filter(id => id !== a.id) : [...current, a.id])}><AgentWorkspaceAvatar name={a.name} avatar={a.avatar} size={25} animate /><span>{a.name}</span>{ids.includes(a.id) && <Check size={13} />}</button>)}</div>
     {!visible.length && <p className="aw-muted">{loading ? '正在读取智能体…' : query ? '没有匹配的智能体' : '当前工作区还没有可用的智能体。'}</p>}
-    {selected.length > 1 && <label className="aw-picker__title">会话名称<input maxLength={120} aria-label="群聊名称" placeholder={collaborationGroupTitle(selected.map(a => a.name))} value={title} disabled={busy} onChange={e => setTitle(e.target.value)} /><span>由 {selected[0].name} 协调，发送时也可以 @ 指定成员。</span></label>}
+    {selected.length > 1 && <label className="aw-picker__title">会话名称<input maxLength={120} aria-label="群聊名称" placeholder={collaborationGroupTitle(selected.map(a => a.name))} value={title} disabled={busy} onChange={e => setTitle(e.target.value)} /><span>群聊协调员</span><select aria-label="群聊协调员" value={coordinator?.id ?? ''} disabled={busy} onChange={event => setCoordinatorId(event.target.value)}>{selected.map(agent => <option key={agent.id} value={agent.id}>{agent.name}</option>)}</select><span>由 {coordinator?.name} 负责外层调度；点名成员只改变本条消息接收者。</span></label>}
     {warning && <p className="aw-muted">{warning}</p>}{error && <p className="aw-error" role="alert">{error}</p>}
     <button className="aw-primary aw-picker__start" disabled={!selected.length || busy || loading} onClick={() => void create()}>{busy ? '正在创建…' : selected.length ? `开始聊天 · ${selected.length} 位智能体` : '选择成员开始聊天'}</button>
     <div className="aw-picker__footer">{onCreateAgent && <button className="aw-text-button" disabled={busy} onClick={() => { onClose(); onCreateAgent(); }}>＋ 创建智能体</button>}<button className="aw-text-button" disabled={busy} onClick={() => { onClose(); onManage(); }}>管理智能体</button></div>

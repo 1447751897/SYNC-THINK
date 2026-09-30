@@ -68,6 +68,11 @@ export function writeAgentContactGroups(workspaceId: string, groups: AgentContac
   }
 }
 
+/** Empty conversation records are drafts, not evidence of an actual chat. */
+export function hasAgentChatMessages(conversation: Conversation): boolean {
+  return !conversation.id.startsWith('draft:') && (conversation.hasMessages ?? Boolean(conversation.lastMessageAt || conversation.lastMessagePreview?.trim()));
+}
+
 /** Identity is global; direct-chat history is strictly workspace-local. Pinning does not change recency. */
 export function agentChatHistory(
   conversations: readonly Conversation[],
@@ -79,6 +84,7 @@ export function agentChatHistory(
       (c) =>
         c.workspaceId === workspaceId &&
         c.track === 'agent' &&
+        hasAgentChatMessages(c) &&
         c.targetRef === agentId &&
         !c.archivedAt &&
         (!c.collaborationKind || c.collaborationKind === 'direct'),

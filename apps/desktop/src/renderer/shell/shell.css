@@ -5,6 +5,7 @@
 @import './tokens.css';
 @import './design-system.css';
 @import './task-calendar.css';
+@import './task-calendar-board.css';
 @import './task-surfaces.css';
 @import './browser-dashboard.css';
 @import './code-block.css';
@@ -21,6 +22,9 @@
 @import './composer-attachments.css';
 @import './collaboration-chat.css';
 @import './agent-workspace.css';
+@import './workbench-design.css';
+@import './board-chat.css';
+@import './workbench-typography.css';
 
 /*
  * NewMax-style design tokens (2026-07-22 renderer rewrite).
@@ -43364,6 +43368,7 @@ html[data-app-hidden='true'] .animate-spin {
   height: 56px;
   flex: 0 0 56px;
   place-items: center;
+  overflow: visible;
 }
 .agent-card__avatar::before {
   content: '';
@@ -43378,8 +43383,11 @@ html[data-app-hidden='true'] .animate-spin {
   filter: blur(2px);
 }
 .agent-card__avatar img,
-.agent-card__avatar > div {
+.agent-card__avatar > div,
+.agent-card__avatar canvas,
+.agent-card__avatar > span {
   position: relative;
+  z-index: 1;
 }
 
 .agent-card__copy {

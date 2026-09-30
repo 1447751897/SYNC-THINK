@@ -432,7 +432,7 @@ function CollaborationSettingsPanel() {
       <div className="settings-rows">
         <SettingRow
           title="允许模型对话并发委派给已有智能体"
-          description="开启后模型可把任务并发交给 Agent Library 里已激活的智能体（每次都必须指定已有智能体 id），并在对话里以子智能体卡片展示其工具调用。关闭后模型仍可正常回答，只是不再下发委派工具。内核自建子 Agent 在任何情况下都不会发生。"
+          description="动态委派是把临时子任务交给当前工作区已激活的已有智能体，不是创建新智能体。开启后支持自动并发委派；关闭仅停用该并发工具，已有智能体的普通调用入口保留。小队/群聊使用自己的工作链，不受此开关影响。创建或修改智能体须由用户明确提出并逐次确认，保存后不自动执行。"
           control={
             <Toggle
               checked={settings.dynamicSubagentsEnabled}
@@ -465,7 +465,7 @@ function CollaborationSettingsPanel() {
         />
         <SettingRow
           title="最大嵌套深度"
-          description="根模型对话为第 0 层，默认最多继续两层。"
+          description="兼容已有委派配置的深度上限；当前策略下，被委派成员不再自行向外派活，小队内部依赖由调度器执行。"
           control={
             <input
               className="settings-number-input"

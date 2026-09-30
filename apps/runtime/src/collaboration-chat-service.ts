@@ -151,10 +151,22 @@ export class CollaborationChatService {
       const causation = reply ?? linkedContext?.message;
       if (sender.kind !== 'user' && !causation) throw new Error('collaboration.automatic_causation_required');
       const recipients = this.recipients(draft, sender, command.recipientMemberIds);
+      const trimOffset = command.text.length - command.text.trimStart().length;
+      let mentionEnd = 0;
+      const mentions = command.mentions?.map(mention => {
+        const start = mention.start - trimOffset, end = mention.end - trimOffset;
+        if (!recipients.some(member => member.id === mention.memberId && member.kind !== 'user')
+          || !Number.isSafeInteger(start) || !Number.isSafeInteger(end)
+          || start < mentionEnd || end <= start || end > text.length || text.slice(start, end) !== mention.label) {
+          throw new Error('collaboration.invalid_mention');
+        }
+        mentionEnd = end;
+        return { memberId: mention.memberId, label: mention.label, start, end };
+      });
       const message = this.appendMessage(draft, {
         senderMemberId: sender.id,
         recipientMemberIds: recipients.map((member) => member.id),
-        mentions: (command.recipientMemberIds?.length ? recipients : []).map((member) => ({
+        mentions: mentions ?? (command.recipientMemberIds?.length ? recipients : []).map((member) => ({
           memberId: member.id, label: member.name,
         })),
         kind: 'chat',
@@ -195,6 +207,7 @@ export class CollaborationChatService {
       const request = { ...command, senderMemberId: sender.id };
       if (this.duplicate(draft, 'dispatch', command.clientRequestId, request)) return false;
       if (!command.tasks.length) throw new Error('collaboration.tasks_required');
+      if (command.tasks.length > 64) throw new Error('collaboration.workflow_too_large');
       const parent = command.parentTaskId ? this.task(draft, command.parentTaskId) : undefined;
       const origin = command.originMessageId
         ? this.message(draft, command.originMessageId)
@@ -251,8 +264,18 @@ export class CollaborationChatService {
   cancel(command: Command<'cancel'>): CollaborationSnapshot {
     const abort: string[] = [];
     const snapshot = this.mutate(command.conversationId, (draft) => {
-      this.task(draft, command.taskId);
+      const target = this.task(draft, command.taskId);
       const selected = new Set([command.taskId]);
+      if (target.teamParticipantId && target.assigneeMemberId === target.teamParticipantId) {
+        // A team handoff owns its frozen internal DAG, even though those nodes are prerequisites.
+        const visit = (task: CollaborationTask) => {
+          for (const dependencyId of task.dependsOnTaskIds) {
+            const dependency = draft.tasks.find(item => item.id === dependencyId);
+            if (dependency && dependency.teamParticipantId === target.teamParticipantId && dependency.assigneeMemberId !== target.teamParticipantId && !selected.has(dependency.id)) { selected.add(dependency.id); visit(dependency); }
+          }
+        };
+        visit(target);
+      }
       if (command.includeChildren) {
         let size: number;
         do {
@@ -709,7 +732,7 @@ export class CollaborationChatService {
       if (draft.receipts[receipt]) continue;
       const rootTask = this.task(draft, root);
       const origin = this.message(draft, rootTask.originMessageId);
-      const coordinator = this.member(draft, draft.conversation.coordinatorMemberId);
+      const coordinator = this.member(draft, rootTask.coordinatorMemberId ?? draft.conversation.coordinatorMemberId);
       const message: Omit<CollaborationMessage, 'id' | 'conversationId' | 'sequence' | 'createdAt'> = {
         senderMemberId: coordinator.id, recipientMemberIds: [coordinator.id], mentions: [],
         kind: 'system', blocks: [{ type: 'text', text: '请汇总这组任务的结果、失败项和需要用户处理的事项。' }],
@@ -742,7 +765,7 @@ export class CollaborationChatService {
     if (draft.receipts[receipt]) return;
     const origin = this.message(draft, task.originMessageId);
     const user = draft.members.find((member) => member.kind === 'user');
-    const recipient = task.kind === 'task' ? draft.conversation.coordinatorMemberId : user?.id;
+    const recipient = task.kind === 'task' ? ((task.assigneeMemberId !== task.teamParticipantId ? task.teamParticipantId : undefined) ?? task.coordinatorMemberId ?? draft.conversation.coordinatorMemberId) : user?.id;
     const message = this.appendMessage(draft, {
       senderMemberId: task.assigneeMemberId,
       recipientMemberIds: recipient ? [recipient] : [], mentions: [],
@@ -768,12 +791,16 @@ export class CollaborationChatService {
     returnMessageId = message.id,
   ): CollaborationTask {
     if (!input.title.trim() || !input.instructions.trim()) throw new Error('collaboration.task_content_required');
+    const assignee = this.member(draft, input.assigneeMemberId);
+    if (input.teamParticipantId && (assignee.kind === 'team' ? assignee.id : assignee.teamParticipantId) !== input.teamParticipantId) throw new Error('collaboration.invalid_team_scope');
     const timeoutSeconds = input.timeoutSeconds ?? draft.conversation.policy.taskTimeoutSeconds;
     if (!Number.isInteger(timeoutSeconds) || timeoutSeconds < 1 || timeoutSeconds > 86400) {
       throw new Error('collaboration.invalid_task_timeout');
     }
     const task: CollaborationTask = {
       id, rootTaskId: rootTaskId ?? id, parentTaskId, originMessageId: message.id,
+      coordinatorMemberId: draft.tasks.find(task => task.id === parentTaskId)?.coordinatorMemberId ?? draft.conversation.coordinatorMemberId,
+      topologyRevision: draft.conversation.topologyRevision ?? 0, teamParticipantId: input.teamParticipantId,
       assigneeMemberId: input.assigneeMemberId, title: input.title.trim(), instructions: input.instructions,
       expectedOutput: input.expectedOutput ?? '', dependsOnTaskIds: [...new Set(input.dependsOnTaskIds ?? [])],
       contextRefs: [...(input.contextRefs ?? [])], resourceClaims: [],
@@ -835,7 +862,7 @@ export class CollaborationChatService {
       if (!member.active) throw new Error('collaboration.member_inactive');
       if (sender.kind !== 'user' && sender.id !== draft.conversation.coordinatorMemberId &&
         member.kind !== 'user' && member.id !== draft.conversation.coordinatorMemberId &&
-        member.id !== sender.id && !draft.conversation.policy.allowPeerDirect) {
+        member.id !== sender.id && member.teamParticipantId !== sender.id && !draft.conversation.policy.allowPeerDirect) {
         throw new Error('collaboration.peer_direct_disabled');
       }
       return member;
@@ -847,7 +874,10 @@ export class CollaborationChatService {
     message: Pick<CollaborationMessage, 'correlationId' | 'hopCount'>,
     additional = 0,
   ): boolean {
+    // Frozen DAG assignments/results have a separate 64-node admission bound.
+    // Counting them as peer chatter would suppress a valid multi-team summary.
     const automaticCount = draft.messages.filter((item) => item.correlationId === message.correlationId &&
+      item.kind !== 'task_assignment' && item.kind !== 'task_result' &&
       draft.members.find((member) => member.id === item.senderMemberId)?.kind !== 'user',
     ).length;
     return message.hopCount <= Math.min(6, draft.conversation.policy.maxMessageHops) &&

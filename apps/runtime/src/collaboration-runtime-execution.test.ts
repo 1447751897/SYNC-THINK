@@ -566,3 +566,47 @@ it('keeps the read-only guard even if a group member asks for an unadvertised wr
     expect(provider.rejection).not.toContain('Delegated child Agents');
   } finally { await f.close(); }
 });
+
+it.each(['reply','task','summary'] as const)('only a direct user reply can manage definitions, not a %s execution', async kind => {
+ const provider=new FakeProvider();const call=vi.spyOn(provider,'call');const f=await fixture(provider);
+ try {
+  const request=input(f.agent.id,'management-'+kind,new AbortController().signal,()=>{});request.task.kind=kind;request.task.instructions='帮我创建一个研究智能体';
+  request.snapshot.members.push({id:'user:local',kind:'user',name:'用户',avatar:'',role:'用户',active:true});
+  request.snapshot.messages.push({id:'message-1',conversationId:request.snapshot.conversation.id,senderMemberId:'user:local',recipientMemberIds:[request.task.assigneeMemberId],mentions:[],kind:'chat',blocks:[{type:'text',text:'帮我创建一个研究智能体'}],expectsResponse:true,correlationId:'intent',hopCount:0,sequence:1,createdAt:new Date().toISOString()});
+  request.attempt.contextSequence=1;
+  const result=await f.runtime.executeCollaborationTaskForHost(request);expect(result.error).toBeUndefined();
+  const names=call.mock.calls[0][0].tools?.map(t=>t.name)??[];
+  expect(names.includes('create_agent')).toBe(kind==='reply');expect(names).not.toContain('update_agent');if(kind==='reply') expect(names).not.toContain('write_file');
+ }finally{await f.close();}
+});
+it('execution guard rejects autonomous creation and management-round delegation even for unadvertised calls',async()=>{
+ const f=await fixture();try{
+ const internal=f.runtime as unknown as {
+  prepareRunBinding(input:object):{run:import('./demo-run.js').DemoRunState};
+  executeChatAgentTool(input:object):Promise<string>;
+  executeDynamicAgentDelegation(input:object):Promise<string>;
+ };
+ const {run}=internal.prepareRunBinding({runId:'intent-guard',threadId:'intent-thread',userText:'修复代码',globalAgentId:f.agent.id});
+ const result=JSON.parse(await internal.executeChatAgentTool({run,toolCall:{id:'auto-create',name:'create_agent',argumentsJson:'{}'},args:{name:'偷偷创建的助手'}}));
+ expect(result.ok).toBe(false);expect(f.agents.list().some(a=>a.name==='偷偷创建的助手')).toBe(false);
+ run.userText='帮我创建一个智能体';
+ const delegated=JSON.parse(await internal.executeDynamicAgentDelegation({run,toolCall:{id:'auto-run',name:'agent_run',argumentsJson:'{}'},workspaceRoot:'.',signal:new AbortController().signal}));
+ expect(delegated.ok).toBe(false);expect(delegated.error).toContain('不自动启动');
+ }finally{await f.close();}
+});
+
+it.each(['create_agent','update_agent'])('never reuses remembered approval for %s and exposes only once scope',async name=>{
+ const f=await fixture();const controller=new AbortController();
+ try{
+ const internal=f.runtime as unknown as {
+  requestChatToolApproval(input:object):Promise<{decision:string}>;
+  toolApprovalPolicy:{isAllowed(input:object):boolean};
+  publishEvent(event:import('@sync-think/shared').Event):void;
+ };
+ const remembered=vi.spyOn(internal.toolApprovalPolicy,'isAllowed').mockReturnValue(true);const published=vi.spyOn(internal,'publishEvent');
+ const waiting=internal.requestChatToolApproval({runId:'confirm-definition',threadId:'confirm-thread',executionMode:'full-access',toolCall:{id:'confirm-call',name,argumentsJson:'{"name":"研究员"}'},signal:controller.signal});
+ expect(remembered).not.toHaveBeenCalled();
+ const request=published.mock.calls.find(([event])=>event.type==='tool.approval_requested')?.[0];
+ expect(request?.payload.allowedScopes).toEqual(['once']);controller.abort();expect((await waiting).decision).toBe('deny');
+ }finally{controller.abort();await f.close();}
+});

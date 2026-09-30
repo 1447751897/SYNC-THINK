@@ -112,3 +112,11 @@ it('hides the Git strip for a plain directory', async () => {
   expect(frame.children).toHaveLength(1);
   expect(frame.firstElementChild?.classList.contains('shell-compose')).toBe(true);
 });
+
+
+it('omits the Git status for non-repository folders', async () => {
+  install(vi.fn(async () => ({ ...summary('', 0), isRepo: false })));
+  render(<ComposerGitBar projectFolder="D:/plain" onOpenGit={vi.fn()} />);
+  await waitFor(() => expect(screen.queryByTestId('composer-git-bar')).toBeNull());
+  expect(screen.queryByText('读取仓库…')).toBeNull();
+});

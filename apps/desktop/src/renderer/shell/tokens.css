@@ -9,6 +9,10 @@
  */
 
 @theme {
+  /* Retained shipped tokens previously missing from the source; preserves existing embedded demos and segmented controls. */
+  --color-icon: #7e7f7e;
+  --shadow-segmented-indicator: inset 0.5px 0.5px 0.5px #ffffff, 0 0 0.5px 0.5px rgba(0, 0, 0, 0.04), 0.5px 0.5px 1px rgba(0, 0, 0, 0.08);
+
   /* NewMax's bundled variable fonts are the primary shell faces. Components must consume these tokens rather than re-declaring a family so Latin and Chinese metrics stay consistent across the settings window and the rest of the desktop shell. */
   --font-sans:
     'Inter Variable', Inter, 'Noto Sans SC Variable', 'Noto Sans SC', ui-sans-serif, system-ui, sans-serif;
@@ -17,7 +21,7 @@
   --font-mono:
     'Cascadia Code', 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 
-  /* NewMax 1.1.14 surface stack. Light uses its warm four-step ramp. Dark follows the current DS variables exactly: surface-100 #191a1a, app background surface-200 #1e1f1f, panels surface-300 #252726, and selected/hovered surface-400 #2a2d2b. The window gutter stays on the app background instead of becoming a bright gray band. */
+  /* Legacy surface ramp retained for unscoped consumers. The desktop agent-family refresh uses the workbench-agent group. */
   --color-page: #f2eee6;
   --color-page-gutter: #f2eee6;
   --color-sidebar: #f6f4ef;
@@ -41,19 +45,13 @@
 
   --color-text: #181b19;
   --color-text-secondary: #666763;
-  /* NewMax --ds-icon: resting colour of inactive segmented-control tabs. */
-  --color-icon: #7e7f7e;
   --color-text-faint: #8c8c87;
   --color-text-inverse: #ffffff;
-
-  /* NewMax --ds-elevation-100: white inset hairline plus two faint drop shadows. */
-  --shadow-segmented-indicator: inset 0.5px 0.5px 0.5px #ffffff,
-    0 0 0.5px 0.5px rgba(0, 0, 0, 0.04), 0.5px 0.5px 1px rgba(0, 0, 0, 0.08);
 
   --color-accent: #2f9b5b;
   --color-accent-soft: #e6f5ec;
   --color-accent-text: #1f6b3f;
-  /* Foreground for text/icons sitting on --color-accent. Dark flips this to a near-black because the dark accent is a bright mint and white text on it fails contrast. */
+  /* Legacy accent foreground. The desktop workbench uses its own paired palette. */
   --color-accent-fg: #ffffff;
   --color-settings-action: #2d4739;
   --color-settings-action-fg: #ffffff;
@@ -67,11 +65,7 @@
   --color-selection-border: #2f9b5b;
   --color-focus-ring: #247648;
 
-  /*
-   * Status colors follow the theme: dark uses higher-luminance variants to
-   * hold contrast on the dark surfaces. `success` references accent directly
-   * so the two greens cannot drift apart across a theme switch.
-   */
+  /* Legacy semantic status colors, preserved independently of the desktop primary action. */
   --color-success: #2f9b5b;
   --color-error: #c4453d;
   --color-warning: #b07d2a;
@@ -192,6 +186,29 @@
 }
 
 :root {
+  /* Shared agent and desktop conversation typography. Body matches the existing agent chat; metadata stays readable without weakening semantic colors. */
+  --chat-font-body-size: 14px;
+  --chat-font-body-line-height: 20px;
+  --chat-font-label-size: 13px;
+  --chat-font-label-line-height: 20px;
+  --chat-font-meta-size: 12px;
+  --chat-font-meta-line-height: 18px;
+
+  /* Desktop workbench visual refresh (2026-09-29), derived from agent chat. Opt-in mapping preserves website and embedded demo palettes. */
+  --wb-default-page: #ffffff;
+  --wb-default-panel: #f7f7f7;
+  --wb-default-bubble: #ebebeb;
+  --wb-default-hover: #ededed;
+  --wb-default-text: #191919;
+  --wb-default-secondary: #6b6b6b;
+  --wb-default-muted: #707070;
+  --wb-default-border: #e8e8e8;
+  --wb-default-primary: #176bfa;
+  --wb-default-primary-hover: #0859df;
+  --wb-default-on-primary: #ffffff;
+  --wb-default-focus: #176bfa;
+  --wb-default-link: #125dd6;
+
   /* Public website and cloud account pages always use the light palette, independent of OS theme. Desktop dark theme remains unchanged. Generated for the standalone website by apps/website/build.mjs. */
   --web-page: #ffffff;
   --web-surface: #f3f6f4;
@@ -362,9 +379,43 @@
   --preference-color-luxury-light-accent: #b8993a;
   --preference-color-luxury-dark-background: #1e1e1e;
   --preference-color-luxury-dark-accent: #c9b56a;
+
+  /* Calendar event colors measured from the public BoardUI calendar template (2026-09-30), light and dark. Colors distinguish task identities consistently across all views, not execution outcomes or target types. Failure/overdue/paused states retain explicit labels and semantic overrides. */
+  --calendar-event-lime-background: lab(96.8662% -11.7133 22.0854);
+  --calendar-event-lime-title: lab(37.7655% -25.1694 43.0683);
+  --calendar-event-lime-time: lab(47.246% -32.2589 55.8249);
+  --calendar-event-pink-background: lab(93.5864% 9.01193 -3.15079);
+  --calendar-event-pink-title: lab(42.1737% 71.8009 7.42233);
+  --calendar-event-pink-time: lab(42.1737% 71.8009 7.42233);
+  --calendar-event-purple-background: lab(93.3333% 6.97437 -9.83434);
+  --calendar-event-purple-title: lab(36.1758% 69.8525 -80.0381);
+  --calendar-event-purple-time: lab(36.1758% 69.8525 -80.0381);
+  --calendar-event-blue-background: lab(92.0301% -2.24757 -11.6453);
+  --calendar-event-blue-title: lab(36.9089% 35.0961 -85.6872);
+  --calendar-event-blue-time: lab(36.9089% 35.0961 -85.6872);
+  --calendar-event-emerald-background: lab(94.9004% -17.0769 5.63836);
+  --calendar-event-emerald-title: lab(35.3675% -33.1188 8.04002);
+  --calendar-event-emerald-time: lab(44.4871% -41.0396 11.0361);
 }
 
 .dark {
+  --color-icon: rgba(255, 255, 255, 0.5);
+  --shadow-segmented-indicator: 0 0 0 0.5px rgba(255, 255, 255, 0.08);
+
+  --wb-default-page: #171717;
+  --wb-default-panel: #202020;
+  --wb-default-bubble: #303030;
+  --wb-default-hover: #303030;
+  --wb-default-text: #f1f1f1;
+  --wb-default-secondary: #b0b0b0;
+  --wb-default-muted: #a0a0a0;
+  --wb-default-border: #373737;
+  --wb-default-primary: #2772e6;
+  --wb-default-primary-hover: #4b8cff;
+  --wb-default-on-primary: #ffffff;
+  --wb-default-focus: #83adff;
+  --wb-default-link: #83adff;
+
   --web-page: #191a1a;
   --web-surface: #252726;
   --web-ink: #edf2ef;
@@ -415,16 +466,13 @@
 
   --color-text: rgba(255, 255, 255, 0.9);
   --color-text-secondary: rgba(255, 255, 255, 0.5);
-  --color-icon: rgba(255, 255, 255, 0.5);
   --color-text-faint: rgba(255, 255, 255, 0.38);
   --color-text-inverse: #ffffff;
-
-  --shadow-segmented-indicator: 0 0 0 0.5px rgba(255, 255, 255, 0.08);
 
   --color-accent: #36d385;
   --color-accent-soft: rgba(54, 211, 133, 0.08);
   --color-accent-text: #36d385;
-  /* Foreground for text/icons sitting on --color-accent. Dark flips this to a near-black because the dark accent is a bright mint and white text on it fails contrast. */
+  /* Legacy accent foreground. The desktop workbench uses its own paired palette. */
   --color-accent-fg: rgba(0, 0, 0, 0.9);
   --color-settings-action: #36d385;
   --color-settings-action-fg: rgba(0, 0, 0, 0.9);
@@ -513,4 +561,20 @@
   --color-cap-divider: rgba(255, 255, 255, 0.045);
   --color-cap-dialog-overlay: rgba(5, 7, 7, 0.68);
   --color-cap-inset-highlight: rgba(255, 255, 255, 0.04);
+
+  --calendar-event-lime-background: lab(16.5113% -15.1841 22.0145);
+  --calendar-event-lime-title: lab(89.9218% -35.6546 68.5254);
+  --calendar-event-lime-time: lab(89.9218% -35.6546 68.5254);
+  --calendar-event-pink-background: lab(15.6116% 35.2166 3.53979);
+  --calendar-event-pink-title: lab(77.8308% 38.525 -10.5394);
+  --calendar-event-pink-time: lab(77.8308% 38.525 -10.5394);
+  --calendar-event-purple-background: lab(14.8253% 38.9005 -44.5861);
+  --calendar-event-purple-title: lab(78.3298% 26.2195 -34.9499);
+  --calendar-event-purple-time: lab(78.3298% 26.2195 -34.9499);
+  --calendar-event-blue-background: lab(15.6723% 8.86232 -32.2945);
+  --calendar-event-blue-title: lab(77.5052% -6.4629 -36.42);
+  --calendar-event-blue-time: lab(77.5052% -6.4629 -36.42);
+  --calendar-event-emerald-background: lab(15.0582% -17.9507 2.38369);
+  --calendar-event-emerald-title: lab(83.9203% -48.7124 13.8849);
+  --calendar-event-emerald-time: lab(83.9203% -48.7124 13.8849);
 }

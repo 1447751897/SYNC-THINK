@@ -12,6 +12,7 @@ import type {
 import type { CollaborationKind } from '@sync-think/shared';
 import { ulid } from '@sync-think/shared';
 import type { BetterSQLite3Raw } from './connection.js';
+import { SqliteCollaborationStore } from './collaboration-store.js';
 
 /**
  * First-class conversation store (2026-07-22 model). A conversation is the
@@ -317,6 +318,24 @@ export class SqliteConversationStore {
   }
 
   /** Bounded, batched sidebar previews. No message hydration or tool payload transfer. */
+  /** A bound task or a policy update is not a chat. Check both durable message stores. */
+  listChatPresence(conversationIds: readonly string[]): Set<string> {
+    const present = new Set<string>();
+    for (let offset = 0; offset < conversationIds.length; offset += 100) {
+      const ids = conversationIds.slice(offset, offset + 100);
+      const rows = this.raw.prepare(`
+        SELECT c.id FROM conversation c WHERE c.id IN (${ids.map(() => '?').join(',')}) AND (
+          EXISTS (SELECT 1 FROM message m JOIN thread t ON t.id = m.thread_id
+            WHERE t.task_id = c.task_id AND m.role IN ('user', 'assistant'))
+          OR EXISTS (SELECT 1 FROM collaboration_message m WHERE m.conversation_id = c.id
+            AND m.kind <> 'system')
+        )
+      `).all(...ids) as { id: string }[];
+      for (const row of rows) present.add(row.id);
+    }
+    return present;
+  }
+
   listMessagePreviews(conversationIds: readonly string[]): Map<string, string> {
     const previews = new Map<string, string>();
     for (let offset = 0; offset < conversationIds.length; offset += 100) {
@@ -354,7 +373,17 @@ export class SqliteConversationStore {
   }
 
   rename(conversationId: ConversationId, title: string, now?: string): ConversationRecord {
-    return this.patch(conversationId, 'title = ?', [title], now);
+    return this.raw.transaction(() => {
+      const updated = this.patch(conversationId, 'title = ?', [title], now);
+      const collaborations = new SqliteCollaborationStore(this.raw);
+      const snapshot = collaborations.read(conversationId);
+      if (snapshot && snapshot.conversation.title !== title) {
+        snapshot.conversation.title = title;
+        snapshot.revision++;
+        collaborations.save(snapshot);
+      }
+      return updated;
+    }).immediate();
   }
 
   setPinned(conversationId: ConversationId, pinned: boolean, now?: string): ConversationRecord {

@@ -10,7 +10,7 @@ it('reconciles a timed-out send from its durable receipt without resending', asy
   let sent = false;
   const collaboration = vi.fn(async (request) => {
     if (request.action === 'send') { sent = true; throw new Error('Runtime request timed out: collaboration.command'); }
-    return { snapshot: sent ? accepted : snapshot, executionVersion: 2 };
+    return { snapshot: sent ? accepted : snapshot, executionVersion: 3 };
   });
   Object.defineProperty(window, 'syncThink', { configurable: true, value: { runtime: { collaboration, onEvent: () => () => {} } } });
   const view = renderHook(() => useCollaborationChat('c'));
@@ -38,7 +38,7 @@ it('ignores an older read including its engine-version warning after a newer com
   const latest = { ...initial, revision: 2 };
   let finish!: (value: object) => void;
   const collaboration = vi.fn().mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }))
-    .mockResolvedValue({ snapshot: latest, executionVersion: 2 });
+    .mockResolvedValue({ snapshot: latest, executionVersion: 3 });
   Object.defineProperty(window, 'syncThink', { configurable: true, value: { runtime: { collaboration, onEvent: () => () => {} } } });
   const view = renderHook(() => useCollaborationChat('c'));
   await act(async () => { await view.result.current.command({ action: 'get', conversationId: 'c' }); });
@@ -49,8 +49,8 @@ it('ignores an older read including its engine-version warning after a newer com
 
 it('keeps its revision high-water mark when the conversation becomes active again', async () => {
   const latest = { conversation: { id: 'c' }, revision: 5, receipts: {} } as CollaborationSnapshot;
-  const collaboration = vi.fn().mockResolvedValueOnce({ snapshot: latest, executionVersion: 2 })
-    .mockResolvedValue({ snapshot: { ...latest, revision: 1 }, executionVersion: 2 });
+  const collaboration = vi.fn().mockResolvedValueOnce({ snapshot: latest, executionVersion: 3 })
+    .mockResolvedValue({ snapshot: { ...latest, revision: 1 }, executionVersion: 3 });
   Object.defineProperty(window, 'syncThink', { configurable: true, value: { runtime: { collaboration, onEvent: () => () => {} } } });
   const view = renderHook(({ active }) => useCollaborationChat('c', active), { initialProps: { active: true } });
   await waitFor(() => expect(view.result.current.snapshot).toBe(latest));
@@ -65,7 +65,7 @@ it('does not surface a previous conversation send failure after navigation', asy
   let rejectSend!: (cause: Error) => void;
   const collaboration = vi.fn(request => request.action === 'send'
     ? new Promise((_resolve, reject) => { rejectSend = reject; })
-    : Promise.resolve({ snapshot: { conversation: { id: request.conversationId }, revision: 1, receipts: {} }, executionVersion: 2 }));
+    : Promise.resolve({ snapshot: { conversation: { id: request.conversationId }, revision: 1, receipts: {} }, executionVersion: 3 }));
   Object.defineProperty(window, 'syncThink', { configurable: true, value: { runtime: { collaboration, onEvent: () => () => {} } } });
   const view = renderHook(({ id }) => useCollaborationChat(id), { initialProps: { id: 'c' } });
   await waitFor(() => expect(view.result.current.snapshot?.conversation.id).toBe('c'));
@@ -86,4 +86,13 @@ it('hides the old conversation warning while the next snapshot is loading', asyn
   view.rerender({ id: 'next' });
   expect(view.result.current.snapshot).toBeUndefined();
   expect(view.result.current.error).toBe('');
+});
+
+it('rejects nested-team commands on a v2 host instead of silently ignoring the new fields',async()=>{
+ const snapshot={conversation:{id:'c'},revision:1,receipts:{}} as CollaborationSnapshot;
+ const collaboration=vi.fn().mockResolvedValue({snapshot,executionVersion:2});
+ Object.defineProperty(window,'syncThink',{configurable:true,value:{runtime:{collaboration,onEvent:()=>()=>{}}}});
+ const view=renderHook(()=>useCollaborationChat('c'));await waitFor(()=>expect(view.result.current.snapshot).toBe(snapshot));
+ await act(async()=>{await expect(view.result.current.command({action:'members',conversationId:'c',addTeamIds:['team-1'],expectedTopologyRevision:0})).rejects.toThrow('重启守护进程');});
+ expect(collaboration.mock.calls.some(([request])=>request.action==='members')).toBe(false);
 });

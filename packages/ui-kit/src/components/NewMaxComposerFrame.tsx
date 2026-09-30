@@ -145,6 +145,10 @@ export function useNewMaxPopoverPresence(open: boolean): NewMaxPopoverPresence {
 
 export interface NewMaxComposerFrameProps extends Omit<HTMLAttributes<HTMLDivElement>, 'children'> {
   variant: 'empty' | 'conversation';
+  /** Compact desktop chat: attach + editor + model/actions, with context below. */
+  presentation?: 'default' | 'pill';
+  leadingAction?: ReactNode;
+  statusBar?: ReactNode;
   /** Repository/workspace context outside the rounded input surface. */
   contextBar?: ReactNode;
   modeBanner?: ReactNode;
@@ -161,6 +165,9 @@ export interface NewMaxComposerFrameProps extends Omit<HTMLAttributes<HTMLDivEle
 /** Shared composer geometry. Run and queue behavior remains owned by each entry point. */
 export function NewMaxComposerFrame({
   variant,
+  presentation = 'default',
+  leadingAction,
+  statusBar,
   contextBar,
   modeBanner,
   menu,
@@ -263,9 +270,10 @@ export function NewMaxComposerFrame({
       className={`shell-newmax-composer-frame ${displayedModeBanner ? 'has-mode' : ''}`.trim()}
       data-testid="newmax-composer-frame"
       data-variant={variant}
+      data-presentation={presentation}
       data-mode-state={modeBannerPhase}
     >
-      {contextBar}
+      {presentation === 'default' ? contextBar : null}
       {displayedModeBanner ? (
         <div
           key={displayedModeBanner.key}
@@ -283,6 +291,7 @@ export function NewMaxComposerFrame({
         {...frameProps}
         className={`shell-compose shell-newmax-composer shell-newmax-composer--${variant} ${className}`.trim()}
       >
+        {presentation === 'pill' ? <div className="shell-newmax-composer-frame__leading">{leadingAction}</div> : null}
         {children ?? (
           <>
             {menu}
@@ -299,6 +308,12 @@ export function NewMaxComposerFrame({
           </>
         )}
       </div>
+      {presentation === 'pill' ? (
+        <div className="shell-newmax-composer-frame__status" data-testid="composer-status-bar">
+          {contextBar}
+          {statusBar}
+        </div>
+      ) : null}
     </div>
   );
 }

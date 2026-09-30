@@ -2,7 +2,7 @@
  * @vitest-environment jsdom
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { Conversation, GlobalAgent, CollaborationSnapshot } from '@sync-think/shared';
 
 const state = vi.hoisted(() => ({ snapshot: undefined as CollaborationSnapshot | undefined, command: vi.fn() }));
@@ -11,7 +11,7 @@ vi.mock('./use-collaboration-chat.js', () => ({ useCollaborationChat: () => ({ s
 import { CollaborationChatView } from './CollaborationChatView.js';
 
 afterEach(() => cleanup());
-beforeEach(() => { state.snapshot = undefined; state.command.mockReset(); });
+beforeEach(() => { sessionStorage.clear(); state.snapshot = undefined; state.command.mockReset(); });
 
 const conversation = { id: 'conv-1', workspaceId: 'ws-1', track: 'agent', targetRef: 'agent-a', title: '协作会话', executionMode: 'full-access', createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z' } as Conversation;
 const agent = { id: 'agent-a', name: '研究员', description: '', enabled: true, archived: false } as GlobalAgent;
@@ -102,6 +102,27 @@ describe('CollaborationChatView', () => {
     }));
   });
 
+  it('renders @mentions inside the bubble with the member avatar', () => {
+    state.snapshot = {
+      ...base,
+      conversation: { ...base.conversation, kind: 'group' },
+      members: [...base.members, { id: 'agent-b', kind: 'agent', agentId: 'agent-b', name: '前端工程师', avatar: 'aw:v1:star:#55aadd:idle', role: '成员', active: true }],
+      messages: [{
+        id: 'mention-message', conversationId: 'conv-1', senderMemberId: 'user-1',
+        recipientMemberIds: ['agent-b'], mentions: [{ memberId: 'agent-b', label: '前端工程师' }],
+        kind: 'chat', blocks: [{ type: 'text', text: '但是我看到你就是在做协调员的工作啊' }],
+        expectsResponse: true, correlationId: 'mention-correlation', hopCount: 0, sequence: 1,
+        createdAt: '2026-01-01T00:00:00Z',
+      }],
+    };
+    render(<CollaborationChatView workspace conversation={conversation} agents={[agent]} onOpenConversation={vi.fn()} />);
+    const body = screen.getByText('但是我看到你就是在做协调员的工作啊').closest('.collab-message__body');
+    const chip = body?.querySelector('.collab-mention-chip');
+    expect(chip?.textContent).toBe('前端工程师');
+    expect(chip?.querySelector('[role="img"]')?.getAttribute('aria-label')).toBe('前端工程师');
+    expect(document.querySelector('.collab-message__recipients')).toBeNull();
+  });
+
   const groupBase = { ...base, conversation: { ...base.conversation, kind: 'group' as const }, members: [...base.members, { id: 'agent-b', kind: 'agent' as const, agentId: 'agent-b', name: '审查员', avatar: '', role: '审查', active: true }] };
 
   it('greets an empty group with every agent member', () => {
@@ -110,6 +131,7 @@ describe('CollaborationChatView', () => {
     const empty = screen.getByTestId('collaboration-group-empty');
     expect(empty.textContent).toContain('几个头脑，一场对话');
     expect(empty.textContent).toContain('研究员、审查员');
+    expect([...empty.querySelectorAll('[data-motion]')].every((avatar) => avatar.getAttribute('data-motion') === 'idle')).toBe(true);
   });
 
   it('shows who is thinking before a running reply has output', () => {
@@ -173,4 +195,58 @@ it('keeps thinking and progress details out of the streaming answer bubble', () 
   state.snapshot = { ...state.snapshot, attempts: [{ ...attempt, status: 'stopping' }] };
   view.rerender(<CollaborationChatView workspace conversation={conversation} agents={[agent]} onOpenConversation={vi.fn()} />);
   expect(screen.getByText('正在停止…')).toBeTruthy();
+});
+
+
+it('inserts a selected member in the middle of the editor and sends durable positions', async () => {
+  state.snapshot = base;
+  state.command.mockResolvedValue({ snapshot: base });
+  const { container } = render(<CollaborationChatView conversation={conversation} agents={[agent]} onOpenConversation={vi.fn()} />);
+  const input = screen.getByTestId('collaboration-draft');
+  fireEvent.change(input, { target: { value: '帮我问一下@ 这个问题', selectionStart: 6 } });
+  fireEvent.click(screen.getByRole('option', { name: /研究员/ }));
+  const editor = screen.getByRole('textbox', { name: '协作消息' });
+  expect(editor.textContent).toBe('帮我问一下研究员 这个问题');
+  expect(editor.querySelector('[data-member-id="agent-a"]')?.textContent).toBe('研究员');
+  expect(container.querySelector('.collab-composer__recipients')).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: '发送消息' }));
+  await waitFor(() => expect(state.command).toHaveBeenCalledWith(expect.objectContaining({
+    text: '帮我问一下研究员 这个问题', recipientMemberIds: ['agent-a'],
+    mentions: [{ memberId: 'agent-a', label: '研究员', start: 5, end: 8 }],
+  })));
+});
+
+it('renders mention tags between surrounding text, even after the agent is renamed', () => {
+  state.snapshot = { ...base, messages: [{
+    id: 'inline', conversationId: 'conv-1', senderMemberId: 'user-1', recipientMemberIds: ['agent-a'],
+    mentions: [{ memberId: 'agent-a', label: '原名字', start: 2, end: 5 }],
+    kind: 'chat', blocks: [{ type: 'text', text: '问问原名字这个问题' }], expectsResponse: true,
+    correlationId: 'inline', hopCount: 0, sequence: 1, createdAt: '2026-09-29',
+  }] };
+  const { container } = render(<CollaborationChatView conversation={conversation} agents={[agent]} onOpenConversation={vi.fn()} />);
+  const paragraph = container.querySelector('[data-message-id="inline"] .shell-md p');
+  expect(paragraph?.textContent).toBe('问问研究员这个问题');
+  expect(paragraph?.childNodes[0].textContent).toBe('问问');
+  expect(paragraph?.querySelector('.collab-mention-chip')?.textContent).toBe('研究员');
+  expect(paragraph?.lastChild?.textContent).toBe('这个问题');
+  expect(paragraph?.textContent).not.toContain('@');
+});
+
+it('does not manufacture a visible mention from automatic direct-chat recipients', () => {
+  state.snapshot = { ...base, messages: [{
+    id: 'plain', conversationId: 'conv-1', senderMemberId: 'user-1', recipientMemberIds: ['agent-a'], mentions: [],
+    kind: 'chat', blocks: [{ type: 'text', text: '没有提及' }], expectsResponse: true,
+    correlationId: 'plain', hopCount: 0, sequence: 1, createdAt: '2026-09-29',
+  }] };
+  const { container } = render(<CollaborationChatView conversation={conversation} agents={[agent]} onOpenConversation={vi.fn()} />);
+  expect(container.querySelector('.collab-mention-chip')).toBeNull();
+});
+
+it('adds an existing team with a topology precondition and keeps internals out of group member count',async()=>{
+ state.snapshot={...base,conversation:{...base.conversation,kind:'group',topologyRevision:4}};
+ const team: import('@sync-think/shared').Team={id:'team-1' as import('@sync-think/shared').TeamId,name:'研发小队',avatar:'',mission:'研发',strategy:'serial',members:[],createdAt:'',updatedAt:''};
+ render(<CollaborationChatView conversation={conversation} agents={[agent]} teams={[team]} onOpenConversation={vi.fn()}/>);
+ fireEvent.click(screen.getByRole('button',{name:'成员 2'}));
+ fireEvent.change(screen.getByLabelText('添加小队'),{target:{value:'team-1'}});
+ await waitFor(()=>expect(state.command).toHaveBeenCalledWith(expect.objectContaining({action:'members',addTeamIds:['team-1'],expectedTopologyRevision:4})));
 });

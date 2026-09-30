@@ -586,3 +586,28 @@ describe('WorkspaceWorkbench', () => {
     expect(screen.getByTestId('content-file:README.md')).toBeTruthy();
   });
 });
+
+
+describe('main chat work panel shortcuts', () => {
+  it('creates missing views and reuses existing browser/terminal tabs', () => {
+    const onActivateTab=vi.fn(), onNewResource=vi.fn(), onClose=vi.fn();
+    const first = openWorkbenchTab(createWorkspaceWorkbenchLayout(), 'right', browserWorkbenchTab('browser-one', 'https://example.test'));
+    const scope = openWorkbenchTab(first, 'right', terminalWorkbenchTab('terminal-one')).right;
+    render(<WorkspaceWorkbench placement="right" chatLayout canOpenTerminal scope={scope} renderContent={()=><div>现有内容</div>} onActivateTab={onActivateTab} onNewResource={onNewResource} onClose={onClose} onCloseTab={vi.fn()} onSizeChange={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: '浏览器' }));
+    expect(onActivateTab).toHaveBeenCalledWith('browser:browser-one');
+    fireEvent.click(screen.getByRole('button', { name: '在工作面板打开终端' }));
+    expect(onActivateTab).toHaveBeenCalledWith('terminal:terminal-one');
+    expect(onNewResource).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: '更改' }));
+    expect(onNewResource).toHaveBeenCalledWith('git');
+    fireEvent.click(screen.getByRole('button', { name: '关闭工作面板' }));
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+  it('keeps projectless changes/terminal disabled while browser stays available', () => {
+    render(<WorkspaceWorkbench placement="right" chatLayout open scope={createWorkspaceWorkbenchLayout().right} renderContent={()=><div />} onActivateTab={vi.fn()} onNewResource={vi.fn()} onClose={vi.fn()} onCloseTab={vi.fn()} onSizeChange={vi.fn()} />);
+    expect(screen.getByRole('button', { name: '更改' }).hasAttribute('disabled')).toBe(true);
+    expect(screen.getByRole('button', { name: '在工作面板打开终端' }).hasAttribute('disabled')).toBe(true);
+    expect(screen.getByRole('button', { name: '浏览器' }).hasAttribute('disabled')).toBe(false);
+  });
+});

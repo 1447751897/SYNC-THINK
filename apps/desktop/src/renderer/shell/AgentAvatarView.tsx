@@ -1,15 +1,13 @@
-// One renderer for the library, roster, tasks and chat. Old gen:v1 seeds are
-// projected into bot-avatars without rewriting records; uploaded images and
-// explicit emoji/text continue to render as before.
+// One renderer for the library, roster, tasks and chat. Stored bot/workspace
+// seeds and empty avatars use the same folded face as chat; uploaded images
+// and explicit emoji/text keep their original rendering.
 import { lazy, memo, Suspense } from 'react';
 import { avatarColor } from './avatar-color.js';
 import type { AvatarState } from './avatar-gen.js';
-import { botAvatarColor, parseBotAvatar } from './bot-avatar.js';
+import { botAvatarColor, parseBotAvatar, resolveBotAvatarFace } from './bot-avatar.js';
 
 import { parseWorkspaceAvatar } from './workspace-avatar-profile.js';
 const WorkspaceAvatar = lazy(() => import('./AgentWorkspaceAvatar.js').then(module => ({ default: module.AgentWorkspaceAvatar })));
-
-const BotAvatarCanvas = lazy(() => import('./BotAvatarCanvas.js'));
 
 export function isImageAvatar(avatar: string | undefined): boolean {
   return Boolean(avatar?.trim().startsWith('data:image/'));
@@ -49,9 +47,11 @@ export const AgentAvatarView = memo(function AgentAvatarView({
     );
   }
   const workspaceFace = parseWorkspaceAvatar(trimmed);
-  if (workspaceFace) return <Suspense fallback={<span role="img" aria-label={name} style={{ display: 'inline-block', width: size, height: size, background: workspaceFace.color, borderRadius: '35%' }} />}><WorkspaceAvatar name={name} avatar={avatar} size={size} title={title} state={state} animate={animate} /></Suspense>;
-  const face = parseBotAvatar(trimmed);
-  if (face) {
+  const botFace = parseBotAvatar(trimmed);
+  // Chat already derives a folded face when no seed is stored. Keep the library
+  // and roster on that same silhouette so an empty avatar is not a letter disk.
+  if (workspaceFace || botFace || !trimmed) {
+    const fallbackColor = workspaceFace?.color ?? botAvatarColor(botFace ?? resolveBotAvatarFace(trimmed, name));
     return (
       <Suspense
         fallback={
@@ -59,28 +59,15 @@ export const AgentAvatarView = memo(function AgentAvatarView({
             role="img"
             aria-label={name}
             title={title ?? name}
-            className="agent-bot-avatar shrink-0 select-none"
-            style={{ width: size, height: size }}
-          >
-            <span
-              className="agent-bot-avatar__placeholder"
-              style={{ width: size * 0.8, height: size * 0.8, background: botAvatarColor(face) }}
-            />
-          </span>
+            style={{ display: 'inline-block', width: size, height: size, background: fallbackColor, borderRadius: '35%' }}
+          />
         }
       >
-        <BotAvatarCanvas
-          name={name}
-          face={face}
-          size={size}
-          title={title}
-          state={state}
-          animate={animate}
-        />
+        <WorkspaceAvatar name={name} avatar={avatar} size={size} title={title} state={state} animate={animate} />
       </Suspense>
     );
   }
-  const label = trimmed ? trimmed.slice(0, 2) : (name[0] ?? '?').toUpperCase();
+  const label = trimmed.slice(0, 2);
   return (
     <div
       style={{

@@ -140,7 +140,7 @@ describe('ConversationTabs pane actions', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '窗格更多操作' }));
     const menu = await screen.findByTestId('conversation-tab-manager');
-    fireEvent.change(within(menu).getByRole('searchbox', { name: '搜索已打开的对话' }), {
+    fireEvent.change(await within(menu).findByRole('searchbox', { name: '搜索已打开的对话' }), {
       target: { value: '对话6' },
     });
     expect(within(menu).queryByRole('button', { name: '切换到 对话1' })).toBeNull();
@@ -149,7 +149,7 @@ describe('ConversationTabs pane actions', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '窗格更多操作' }));
     fireEvent.click(
-      within(await screen.findByTestId('conversation-tab-manager')).getByRole('button', {
+      await within(await screen.findByTestId('conversation-tab-manager')).findByRole('button', {
         name: '关闭标签 对话2',
       }),
     );
@@ -712,4 +712,30 @@ describe('ConversationTabs activity markers', () => {
     expect(screen.queryByTestId('conversation-running-c2')).toBeNull();
     expect(screen.queryByTestId('conversation-unread-c2')).toBeNull();
   });
+});
+
+
+describe('sidebar-owned conversation navigation', () => {
+  it('omits redundant conversation tabs but keeps file resources selectable', () => {
+    const onSelectFile = vi.fn();
+    render(<ConversationTabs hideConversationTabs conversations={conversations} openIds={['c1', 'c2']} activeId="c1" fileTabs={[{ id: 'readme', path: 'README.md' }]} onSelect={vi.fn()} onClose={vi.fn()} onNew={vi.fn()} onSelectFile={onSelectFile} />);
+    expect(screen.queryByTestId('conversation-tab-c1')).toBeNull();
+    expect(screen.queryByTestId('conversation-tab-c2')).toBeNull();
+    fireEvent.click(within(screen.getByTestId('file-tab-README.md')).getByRole('button', { name: '打开文件 README.md' }));
+    expect(onSelectFile).toHaveBeenCalledWith('README.md');
+  });
+});
+
+
+it('cleans up a cancelled conversation drag from the advanced manager while top tabs are hidden', async () => {
+  const onTabDragStateChange = vi.fn();
+  const dataTransfer = { setData: vi.fn(), effectAllowed: 'none', getData: vi.fn(() => '') };
+  render(<ConversationTabs hideConversationTabs conversations={conversations} openIds={['c1', 'c2']} activeId="c1" onSelect={vi.fn()} onClose={vi.fn()} onNew={vi.fn()} onTabDragStateChange={onTabDragStateChange} />);
+  expect(screen.queryByTestId('conversation-tab-c1')).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: '窗格更多操作' }));
+  const row = await screen.findByTestId('pane-conversation-c1');
+  fireEvent.dragStart(row, { dataTransfer });
+  expect(onTabDragStateChange).toHaveBeenCalledWith({ type: 'conversation', id: 'c1' });
+  fireEvent.dragEnd(row, { dataTransfer });
+  expect(onTabDragStateChange).toHaveBeenLastCalledWith(null);
 });

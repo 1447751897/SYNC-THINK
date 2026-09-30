@@ -25,14 +25,14 @@ describe('collaboration workflow contracts', () => {
     expect(tasks.every(t => t.deliverable?.kind === 'document')).toBe(true);
     expect(tasks[4].instructions).toContain('首章修订版');
   });
-  it('honors a parallel team DAG and rejects silently dropped team members', () => {
+  it('honors a parallel team DAG, includes later group members, and rejects missing team members', () => {
     const { snapshot } = fixture();
     const team = { name: '小说', mission: '创作', strategy: 'parallel', members: [
       { agentId: 'a', memberOrder: 0, role: '简报', title: '简报', dependsOn: [] },
       { agentId: 'b', memberOrder: 1, role: '世界观', title: '世界观', dependsOn: ['a'] },
       { agentId: 'c', memberOrder: 2, role: '人物', title: '人物', dependsOn: ['a'] },
     ] } as Team;
-    expect(compileCollaborationWorkflow(snapshot, '写小说', team).map(t => t.dependsOnTaskIds)).toEqual([[], ['stage-1'], ['stage-1']]);
+    expect(compileCollaborationWorkflow(snapshot, '写小说', team).map(t => t.dependsOnTaskIds)).toEqual([[], ['stage-1'], ['stage-1'], [], []]);
     snapshot.members[2].active = false;
     expect(() => compileCollaborationWorkflow(snapshot, '写小说', team)).toThrow('workflow_member_missing');
   });

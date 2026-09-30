@@ -14,9 +14,19 @@ export interface TimerHandle {
   cancel(): void;
 }
 
+/** Distinguishes a live deadline from overdue recovery when a timer is installed/resumed. */
+export interface TimerFireContext {
+  trigger: 'timer' | 'recovery';
+  scheduledAt: string;
+}
+
 /** 真实定时器注册器（消费方用 croner 实现；测试用 fake）。 */
 export interface TimerRegistrar {
-  registerTimer(taskId: string, fire: () => void, task?: ScheduledTask): TimerHandle;
+  registerTimer(
+    taskId: string,
+    fire: (context?: TimerFireContext) => void,
+    task?: ScheduledTask,
+  ): TimerHandle;
   unregisterTimer(taskId: string): void;
 }
 
@@ -30,7 +40,7 @@ export interface TimerRegistrar {
  */
 export class TimerRegistry {
   private readonly handles = new Map<string, TimerHandle>();
-  private readonly fireCallbacks = new Map<string, () => void>();
+  private readonly fireCallbacks = new Map<string, (context?: TimerFireContext) => void>();
   /** 上次同步的任务快照（用于检测变化）。 */
   private snapshot = new Map<string, string>();
 
@@ -62,9 +72,13 @@ export class TimerRegistry {
 
       // 新增或规则变化 → 重注册（先注销旧的再注册新的）。
       this.unregister(task.id);
-      const handle = this.registrar.registerTimer(task.id, () => {
-        this.fireCallbacks.get(task.id)?.();
-      }, task);
+      const handle = this.registrar.registerTimer(
+        task.id,
+        (context) => {
+          this.fireCallbacks.get(task.id)?.(context);
+        },
+        task,
+      );
       this.handles.set(task.id, handle);
       changed.push(task.id);
     }
@@ -82,7 +96,7 @@ export class TimerRegistry {
   }
 
   /** 注册触发回调（任务定时器到点后由消费方调用，一次性）。 */
-  onFire(taskId: string, callback: () => void): void {
+  onFire(taskId: string, callback: (context?: TimerFireContext) => void): void {
     this.fireCallbacks.set(taskId, callback);
   }
 
@@ -146,10 +160,7 @@ export interface DaemonStatusUpdate {
 }
 
 /** 更新状态快照（不可变：返回新对象）。 */
-export function updateDaemonStatus(
-  status: DaemonStatus,
-  update: DaemonStatusUpdate,
-): DaemonStatus {
+export function updateDaemonStatus(status: DaemonStatus, update: DaemonStatusUpdate): DaemonStatus {
   return {
     ...status,
     ...(update.heartbeatAt ? { heartbeatAt: update.heartbeatAt.toISOString() } : {}),

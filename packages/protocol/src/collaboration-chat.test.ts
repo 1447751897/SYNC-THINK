@@ -46,3 +46,20 @@ it('validates bounded workflow requests and document/file contracts', () => {
   expect(parseCollaborationCommand(command)).toBeUndefined();
   expect(parseCollaborationCommand({ ...command, tasks: [{ ...task, deliverable: { ...task.deliverable, path: 'novel/chapter.md' } }] })).toBeDefined();
 });
+
+
+it('accepts bounded inline mentions and rejects malformed coordinates', () => {
+  const command = { action: 'send', conversationId: 'c', clientRequestId: 'r', text: '问研究员', mentions: [{ memberId: 'agent:a', label: '研究员', start: 1, end: 4 }] };
+  expect(parseCollaborationCommand(command)).toEqual(command);
+  for (const range of [{ start: -1, end: 3 }, { start: 1, end: 1 }, { start: 0.5, end: 4 }, { start: 0, end: 100001 }]) {
+    expect(parseCollaborationCommand({ ...command, mentions: [{ ...command.mentions[0], ...range }] })).toBeUndefined();
+  }
+  expect(parseCollaborationCommand({ ...command, mentions: Array(129).fill(command.mentions[0]) })).toBeUndefined();
+});
+
+it('validates team admission and topology preconditions',()=>{
+ expect(parseCollaborationCommand({action:'create',clientRequestId:'r',kind:'group',title:'协作',agentIds:[],teamIds:['team-1']})).toBeDefined();
+ expect(parseCollaborationCommand({action:'members',conversationId:'c',addTeamIds:['team-1'],expectedTopologyRevision:2})).toBeDefined();
+ expect(parseCollaborationCommand({action:'members',conversationId:'c',addTeamIds:['team-1'],expectedTopologyRevision:-1})).toBeUndefined();
+ expect(parseCollaborationCommand({action:'members',conversationId:'c',addTeamIds:[3]})).toBeUndefined();
+});

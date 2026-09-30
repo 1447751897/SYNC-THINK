@@ -5,7 +5,7 @@
  * 执行历史弹层、新建对话框校验与创建、启停/立即触发/删除操作。
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type { GlobalAgent, ScheduledTask } from '@sync-think/shared';
 import type { ModelOption } from './NewConversationDialog.js';
 import type { WorkspaceSummary } from '@sync-think/protocol';
@@ -176,6 +176,7 @@ describe('TaskPanel', () => {
     });
     renderPanel();
     await screen.findByText('每日代码巡检');
+    fireEvent.click(screen.getByRole('button', { name: '筛选' }));
     fireEvent.click(screen.getByRole('button', { name: /已停用/ }));
     expect(screen.getByText('停用任务')).toBeTruthy();
     expect(screen.queryByText('每日代码巡检')).toBeNull();
@@ -194,14 +195,15 @@ describe('TaskPanel', () => {
     expect(await screen.findByText('未发现新的未提交改动，仓库状态正常')).toBeTruthy();
     expect(screen.getByText(/成功 1/)).toBeTruthy();
   });
-  it('defaults to the week calendar and switches views', async () => {
+  it('defaults to the month calendar and retains day, week and list views', async () => {
     mockBridge({ listScheduledTasks: vi.fn(async () => ({ tasks: [] })) });
     renderPanel(true);
     await screen.findByTestId('task-empty');
-    expect(screen.getByRole('button', { name: '周' }).getAttribute('aria-pressed')).toBe('true');
-    expect(document.querySelectorAll('.task-cal__day')).toHaveLength(7);
-    fireEvent.click(screen.getByRole('button', { name: '月' }));
+    expect(screen.getByRole('button', { name: '月' }).getAttribute('aria-pressed')).toBe('true');
     expect(document.querySelectorAll('.task-cal__month-cell').length).toBeGreaterThanOrEqual(28);
+    expect(screen.queryByTestId('task-sidebar')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '周' }));
+    expect(document.querySelectorAll('.task-cal__day')).toHaveLength(7);
     fireEvent.click(screen.getByRole('button', { name: '日' }));
     expect(document.querySelectorAll('.task-cal__day')).toHaveLength(1);
   });
@@ -221,14 +223,18 @@ describe('TaskPanel', () => {
     ] as WorkspaceSummary[]);
     await screen.findByText('工作区任务');
     fireEvent.keyDown(screen.getByRole('button', { name: '按任务归属筛选' }), { key: 'ArrowDown' });
-    expect(await screen.findByRole('menuitemcheckbox', { name: 'cuitaliao 工作区 0' })).toBeTruthy();
+    expect(
+      await screen.findByRole('menuitemcheckbox', { name: 'cuitaliao 工作区 0' }),
+    ).toBeTruthy();
     fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'SYNC-THINK 工作区 1' }));
     expect(screen.queryByText('每日代码巡检')).toBeNull();
     // Checkbox menu stays open so another workspace can be included.
     expect(screen.getByRole('menu')).toBeTruthy();
     // Multi-select another scope while keeping the dropdown open.
     fireEvent.click(screen.getByRole('menuitemcheckbox', { name: '全局任务 不隶属工作区 1' }));
-    expect(screen.getByRole('button', { name: '按任务归属筛选' }).textContent).toContain('已选 2 项');
+    expect(screen.getByRole('button', { name: '按任务归属筛选' }).textContent).toContain(
+      '已选 2 项',
+    );
     expect(screen.getByText('每日代码巡检')).toBeTruthy();
     fireEvent.click(screen.getByRole('menuitemcheckbox', { name: '全局任务 不隶属工作区 1' }));
     expect(screen.queryByText('每日代码巡检')).toBeNull();
@@ -251,6 +257,7 @@ describe('TaskPanel', () => {
     mockBridge({ listScheduledTasks: vi.fn(async () => ({ tasks: [] })) });
     renderPanel(true);
     await screen.findByTestId('task-empty');
+    fireEvent.click(screen.getByRole('button', { name: '周' }));
     const slot = screen.getAllByRole('button', { name: /在 .* 10:00 新建任务/ })[0]!;
     const day = slot.getAttribute('aria-label')!.split(' ')[1];
     fireEvent.click(slot);
@@ -281,7 +288,7 @@ describe('TaskPanel', () => {
     });
     fireEvent.change(screen.getByPlaceholderText(/检查仓库/), { target: { value: '检查改动' } });
     fireEvent.keyDown(screen.getByRole('button', { name: '重复方式' }), { key: 'ArrowDown' });
-    fireEvent.click(await screen.findByRole('menuitem', { name: '每周' }));
+    fireEvent.click(await screen.findByRole('menuitemradio', { name: '每周' }));
     fireEvent.change(screen.getByLabelText('每周任务生效日期'), {
       target: { value: '2027-01-04' },
     });
@@ -328,7 +335,7 @@ describe('TaskPanel', () => {
     fireEvent.change(screen.getByLabelText('任务名称'), { target: { value: '日历选择测试' } });
     fireEvent.change(screen.getByLabelText('执行内容'), { target: { value: '整理待办' } });
     fireEvent.keyDown(screen.getByRole('button', { name: '重复方式' }), { key: 'ArrowDown' });
-    fireEvent.click(await screen.findByRole('menuitem', { name: '每周' }));
+    fireEvent.click(await screen.findByRole('menuitemradio', { name: '每周' }));
     await waitFor(() =>
       expect(document.activeElement).toBe(screen.getByRole('button', { name: '重复方式' })),
     );
@@ -347,8 +354,8 @@ describe('TaskPanel', () => {
       expect(document.activeElement).toBe(screen.getByRole('button', { name: '选择生效日期' })),
     );
     fireEvent.keyDown(screen.getByRole('button', { name: '选择开始时间' }), { key: 'ArrowDown' });
-    fireEvent.click(await screen.findByRole('menuitem', { name: '18' }));
-    fireEvent.click(screen.getByRole('menuitem', { name: '30' }));
+    fireEvent.click(await screen.findByRole('menuitemradio', { name: '18 时' }));
+    fireEvent.click(screen.getByRole('menuitemradio', { name: '30 分' }));
     expect(screen.queryByRole('menu')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: '创建任务' }));
     await waitFor(() =>
@@ -429,5 +436,197 @@ describe('TaskPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: '保存修改' }));
     expect(runtime.updateScheduledTask).not.toHaveBeenCalled();
     expect(screen.getByText('请至少选择一个星期。')).toBeTruthy();
+  });
+  it.each(['编辑任务', '运行记录', '立即执行', '完整详情'])(
+    'connects the occurrence popover %s to the existing task flow',
+    async (action) => {
+      const at = new Date();
+      at.setHours(23, 30, 0, 0);
+      const sample: ScheduledTask = {
+        ...task,
+        rule: { kind: 'at', runAt: at.toISOString() },
+        nextRunAt: at.toISOString(),
+      };
+      const runtime = mockBridge({ listScheduledTasks: vi.fn(async () => ({ tasks: [sample] })) });
+      renderPanel(true);
+      const chip = await screen.findByRole('button', { name: /23:30 每日代码巡检 计划/ });
+      fireEvent.click(chip);
+      const card = screen.getByRole('dialog', { name: '日程详情' });
+      expect(within(card).getByText(/智能体 · 代码审查员/)).toBeTruthy();
+      expect(within(card).getByText('检查未提交改动')).toBeTruthy();
+      expect(screen.queryByRole('dialog', { name: '任务详情' })).toBeNull();
+      fireEvent.click(within(card).getByRole('button', { name: action }));
+      await waitFor(() => expect(screen.queryByRole('dialog', { name: '日程详情' })).toBeNull());
+      if (action === '编辑任务') {
+        const editor = await screen.findByTestId('task-editor');
+        expect(within(editor).getByPlaceholderText('如：每日代码巡检').getAttribute('value')).toBe(
+          task.name,
+        );
+        await waitFor(() => expect(editor.contains(document.activeElement)).toBe(true));
+      } else if (action === '运行记录') {
+        expect(await screen.findByTestId('task-history')).toBeTruthy();
+        expect(runtime.scheduledTaskHistory).toHaveBeenCalledWith({ taskId: task.id, limit: 20 });
+      } else if (action === '立即执行') {
+        await waitFor(() =>
+          expect(runtime.triggerScheduledTask).toHaveBeenCalledWith({ taskId: task.id }),
+        );
+      } else {
+        expect(await screen.findByRole('dialog', { name: '任务详情' })).toBeTruthy();
+      }
+    },
+  );
+  it('task editor picker: shows an explicit checked indicator and executor type icons', async () => {
+    mockBridge();
+    renderPanel();
+    await screen.findByText('每日代码巡检');
+    fireEvent.click(screen.getByTestId('task-create'));
+    fireEvent.keyDown(screen.getByRole('button', { name: '执行者类型' }), { key: 'Enter' });
+    const selected = await screen.findByRole('menuitemradio', { name: '智能体', checked: true });
+    expect(selected.querySelector('.task-editor__select-check svg')).toBeTruthy();
+    for (const label of ['智能体', '直接模型', '小队']) {
+      expect(
+        screen
+          .getByRole('menuitemradio', { name: label })
+          .querySelector('.task-editor__select-leading svg'),
+      ).toBeTruthy();
+    }
+    expect(screen.getByRole('menuitemradio', { name: '小队' }).getAttribute('aria-checked')).toBe(
+      'false',
+    );
+  });
+
+  it('task editor picker: uses the stored agent avatar in the trigger and options', async () => {
+    mockBridge();
+    const image =
+      'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aRPQAAAAASUVORK5CYII=';
+    render(
+      <TaskPanel
+        agents={[
+          { ...agent, avatar: image },
+          { ...agent, id: 'agent-2' as GlobalAgent['id'], name: '研究助手', avatar: '🔎' },
+        ]}
+        models={models}
+        teams={[]}
+        workspaces={[]}
+        skills={[]}
+      />,
+    );
+    await screen.findByRole('button', { name: '新建任务' });
+    fireEvent.click(screen.getByTestId('task-create'));
+    const trigger = screen.getByRole('button', { name: '选择执行者' });
+    expect(trigger.querySelector('img')?.getAttribute('src')).toBe(image);
+    fireEvent.keyDown(trigger, { key: 'Enter' });
+    const option = await screen.findByRole('menuitemradio', { name: '代码审查员', checked: true });
+    expect(option.querySelector('img')?.getAttribute('src')).toBe(image);
+    fireEvent.click(screen.getByRole('menuitemradio', { name: '研究助手' }));
+    await waitFor(() => {
+      expect(trigger.textContent).toContain('研究助手');
+      expect(trigger.textContent).toContain('🔎');
+      expect(trigger.querySelector('img')).toBeNull();
+    });
+  });
+
+  it('task editor picker: shows the checked recurrence independently from keyboard highlight', async () => {
+    mockBridge();
+    renderPanel();
+    await screen.findByText('每日代码巡检');
+    fireEvent.click(screen.getByTestId('task-create'));
+    fireEvent.keyDown(screen.getByRole('button', { name: '重复方式' }), { key: 'Enter' });
+    const selected = await screen.findByRole('menuitemradio', { name: '固定间隔', checked: true });
+    expect(selected.querySelector('.task-editor__select-check svg')).toBeTruthy();
+    fireEvent.keyDown(selected, { key: 'ArrowDown' });
+    expect(selected.getAttribute('aria-checked')).toBe('true');
+    expect(screen.getByRole('menuitemradio', { name: '随机' }).getAttribute('aria-checked')).toBe(
+      'false',
+    );
+  });
+
+  it('task editor picker: interval window pickers are disabled all day and save independent exact times', async () => {
+    const runtime = mockBridge();
+    renderPanel();
+    await screen.findByText('每日代码巡检');
+    fireEvent.click(screen.getByTestId('task-create'));
+    const start = screen.getByRole('button', { name: '选择窗口开始时间' });
+    const end = screen.getByRole('button', { name: '选择窗口结束时间' });
+    fireEvent.click(screen.getByRole('checkbox', { name: '不限（全天）' }));
+    expect((start as HTMLButtonElement).disabled).toBe(true);
+    expect((end as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByRole('checkbox', { name: '不限（全天）' }));
+    fireEvent.keyDown(start, { key: 'Enter' });
+    fireEvent.click(await screen.findByRole('menuitemradio', { name: '10 时' }));
+    fireEvent.click(screen.getByRole('menuitemradio', { name: '17 分' }));
+    await waitFor(() => expect(document.activeElement).toBe(start));
+    fireEvent.keyDown(end, { key: 'Enter' });
+    fireEvent.click(await screen.findByRole('menuitemradio', { name: '19 时' }));
+    fireEvent.click(screen.getByRole('menuitemradio', { name: '45 分' }));
+    expect((screen.getByLabelText('窗口开始时间') as HTMLInputElement).value).toBe('10:17');
+    expect((screen.getByLabelText('窗口结束时间') as HTMLInputElement).value).toBe('19:45');
+    fireEvent.change(screen.getByPlaceholderText('如：每日代码巡检'), {
+      target: { value: '定时巡检' },
+    });
+    fireEvent.change(screen.getByPlaceholderText(/检查仓库/), { target: { value: '检查代码' } });
+    fireEvent.click(screen.getByRole('button', { name: '创建任务' }));
+    await waitFor(() =>
+      expect(runtime.createScheduledTask).toHaveBeenCalledWith(
+        expect.objectContaining({
+          rule: { kind: 'every', intervalMinutes: 60, windowStart: '10:17', windowEnd: '19:45' },
+        }),
+      ),
+    );
+  });
+
+  it('task editor picker: random windows support a picker for both ends and manual minute precision', async () => {
+    const runtime = mockBridge();
+    renderPanel();
+    await screen.findByText('每日代码巡检');
+    fireEvent.click(screen.getByTestId('task-create'));
+    fireEvent.keyDown(screen.getByRole('button', { name: '重复方式' }), { key: 'Enter' });
+    fireEvent.click(await screen.findByRole('menuitemradio', { name: '随机' }));
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByRole('button', { name: '重复方式' })),
+    );
+    fireEvent.keyDown(screen.getByRole('button', { name: '选择窗口开始时间' }), { key: 'Enter' });
+    fireEvent.click(await screen.findByRole('menuitemradio', { name: '08 时' }));
+    fireEvent.click(screen.getByRole('menuitemradio', { name: '01 分' }));
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByRole('button', { name: '选择窗口开始时间' })),
+    );
+    fireEvent.keyDown(screen.getByRole('button', { name: '选择窗口结束时间' }), { key: 'Enter' });
+    fireEvent.click(await screen.findByRole('menuitemradio', { name: '18 时' }));
+    fireEvent.click(screen.getByRole('menuitemradio', { name: '59 分' }));
+    fireEvent.change(screen.getByLabelText('窗口开始时间'), { target: { value: '08:23' } });
+    fireEvent.change(screen.getByPlaceholderText('如：每日代码巡检'), {
+      target: { value: '随机检查' },
+    });
+    fireEvent.change(screen.getByPlaceholderText(/检查仓库/), { target: { value: '检查代码' } });
+    fireEvent.click(screen.getByRole('button', { name: '创建任务' }));
+    await waitFor(() =>
+      expect(runtime.createScheduledTask).toHaveBeenCalledWith(
+        expect.objectContaining({
+          rule: {
+            kind: 'random',
+            minTimes: 1,
+            maxTimes: 2,
+            windowStart: '08:23',
+            windowEnd: '18:59',
+          },
+        }),
+      ),
+    );
+  });
+
+  it('task editor picker: rejects out-of-range manual window times before calling the runtime', async () => {
+    const runtime = mockBridge();
+    renderPanel();
+    await screen.findByText('每日代码巡检');
+    fireEvent.click(screen.getByTestId('task-create'));
+    fireEvent.change(screen.getByLabelText('窗口开始时间'), { target: { value: '24:00' } });
+    fireEvent.change(screen.getByPlaceholderText('如：每日代码巡检'), {
+      target: { value: '非法时段' },
+    });
+    fireEvent.change(screen.getByPlaceholderText(/检查仓库/), { target: { value: '检查代码' } });
+    fireEvent.click(screen.getByRole('button', { name: '创建任务' }));
+    expect(screen.getByRole('alert').textContent).toContain('00:00–23:59');
+    expect(runtime.createScheduledTask).not.toHaveBeenCalled();
   });
 });

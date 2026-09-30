@@ -192,6 +192,7 @@ export default function AgentContactsSidebar(props: AgentContactsSidebarProps) {
             selected: history.some((c) => c.id === props.selectedConversationId),
           };
         })
+        .filter(contact => contact.history.length > 0)
         .sort(
           (a, b) =>
             (b.latest?.lastMessageAt ?? b.latest?.createdAt ?? '').localeCompare(
@@ -389,6 +390,7 @@ export default function AgentContactsSidebar(props: AgentContactsSidebarProps) {
                                   avatar={agent.avatar}
                                   size={36}
                                   state={running ? 'working' : active ? 'idle' : 'inactive'}
+                                  animate={running || (active && agent.enabled !== false)}
                                 />
                                 {unread && (
                                   <span className="agent-contact__unread" aria-label="有未读消息" />

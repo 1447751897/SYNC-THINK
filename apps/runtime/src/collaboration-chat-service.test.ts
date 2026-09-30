@@ -444,3 +444,30 @@ it('clears a stale streamed prefix when the authoritative successful result is e
   expect(repo.read('c')!.attempts[0].output).toBe('');
   expect(JSON.stringify(repo.read('c')!.messages)).not.toContain('stale prefix'); await service.stop();
 });
+
+
+it('persists ordered inline mention positions through trimming and repeated sends', () => {
+  const repo = repository(fixture());
+  const service = new CollaborationChatService(repo, { ownerId: 'runtime', onChanged: () => undefined, resourceClaims: () => [], execute: async () => ({ output: '' }) });
+  const command = { action: 'send' as const, conversationId: 'c', clientRequestId: 'inline', text: '  问A和B  ', recipientMemberIds: ['agent:a', 'agent:b'], expectsResponse: false,
+    mentions: [{ memberId: 'agent:a', label: 'A', start: 3, end: 4 }, { memberId: 'agent:b', label: 'B', start: 5, end: 6 }],
+  };
+  service.send(command); service.send(command);
+  expect(repo.read('c')!.messages).toHaveLength(1);
+  expect(repo.read('c')!.messages[0]).toMatchObject({ blocks: [{ type: 'text', text: '问A和B' }], mentions: [
+    { memberId: 'agent:a', label: 'A', start: 1, end: 2 }, { memberId: 'agent:b', label: 'B', start: 3, end: 4 },
+  ] });
+});
+
+it('rejects forged, overlapping or mismatched mention ranges atomically', () => {
+  for (const mentions of [
+    [{ memberId: 'unknown', label: 'A', start: 0, end: 1 }],
+    [{ memberId: 'agent:a', label: 'wrong', start: 0, end: 1 }],
+    [{ memberId: 'agent:a', label: 'A', start: 0, end: 1 }, { memberId: 'agent:a', label: 'A', start: 0, end: 1 }],
+  ]) {
+    const repo = repository(fixture());
+    const service = new CollaborationChatService(repo, { ownerId: 'runtime', onChanged: () => undefined, resourceClaims: () => [], execute: async () => ({ output: '' }) });
+    expect(() => service.send({ action: 'send', conversationId: 'c', clientRequestId: 'bad', text: 'A', recipientMemberIds: ['agent:a'], mentions })).toThrow('collaboration.invalid_mention');
+    expect(repo.read('c')!.messages).toEqual([]);
+  }
+});

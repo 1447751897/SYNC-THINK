@@ -6,6 +6,7 @@ import AgentWorkspace from './AgentWorkspace.js';
 import { DialogProvider } from './Dialog.js';
 import type { ConversationTransientSubscriptionEvent } from './use-conversation-transient-subscription.js';
 const LegacyChat = lazy(() => import('./ChatView.js').then(module => ({ default: module.ChatView })));
+const AgentLibrary = lazy(() => import('./AgentLibrary.js').then(module => ({ default: module.AgentLibrary })));
 const fixtureModels = [{ modelId: 'fixture-model', displayName: '离线验收模型', providerName: '本地 fixture' }];
 const fixtureEvents: never[] = [];
 import { botAvatarSeed } from './bot-avatar.js';
@@ -28,7 +29,7 @@ function makeSnapshot(id: string, agents: readonly GlobalAgent[], kind: 'direct'
 }
 function conversationOf(snapshot: CollaborationSnapshot): Conversation {
   const c = snapshot.conversation;
-  return { id: c.id, workspaceId: c.workspaceId, title: c.title, collaborationKind: c.kind, track: 'agent', targetRef: c.coordinatorMemberId ?? '', executionMode: 'workspace', interactionMode: 'execute', createdAt: date, updatedAt: date, lastMessagePreview: snapshot.messages.at(-1)?.blocks[0]?.text ?? '开始一场新的对话' } as Conversation;
+  return { id: c.id, workspaceId: c.workspaceId, title: c.title, collaborationKind: c.kind, track: 'agent', targetRef: c.coordinatorMemberId ?? '', executionMode: 'workspace', interactionMode: 'execute', createdAt: date, updatedAt: date, hasMessages: snapshot.messages.length > 0, lastMessagePreview: snapshot.messages.at(-1)?.blocks[0]?.text } as Conversation;
 }
 function message(snapshot: CollaborationSnapshot, sender: string, text: string) {
   return { id: `message-${snapshot.conversation.id}-${snapshot.messages.length}`, conversationId: snapshot.conversation.id, senderMemberId: sender, recipientMemberIds: [], mentions: [], kind: 'chat' as const, blocks: [{ type: 'text' as const, text }], expectsResponse: sender === 'user', correlationId: 'fixture', hopCount: 0, sequence: snapshot.messages.length + 1, createdAt: date };
@@ -52,7 +53,7 @@ function fixtureStore() {
   ]) group.messages.push(message(group, sender, text));
   const snapshots = new Map<string, CollaborationSnapshot>([[group.conversation.id, group]]);
   for (const a of agents) { const s = makeSnapshot(`direct-${a.id}`, [a], 'direct', a.name); s.messages.push(message(s, a.id, a.description)); snapshots.set(s.conversation.id, s); }
-  const legacy = { ...conversationOf(makeSnapshot('legacy-designer', [agents[0]], 'direct', '你装了哪些技能')), collaborationKind: undefined, taskId: 'legacy-task', updatedAt: '2026-09-28T12:00:00.000Z', lastMessagePreview: '这是旧会话记录，保留原消息和发送接口。' } as Conversation;
+  const legacy = { ...conversationOf(makeSnapshot('legacy-designer', [agents[0]], 'direct', '你装了哪些技能')), collaborationKind: undefined, hasMessages: true, taskId: 'legacy-task', updatedAt: '2026-09-28T12:00:00.000Z', lastMessagePreview: '这是旧会话记录，保留原消息和发送接口。' } as Conversation;
   const legacyMessages = [
     { id: 'legacy-user', role: 'user', sequence: 1, threadId: 'legacy-thread', createdAt: date, blocks: [{ type: 'text', text: '你装了哪些技能？' }] },
     { id: 'legacy-answer', role: 'assistant', sequence: 2, threadId: 'legacy-thread', createdAt: date, blocks: [{ type: 'text', text: '我会帮你梳理页面的内容结构、排版与交互状态。\n\n这条消息来自旧会话接口。现在它和新聊天使用一致的气泡、署名和输入区，历史内容仍然保留。' }] },
@@ -80,6 +81,9 @@ function fixtureStore() {
       messagePages.set(conversationId, legacyMessages);
       const threadId = threadFor(conversationId);
       legacyMessages.push({ id: 'legacy-user-' + legacyMessages.length, role: 'user', sequence: legacyMessages.length + 1, threadId, createdAt: date, blocks: [{ type: 'text', text }] });
+      const record = promoted.get(conversationId);
+      if (record) promoted.set(conversationId, { ...record, hasMessages: true, lastMessageAt: date, lastMessagePreview: text });
+      notify();
       const runId = conversationId + ':run:' + legacyMessages.length;
       const emitFrame = (fields: Record<string, unknown>) => transient.forEach(listener => listener({ type: 'frame', frame: { threadId, runId, streamSequence: ++streamSequence, occurredAt: new Date().toISOString(), ...fields } } as ConversationTransientSubscriptionEvent));
       const schedule = (fn: () => void, ms: number) => { const timer = setTimeout(() => { fn(); timers.delete(timer); }, ms); timers.add(timer); };
@@ -88,6 +92,12 @@ function fixtureStore() {
       schedule(() => { const text = '统一聊天已收到消息，正在逐步输出回复。'; legacyMessages.push(Object.assign({ id: runId, role: 'assistant', sequence: legacyMessages.length + 1, threadId, createdAt: date, blocks: [{ type: 'text', text }] }, { runId })); emitFrame({ kind: 'terminal', terminalState: 'completed', assistantTimeline: [{ id: 'final', sequence: 1, kind: 'text', phase: 'final_answer', text, status: 'completed' }] }); }, 11000);
       return { threadId, taskVersion: legacyMessages.length };
     },
+    detectKernels: async () => ({ kernels: [
+      { kernelId: 'native', name: 'Sync-Think', icon: 'native', installed: true, version: '1.0', executablePath: '/bin/native', knownGood: true, capabilities: { protocols: ['openai-responses'], permission: 'none', permissionBridge: false, pause: 'executor', compress: 'none', usageReport: false } },
+      { kernelId: 'codex', name: 'GPT', icon: 'codex', installed: true, version: '1.0', executablePath: '/bin/codex', knownGood: true, capabilities: { protocols: ['openai-responses'], permission: 'own', permissionBridge: true, pause: 'session', compress: 'own', usageReport: true } },
+    ] }),
+    listSkills: async () => ({ skills: [] }),
+    listMcpServers: async () => ({ servers: [] }),
     createGlobalAgent: async (payload: Partial<GlobalAgent>) => { const agent = { ...initialAgents()[0], ...payload, id: `created-agent-${agents.length}` as GlobalAgent['id'], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }; agents = [...agents, agent]; notify(); return { agent }; },
     listGlobalAgentWorkspaceActivations: async () => ({ activations: [] }),
     updateGlobalAgent: async (payload: { agentId: string } & Partial<GlobalAgent>) => { agents = agents.map(a => a.id === payload.agentId ? { ...a, ...payload, updatedAt: new Date().toISOString() } : a); persistAvatars(); notify(); return { agent: agents.find(a => a.id === payload.agentId) }; },
@@ -97,7 +107,7 @@ function fixtureStore() {
         const selected = (team?.members.map(m => m.agentId) ?? request.agentIds).flatMap(id => agents.find(a => a.id === id) ?? []);
         const s = makeSnapshot(`created-${request.clientRequestId}`, selected, request.kind === 'direct' ? 'direct' : 'group', request.title);
         if (team) { teamTargets.set(s.conversation.id, team.id); s.conversation.coordinatorMemberId = team.coordinatorAgentId ?? selected[0]?.id; }
-        snapshots.set(s.conversation.id, s); notify(); return { snapshot: s };
+        snapshots.set(s.conversation.id, s); notify(); return { snapshot: s, executionVersion: 3 };
       }
       const snapshot = snapshots.get('conversationId' in request ? request.conversationId : '')!;
       if (!snapshot) throw new Error('QA 会话不存在');
@@ -109,10 +119,10 @@ function fixtureStore() {
           blocks: message.blocks.filter(block => block.type === 'text').map(block => ({ type: 'text', text: block.text ?? '' })),
         })));
         promoted.set(conversation.id, conversation); notify();
-        return { promotedConversation: conversation, snapshot };
+        return { promotedConversation: conversation, snapshot, executionVersion: 3 };
       }
       if (request.action === 'send') {
-        snapshot.messages = [...snapshot.messages, { ...message(snapshot, 'user', request.text), recipientMemberIds: request.recipientMemberIds ?? [] }];
+        snapshot.messages = [...snapshot.messages, { ...message(snapshot, 'user', request.text), recipientMemberIds: request.recipientMemberIds ?? [], mentions: request.mentions ?? [] }];
         const member = snapshot.members.find(m => m.id === request.recipientMemberIds?.[0]) ?? snapshot.members.find(m => m.id === snapshot.conversation.coordinatorMemberId) ?? snapshot.members.find(m => m.kind === 'agent')!;
         const taskId = `task-${snapshot.messages.length}`;
         snapshot.tasks = [...snapshot.tasks, { id: taskId, rootTaskId: taskId, originMessageId: snapshot.messages.at(-1)!.id, assigneeMemberId: member.id, title: '整理回复', instructions: request.text, expectedOutput: '', dependsOnTaskIds: [], contextRefs: [], resourceClaims: [], returnTo: { conversationId: snapshot.conversation.id, replyToMessageId: snapshot.messages.at(-1)!.id }, timeoutSeconds: 7200, currentAttemptId: taskId, kind: 'task', createdAt: date }];
@@ -124,10 +134,13 @@ function fixtureStore() {
         const doneTimer = setTimeout(() => { snapshot.messages = [...snapshot.messages, message(snapshot, member.id, text)]; snapshot.attempts = snapshot.attempts.map(a => a.id === taskId ? { ...a, status: 'succeeded', output: text } : a); emit(snapshot); timers.delete(doneTimer); }, 6400);
         timers.add(workTimer); timers.add(streamTimer); timers.add(doneTimer);
       }
-      return { snapshot: { ...snapshot } };
+      return { snapshot: { ...snapshot }, executionVersion: 3 };
     },
   };
-  return { runtime, agents: () => agents, teams: () => teams, conversations: () => [legacy, ...teamConversations, ...[...snapshots.values()].map(s => promoted.get(s.conversation.id) ?? (teamTargets.has(s.conversation.id) ? { ...conversationOf(s), track: 'team' as const, targetRef: teamTargets.get(s.conversation.id)! } : conversationOf(s)))], subscribe: (fn: () => void) => { notify = fn; }, cleanup: () => timers.forEach(clearTimeout), snapshots };
+  const pinnedAt = new Map<string, string>();
+  const withPin = (conversation: Conversation) =>
+    pinnedAt.has(conversation.id) ? { ...conversation, pinnedAt: pinnedAt.get(conversation.id) } : conversation;
+  return { runtime, agents: () => agents, teams: () => teams, conversations: () => [legacy, ...teamConversations, ...[...snapshots.values()].map(s => promoted.get(s.conversation.id) ?? (teamTargets.has(s.conversation.id) ? { ...conversationOf(s), track: 'team' as const, targetRef: teamTargets.get(s.conversation.id)! } : conversationOf(s)))].map(withPin), togglePin: (id: string, pinned: boolean) => { if (pinned) pinnedAt.set(id, new Date().toISOString()); else pinnedAt.delete(id); notify(); }, subscribe: (fn: () => void) => { notify = fn; }, cleanup: () => timers.forEach(clearTimeout), snapshots };
 }
 
 export default function AgentWorkspaceFixture() {
@@ -142,7 +155,7 @@ export default function AgentWorkspaceFixture() {
   const [workspaceId, setWorkspaceId] = useState('fixture-workspace');
   const [notice, setNotice] = useState('');
   return <DialogProvider><div data-testid="agent-workspace-fixture" data-phase3-ready="true" style={{ width: '100%', height: '100dvh', display: 'flex' }}>
-    <AgentWorkspace key={workspaceId} workspaceId={workspaceId} workspaces={workspaces} agents={store.agents()} teams={store.teams()} models={fixtureModels} renderLegacyConversation={(conversation, onEditAgent, agents) => <LegacyChat agentWorkspace onEditAgent={onEditAgent} conversation={conversation} agents={agents} teams={store.teams()} models={fixtureModels} workspaces={[{ ...workspaces[0], folderPath: 'D:/fixture' }]} modelName="离线验收模型" eventHistory={fixtureEvents} onTitleUpdated={() => refresh(v => v + 1)} />} conversations={store.conversations()} onExit={() => setNotice('工作区切换已触发；此页只运行离线智能体 UI。')} onSelectWorkspace={setWorkspaceId} onRefresh={() => refresh(v => v + 1)} onSettings={() => setNotice('设置入口已触发；正式桌面连接完整设置。')} onManageAgents={() => setNotice('管理入口已触发；正式桌面连接智能体库。')} onTogglePin={(id, pinned) => { const s = store.snapshots.get(id); if (s) setNotice(pinned ? '置顶操作已触发' : '取消置顶操作已触发'); }} onRename={() => setNotice('重命名入口已触发')} onArchive={() => setNotice('归档入口已触发')} onUnarchive={() => setNotice('移出归档入口已触发')} />
+    <AgentWorkspace key={workspaceId} workspaceId={workspaceId} workspaces={workspaces} agents={store.agents()} teams={store.teams()} models={fixtureModels} renderAgentLibrary={(onBack, onStartConversation, initialAgentId) => <AgentLibrary initialAgentId={initialAgentId} agents={store.agents()} models={fixtureModels} teams={store.teams()} onRefresh={() => refresh(v => v + 1)} onBack={onBack} onStartConversation={onStartConversation} />} renderLegacyConversation={(conversation, onEditAgent, agents) => <LegacyChat agentWorkspace onEditAgent={onEditAgent} conversation={conversation} agents={agents} teams={store.teams()} models={fixtureModels} workspaces={[{ ...workspaces[0], folderPath: 'D:/fixture' }]} modelName="离线验收模型" eventHistory={fixtureEvents} onTitleUpdated={() => refresh(v => v + 1)} />} conversations={store.conversations()} onExit={() => setNotice('工作区切换已触发；此页只运行离线智能体 UI。')} onSelectWorkspace={setWorkspaceId} onRefresh={() => refresh(v => v + 1)} onSettings={() => setNotice('设置入口已触发；正式桌面连接完整设置。')} onManageAgents={() => setNotice('管理入口已触发；正式桌面连接智能体库。')} onTogglePin={(id, pinned) => { store.togglePin(id, pinned); setNotice(pinned ? '已置顶' : '已取消置顶'); }} onRename={() => setNotice('重命名入口已触发')} onArchive={() => setNotice('归档入口已触发')} onUnarchive={() => setNotice('移出归档入口已触发')} />
     {notice && <div role="status" style={{ position: 'fixed', left: '50%', bottom: 20, padding: 12, background: 'var(--color-panel)', border: '1px solid var(--color-border)', borderRadius: 12, zIndex: 130 }} onClick={() => setNotice('')}>{notice}</div>}
   </div></DialogProvider>;
 }

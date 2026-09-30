@@ -46,21 +46,21 @@ describe('NewMax 1.1.14 visual contract', () => {
     expect(darkToken('states', 'active')).toBe('rgba(168, 184, 176, 0.16)');
   });
 
-  it('matches NewMax text opacity and 220px sidebar geometry', () => {
+  it('retains legacy text expectations with agent-family 260px sidebar geometry', () => {
     expect(darkToken('text', 'text')).toBe('rgba(255, 255, 255, 0.9)');
     expect(darkToken('text', 'text-secondary')).toBe('rgba(255, 255, 255, 0.5)');
     expect(darkToken('text', 'text-faint')).toBe('rgba(255, 255, 255, 0.38)');
-    expect(SIDEBAR_WIDTH_DEFAULT).toBe(220);
+    expect(SIDEBAR_WIDTH_DEFAULT).toBe(260);
 
     const legacyStorage = {
       getItem: (key: string) => (key === 'sync-think.sidebarWidth' ? '300' : null),
     };
-    expect(readSidebarWidth(legacyStorage)).toBe(220);
+    expect(readSidebarWidth(legacyStorage)).toBe(260);
 
     const resizedLegacyStorage = {
       getItem: (key: string) => (key === 'sync-think.sidebarWidth' ? '273' : null),
     };
-    expect(readSidebarWidth(resizedLegacyStorage)).toBe(220);
+    expect(readSidebarWidth(resizedLegacyStorage)).toBe(260);
   });
 
   it('keeps the connected tab surface effects exact in both themes', () => {

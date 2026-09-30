@@ -1,0 +1,146 @@
+/* Agent-aligned typography. Keep this after visual workbench styles: legacy
+ * inner labels and CodeMirror themes otherwise override the parent font size.
+ * Only the opt-in desktop workspace is affected; palettes still own colors. */
+:root[data-shell-design='agent'] .shell-normal-workspace {
+  font-family: var(--font-sans);
+  font-size: var(--chat-font-body-size);
+  line-height: var(--chat-font-body-line-height);
+  font-weight: 400;
+  letter-spacing: 0;
+}
+:root[data-shell-design='agent'] .shell-normal-workspace :is(button, input, textarea, select) {
+  font-family: inherit;
+  letter-spacing: inherit;
+}
+
+/* Names are primary content even when their conversation is not selected. */
+:root[data-shell-design='agent'] .shell-normal-workspace .st-conv-row__title {
+  font-size: var(--chat-font-body-size);
+  line-height: var(--chat-font-body-line-height);
+  font-weight: 500;
+  color: var(--color-text);
+}
+:root[data-shell-design='agent']
+  .shell-normal-workspace
+  :is(
+    .shell-sidebar-actions .st-nav-item,
+    .sidebar-mode-switch button,
+    .shell-sidebar-project,
+    .shell-sidebar-project-heading .shell-sidebar-project-title,
+    .shell-sidebar-user-name,
+    .shell-chat-breadcrumb__conversation,
+    .shell-topbar--chat [data-testid='topbar-workspace-menu']
+  ) {
+  font-size: var(--chat-font-label-size);
+  line-height: var(--chat-font-label-line-height);
+  color: var(--color-text);
+}
+:root[data-shell-design='agent']
+  .shell-normal-workspace
+  :is(
+    .shell-sidebar-project-label,
+    .shell-sidebar--chat .st-conv-row__time,
+    .st-conv-row__sub,
+    .shell-sidebar-version,
+    .shell-empty-newmax-tips,
+    .shell-msg-meta
+  ) {
+  font-size: var(--chat-font-meta-size);
+  line-height: var(--chat-font-meta-line-height);
+  color: var(--color-text-secondary);
+}
+
+/* Body, input and replies use the same 14/20 scale as the agent workspace.
+ * Markdown headings and monospace code keep their own semantic styles. */
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-user-bubble,
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-response__content .shell-md,
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-composer-editor .cm-content,
+:root[data-shell-design='agent']
+  .shell-normal-workspace
+  .shell-newmax-composer-frame[data-presentation='pill']
+  .cm-scroller {
+  font-size: var(--chat-font-body-size);
+  line-height: var(--chat-font-body-line-height);
+  color: var(--color-text);
+}
+:root[data-shell-design='agent']
+  .shell-normal-workspace
+  .shell-newmax-composer-frame[data-presentation='pill']
+  .shell-compose__model-btn {
+  font-size: var(--chat-font-label-size);
+  line-height: var(--chat-font-label-line-height);
+}
+:root[data-shell-design='agent']
+  .shell-normal-workspace
+  :is(
+    .shell-newmax-composer-frame__status .shell-composer-git,
+    .shell-newmax-composer-frame__status .shell-composer-git button,
+    .shell-ai-composer-status .shell-compose__tool,
+    .shell-ai-composer-status .shell-compose__identity,
+    .shell-ai-composer-status .shell-compose__ctx,
+    .shell-ai-composer-status .shell-kernel-chip
+  ) {
+  font-size: var(--chat-font-meta-size);
+  line-height: var(--chat-font-meta-line-height);
+}
+
+/* Calendar colors still identify tasks. Use the palette's title ink for small
+ * timestamps, without the extra opacity that made blue/green text too faint. */
+:root[data-shell-design='agent'] .shell-normal-workspace .task-cal__event strong {
+  font-size: var(--chat-font-label-size);
+  line-height: var(--chat-font-meta-line-height);
+}
+:root[data-shell-design='agent'] .shell-normal-workspace .task-cal__event time {
+  font-size: var(--chat-font-meta-size);
+  line-height: var(--chat-font-meta-line-height);
+  color: var(--event-title);
+  opacity: 1;
+}
+:root[data-shell-design='agent']
+  .shell-normal-workspace
+  .task-cal--board
+  .task-cal__event.is-compact {
+  min-height: 24px;
+}
+:root[data-shell-design='agent']
+  .shell-normal-workspace
+  :is(
+    .task-cal__heading p,
+    .task-cal__month-weekday,
+    .task-cal__week-head small,
+    .task-cal__hour-caption,
+    .task-cal__hours > span,
+    .task-cal__event > span,
+    .task-cal__legend,
+    .task-cal__filter-label,
+    .task-cal__detail-zone,
+    .task-cal__outside,
+    .task-cal__footer,
+    .task-cal__footer-note,
+    .task-cal__more
+  ) {
+  font-size: var(--chat-font-meta-size);
+  line-height: var(--chat-font-meta-line-height);
+}
+:root[data-shell-design='agent']
+  .shell-normal-workspace
+  :is(
+    .task-cal__month-date button,
+    .task-cal__date-trigger,
+    .task-cal__views button,
+    .task-cal__scope-trigger,
+    .task-cal__filter,
+    .task-cal__mini button,
+    .task-cal__instruction
+  ) {
+  font-size: var(--chat-font-label-size);
+  line-height: var(--chat-font-label-line-height);
+}
+
+/* Three compact rows still fit once their text is no longer 11px. */
+:root[data-shell-design='agent'] .shell-normal-workspace .task-cal--board .task-cal__month {
+  grid-template-rows: 28px repeat(var(--calendar-weeks), minmax(132px, 1fr));
+}
+:root[data-shell-design='agent'] .shell-normal-workspace .task-cal--board .task-cal__month-cell {
+  min-height: 132px;
+}

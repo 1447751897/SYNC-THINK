@@ -281,7 +281,7 @@ describe('SqliteCollaborationStore', () => {
     const reopened = await connect(path);
     expect(reopened.store.read('conversation-a')).toEqual(snapshot());
     expect(MIGRATIONS.some((migration) => migration.name === '0059_collaboration_chat')).toBe(true);
-    expect(MIGRATIONS.at(-1)?.name).toBe('0063_browser_workflow_workspace');
+    expect(reopened.raw.prepare('SELECT count(*) AS count FROM migration_record WHERE name = ?').get(MIGRATIONS.at(-1)!.name)).toEqual({ count: 1 });
     expect(
       reopened.raw
         .prepare(

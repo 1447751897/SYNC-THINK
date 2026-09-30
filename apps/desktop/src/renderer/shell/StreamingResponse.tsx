@@ -71,6 +71,7 @@ export function StreamingResponse({
   children,
   status,
   variant = 'plain',
+  showContent = true,
   notice,
   metadata,
   sources = NO_CITATION_SOURCES,
@@ -88,6 +89,7 @@ export function StreamingResponse({
   children?: ReactNode;
   status: StreamingResponseStatus;
   variant?: 'plain' | 'bubble';
+  showContent?: boolean;
   notice?: ReactNode;
   metadata?: ReactNode;
   sources?: readonly AnswerSource[];
@@ -147,9 +149,9 @@ export function StreamingResponse({
         >
           {statusLabel}
         </span>
-        <div className="shell-response__content" aria-busy={status === 'streaming'}>
+        {showContent && <div className="shell-response__content" aria-busy={status === 'streaming'}>
           {children}
-        </div>
+        </div>}
         {notice ? <div className="shell-response__notice">{notice}</div> : null}
         {showFooter ? (
           <div className="shell-msg-footer shell-response__footer" data-testid="response-footer">

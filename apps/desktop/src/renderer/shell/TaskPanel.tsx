@@ -4,16 +4,18 @@ import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import {
+  Bot,
   Check,
+  Cpu,
   ChevronDown,
   Clock3,
   LoaderCircle,
   Pause,
   Pencil,
   Play,
-  Plus,
   RefreshCw,
   Trash2,
+  UsersRound,
   X,
 } from 'lucide-react';
 import type {
@@ -27,7 +29,7 @@ import type {
 import type { WorkspaceSummary, SkillVersionSummary } from '@sync-think/protocol';
 import type { ModelOption } from './NewConversationDialog.js';
 import { AgentAvatarView } from './AgentAvatarView.js';
-import { TaskTemporalPicker } from './TaskTemporalPicker.js';
+import { isTaskTime, TaskTemporalPicker, TaskTimeField } from './TaskTemporalPicker.js';
 import { TaskSheet } from './TaskSheet.js';
 import { TaskCalendar } from './TaskCalendar.js';
 import { TaskScopePicker } from './TaskScopePicker.js';
@@ -281,7 +283,11 @@ export function TaskPanel({
         </div>
       ) : displayedTasks.length === 0 ? (
         <div className="task-panel__empty" data-testid="task-empty">
-          没有符合条件的任务
+          {loadError
+            ? '任务暂未加载，请重试'
+            : tasks.length
+              ? '没有符合筛选条件的任务'
+              : '还没有定时任务'}
         </div>
       ) : (
         displayedTasks.map((task) => {
@@ -464,23 +470,6 @@ export function TaskPanel({
   };
   return (
     <div className="task-panel task-panel--calendar" data-testid="task-panel">
-      <header className="task-panel__head">
-        <div>
-          <h1 className="task-panel__title">定时任务</h1>
-          <p className="task-panel__subtitle">安排执行时间，查看任务日程与运行记录</p>
-        </div>
-        <button
-          type="button"
-          className="task-panel__new"
-          data-testid="task-create"
-          onClick={() => {
-            setCreateAt(undefined);
-            setEditing('new');
-          }}
-        >
-          <Plus size={14} /> 新建任务
-        </button>
-      </header>
       {loadError ? (
         <div className="task-cal__notice" role="alert">
           加载失败：{loadError}
@@ -523,10 +512,41 @@ export function TaskPanel({
             <span className="task-cal__status-check">{statusSel.has(key) ? '✓' : ''}</span>
           </button>
         ))}
+        activeFilterCount={
+          statusSel.size + (3 - targets.size) + (scopes.includes('all') ? 0 : scopes.length)
+        }
+        onResetFilters={() => {
+          setScopes(['all']);
+          setStatusSel(new Set());
+          setTargets(new Set(['agent', 'model', 'team']));
+        }}
+        onCreateTask={() => {
+          setCreateAt(undefined);
+          setEditing('new');
+        }}
+        loadError={loadError}
         listContent={renderCards(shown)}
         loading={loading}
         now={now}
-        onPick={(task) => setSelectedTaskId(task.id)}
+        onPick={(task) => {
+          setHistoryTask(null);
+          setSelectedTaskId(task.id);
+        }}
+        onEdit={(task) => {
+          closeDetails();
+          setEditing(task);
+        }}
+        onHistory={(task) => {
+          setSelectedTaskId(null);
+          setHistoryTask(task);
+        }}
+        onRun={(task) => void triggerNow(task)}
+        busyTaskId={busyId}
+        taskContext={(task) => ({
+          target: <TargetLine task={task} agents={agents} models={models} teams={teams} />,
+          rule: ruleSummary(task.rule),
+          workspace: workspaceName(task.workspaceId),
+        })}
         onCreate={(date) => {
           setCreateAt(date);
           setEditing('new');
@@ -671,7 +691,11 @@ export function TaskPanel({
           key={editing === 'new' ? 'new' : editing.id}
           task={editing === 'new' ? null : editing}
           initialDate={createAt}
-          initialWorkspaceId={scopes.length === 1 && scopes[0] !== 'all' && scopes[0] !== 'global' ? scopes[0] : undefined}
+          initialWorkspaceId={
+            scopes.length === 1 && scopes[0] !== 'all' && scopes[0] !== 'global'
+              ? scopes[0]
+              : undefined
+          }
           agents={agents}
           models={models}
           teams={teams}
@@ -895,11 +919,15 @@ function HistoryPanel({
 
 function SelectBox({
   value,
+  selectedValue,
+  leading,
   placeholder = '请选择',
   children,
   className,
 }: {
   value: string;
+  selectedValue: string;
+  leading?: ReactNode;
   placeholder?: string;
   children: ReactNode;
   className?: string;
@@ -909,7 +937,14 @@ function SelectBox({
       <div className={`task-editor__select${className ? ` ${className}` : ''}`}>
         <DropdownMenu.Trigger asChild>
           <button type="button" className="task-editor__select-box" aria-label={placeholder}>
-            <span className="task-editor__select-value">{value || placeholder}</span>
+            <span className="task-editor__select-value">
+              {leading ? (
+                <span className="task-editor__select-leading" aria-hidden="true">
+                  {leading}
+                </span>
+              ) : null}
+              <span className="task-editor__select-label">{value || placeholder}</span>
+            </span>
             <ChevronDown size={14} />
           </button>
         </DropdownMenu.Trigger>
@@ -920,7 +955,9 @@ function SelectBox({
             sideOffset={5}
             collisionPadding={12}
           >
-            {children}
+            <DropdownMenu.RadioGroup value={selectedValue} className="task-editor__select-options">
+              {children}
+            </DropdownMenu.RadioGroup>
           </DropdownMenu.Content>
         </DropdownMenu.Portal>
       </div>
@@ -931,28 +968,49 @@ function SelectBox({
 function SelectOption({
   value,
   label,
-  active,
+  leading,
   onPick,
 }: {
   value: string;
   label: string;
-  active?: boolean;
+  leading?: ReactNode;
   onPick(value: string): void;
 }) {
   return (
-    <DropdownMenu.Item
+    <DropdownMenu.RadioItem
+      value={value}
+      aria-label={label}
       className="task-editor__select-opt"
-      data-active={active ? '1' : '0'}
       onSelect={() => onPick(value)}
     >
-      {label}
-    </DropdownMenu.Item>
+      {leading ? (
+        <span className="task-editor__select-leading" aria-hidden="true">
+          {leading}
+        </span>
+      ) : null}
+      <span className="task-editor__select-label">{label}</span>
+      <span className="task-editor__select-check" aria-hidden="true">
+        <DropdownMenu.ItemIndicator>
+          <Check size={16} />
+        </DropdownMenu.ItemIndicator>
+      </span>
+    </DropdownMenu.RadioItem>
+  );
+}
+
+function ExecutorTypeIcon({ kind }: { kind: ScheduledTaskTarget['kind'] }) {
+  return kind === 'agent' ? (
+    <Bot size={18} />
+  ) : kind === 'model' ? (
+    <Cpu size={18} />
+  ) : (
+    <UsersRound size={18} />
   );
 }
 
 // ─── 时区菜单（搜索 + 常用/全部分组）────────────────────────────────────────
 
-function ZoneMenu({ value, onPick }: { value: string; onPick(zone: string): void }) {
+function ZoneMenu({ onPick }: { onPick(zone: string): void }) {
   const [query, setQuery] = useState('');
   const q = query.trim().toLowerCase();
   const filtered = q ? TIME_ZONES.filter((z) => z.toLowerCase().includes(q)) : null;
@@ -974,36 +1032,18 @@ function ZoneMenu({ value, onPick }: { value: string; onPick(zone: string): void
           <div className="task-editor__zone-empty">无匹配时区</div>
         ) : (
           filtered.map((zone) => (
-            <SelectOption
-              key={zone}
-              value={zone}
-              label={zone}
-              active={zone === value}
-              onPick={onPick}
-            />
+            <SelectOption key={zone} value={zone} label={zone} onPick={onPick} />
           ))
         )
       ) : (
         <>
           <div className="task-editor__zone-group">常用</div>
           {TIME_ZONE_COMMON.map((zone) => (
-            <SelectOption
-              key={zone}
-              value={zone}
-              label={zone}
-              active={zone === value}
-              onPick={onPick}
-            />
+            <SelectOption key={zone} value={zone} label={zone} onPick={onPick} />
           ))}
           <div className="task-editor__zone-group">全部</div>
           {TIME_ZONES.filter((z) => !TIME_ZONE_COMMON.includes(z)).map((zone) => (
-            <SelectOption
-              key={zone}
-              value={zone}
-              label={zone}
-              active={zone === value}
-              onPick={onPick}
-            />
+            <SelectOption key={zone} value={zone} label={zone} onPick={onPick} />
           ))}
         </>
       )}
@@ -1114,6 +1154,8 @@ function TaskEditor({
 
   const agentOptions = agents.filter((agent) => !agent.archived);
   const teamOptions = teams;
+  const executorOptions = targetKind === 'agent' ? agentOptions : teamOptions;
+  const selectedExecutor = executorOptions.find((item) => item.id === targetRef);
   const providerOptions = useMemo(
     () => [...new Set(models.map((m) => m.providerName).filter(Boolean))],
     [models],
@@ -1191,8 +1233,8 @@ function TaskEditor({
       if (windowUnlimited) {
         return { kind: 'every', intervalMinutes: minutes };
       }
-      if (!/^\d{2}:\d{2}$/.test(windowStart) || !/^\d{2}:\d{2}$/.test(windowEnd)) {
-        setError('时段窗口时间需为 HH:mm');
+      if (!isTaskTime(windowStart) || !isTaskTime(windowEnd)) {
+        setError('时段窗口时间需为 HH:mm（00:00–23:59）');
         return null;
       }
       return {
@@ -1209,8 +1251,8 @@ function TaskEditor({
         setError('随机次数非法（最少 ≥1 且最多 ≥ 最少）');
         return null;
       }
-      if (!/^\d{2}:\d{2}$/.test(randomStart) || !/^\d{2}:\d{2}$/.test(randomEnd)) {
-        setError('窗口时间需为 HH:mm');
+      if (!isTaskTime(randomStart) || !isTaskTime(randomEnd)) {
+        setError('窗口时间需为 HH:mm（00:00–23:59）');
         return null;
       }
       return {
@@ -1364,6 +1406,8 @@ function TaskEditor({
                 <span>执行者类型</span>
                 <SelectBox
                   value={{ agent: '智能体', model: '直接模型', team: '小队' }[targetKind]}
+                  selectedValue={targetKind}
+                  leading={<ExecutorTypeIcon kind={targetKind} />}
                   placeholder="执行者类型"
                 >
                   {(['agent', 'model', 'team'] as const).map((kind) => (
@@ -1371,7 +1415,7 @@ function TaskEditor({
                       key={kind}
                       value={kind}
                       label={{ agent: '智能体', model: '直接模型', team: '小队' }[kind]}
-                      active={targetKind === kind}
+                      leading={<ExecutorTypeIcon kind={kind} />}
                       onPick={() => {
                         setTargetKind(kind);
                         setTargetRef('');
@@ -1386,23 +1430,29 @@ function TaskEditor({
               <div className="task-editor__field">
                 <span>执行者</span>
                 <SelectBox
-                  value={
-                    (targetKind === 'agent' ? agentOptions : teamOptions).find(
-                      (item) => item.id === targetRef,
-                    )?.name ?? ''
+                  value={selectedExecutor?.name ?? ''}
+                  selectedValue={targetRef}
+                  leading={
+                    selectedExecutor ? (
+                      <AgentAvatarView
+                        name={selectedExecutor.name}
+                        avatar={selectedExecutor.avatar}
+                        size={22}
+                      />
+                    ) : undefined
                   }
                   placeholder="选择执行者"
                 >
-                  {(targetKind === 'agent' ? agentOptions : teamOptions).map((item) => (
+                  {executorOptions.map((item) => (
                     <SelectOption
                       key={item.id}
                       value={item.id}
                       label={item.name}
-                      active={targetRef === item.id}
+                      leading={<AgentAvatarView name={item.name} avatar={item.avatar} size={22} />}
                       onPick={setTargetRef}
                     />
                   ))}
-                  {(targetKind === 'agent' ? agentOptions : teamOptions).length === 0 ? (
+                  {executorOptions.length === 0 ? (
                     <div className="task-editor__zone-empty">
                       暂无可用{targetKind === 'agent' ? '智能体' : '小队'}
                     </div>
@@ -1413,13 +1463,16 @@ function TaskEditor({
               <div className="task-editor__columns">
                 <div className="task-editor__field">
                   <span>供应商</span>
-                  <SelectBox value={providerRef} placeholder="选择供应商">
+                  <SelectBox
+                    value={providerRef}
+                    selectedValue={providerRef}
+                    placeholder="选择供应商"
+                  >
                     {providerOptions.map((provider) => (
                       <SelectOption
                         key={provider}
                         value={provider}
                         label={provider}
-                        active={providerRef === provider}
                         onPick={(value) => {
                           setProviderRef(value);
                           setTargetRef(
@@ -1434,6 +1487,7 @@ function TaskEditor({
                   <span>模型</span>
                   <SelectBox
                     value={models.find((model) => model.modelId === targetRef)?.displayName ?? ''}
+                    selectedValue={targetRef}
                     placeholder="选择模型"
                   >
                     {providerModels.map((model) => (
@@ -1441,7 +1495,6 @@ function TaskEditor({
                         key={model.modelId}
                         value={model.modelId}
                         label={model.displayName}
-                        active={targetRef === model.modelId}
                         onPick={setTargetRef}
                       />
                     ))}
@@ -1464,6 +1517,7 @@ function TaskEditor({
                     ruleKind
                   ]
                 }
+                selectedValue={ruleKind}
                 placeholder="重复方式"
               >
                 {(['at', 'weekly', 'every', 'random', 'cron'] as const).map((kind) => (
@@ -1479,7 +1533,6 @@ function TaskEditor({
                         cron: 'Cron',
                       }[kind]
                     }
-                    active={ruleKind === kind}
                     onPick={() => setRuleKind(kind)}
                   />
                 ))}
@@ -1547,24 +1600,18 @@ function TaskEditor({
                 </div>
                 <div className="task-editor__window-row">
                   <span className="task-editor__field-label">开始</span>
-                  <input
-                    className="task-editor__time"
-                    type="text"
-                    inputMode="numeric"
-                    placeholder="HH:mm"
+                  <TaskTimeField
+                    label="窗口开始时间"
                     value={windowStart}
                     disabled={windowUnlimited}
-                    onChange={(e) => setWindowStart(e.target.value)}
+                    onChange={setWindowStart}
                   />
                   <span className="task-editor__field-label">结束</span>
-                  <input
-                    className="task-editor__time"
-                    type="text"
-                    inputMode="numeric"
-                    placeholder="HH:mm"
+                  <TaskTimeField
+                    label="窗口结束时间"
                     value={windowEnd}
                     disabled={windowUnlimited}
-                    onChange={(e) => setWindowEnd(e.target.value)}
+                    onChange={setWindowEnd}
                   />
                   <label className="task-editor__switch-wrap">
                     <input
@@ -1600,23 +1647,13 @@ function TaskEditor({
               <div className="task-editor__stack">
                 <div className="task-editor__row">
                   <span className="task-editor__field-label">每天</span>
-                  <input
-                    className="task-editor__time"
-                    type="text"
-                    inputMode="numeric"
-                    placeholder="HH:mm"
+                  <TaskTimeField
+                    label="窗口开始时间"
                     value={randomStart}
-                    onChange={(e) => setRandomStart(e.target.value)}
+                    onChange={setRandomStart}
                   />
                   <span className="task-editor__field-label">–</span>
-                  <input
-                    className="task-editor__time"
-                    type="text"
-                    inputMode="numeric"
-                    placeholder="HH:mm"
-                    value={randomEnd}
-                    onChange={(e) => setRandomEnd(e.target.value)}
-                  />
+                  <TaskTimeField label="窗口结束时间" value={randomEnd} onChange={setRandomEnd} />
                   <span className="task-editor__field-label">时段内</span>
                 </div>
                 <div className="task-editor__row">
@@ -1744,8 +1781,8 @@ function TaskEditor({
           <section className="task-editor__section">
             <h3 className="task-editor__section-title">任务时区</h3>
             <div className="task-editor__section-body">
-              <SelectBox value={timeZone} placeholder="选择时区">
-                <ZoneMenu value={timeZone} onPick={setTimeZone} />
+              <SelectBox value={timeZone} selectedValue={timeZone} placeholder="选择时区">
+                <ZoneMenu onPick={setTimeZone} />
               </SelectBox>
             </div>
           </section>

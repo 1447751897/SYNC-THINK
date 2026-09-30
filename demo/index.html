@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-CN" class="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SYNC-THINK · 前端替换预演</title>
+    <!--
+      shell.css is the app's OWN compiled stylesheet, served from the QA build
+      (.data/renderer-builds/qa/shell.css). Loading it is the whole point: the "现状"
+      sections below are rendered with the app's real class names, so they are the app's
+      own styling rather than a look-alike. See demo/serve.mjs.
+    -->
+    <link rel="stylesheet" href="/qa/shell.css" />
+    <link rel="stylesheet" href="./preview.css" />
+  </head>
+  <body>
+    <div class="fp-app">
+      <aside class="fp-nav" id="fp-nav"></aside>
+      <main class="fp-main">
+        <header class="fp-top" id="fp-top"></header>
+        <div class="fp-body" id="fp-body"></div>
+      </main>
+    </div>
+
+    <script src="./preview/bot-avatars.js"></script>
+    <script src="./preview/legacy-svg-avatar.js"></script>
+    <script src="./preview/code-blocks.js"></script>
+    <script src="./frontend-preview.js"></script>
+  </body>
+</html>

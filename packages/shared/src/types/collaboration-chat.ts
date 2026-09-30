@@ -1,10 +1,18 @@
+import type { CollaborationKind } from './conversation-kind.js';
+import type { Team } from './team-definition.js';
 import type { MessageBlock } from './message.js';
 
+/** Definition-management approvals and nested team participants require this host version. */
+export const COLLABORATION_EXECUTION_VERSION = 3;
+
 /** Persistent collaboration identities are independent of model provider roles. */
-export type CollaborationKind = 'model' | 'direct' | 'group';
+export type { CollaborationKind } from './conversation-kind.js';
 export interface CollaborationMember {
   id: string;
-  kind: 'user' | 'assistant' | 'agent';
+  kind: 'user' | 'assistant' | 'agent' | 'team';
+  /** Internal actors are scoped to one team participant, not independent group members. */
+  teamParticipantId?: string;
+  teamSnapshot?: Team;
   agentId?: string;
   name: string;
   avatar: string;
@@ -29,6 +37,7 @@ export interface CollaborationConversation {
   kind: CollaborationKind;
   title: string;
   coordinatorMemberId: string;
+  topologyRevision?: number;
   parentConversationId?: string;
   modelId?: string;
   policy: CollaborationPolicy;
@@ -43,7 +52,7 @@ export interface CollaborationMessage {
   conversationId: string;
   senderMemberId: string;
   recipientMemberIds: string[];
-  mentions: { memberId: string; label: string }[];
+  mentions: { memberId: string; label: string; start?: number; end?: number }[];
   kind: 'chat' | 'task_assignment' | 'task_result' | 'system';
   blocks: MessageBlock[];
   replyToMessageId?: string;
@@ -101,6 +110,9 @@ export interface CollaborationArtifact {
 }
 export interface CollaborationTask {
   id: string;
+  coordinatorMemberId?: string;
+  topologyRevision?: number;
+  teamParticipantId?: string;
   rootTaskId: string;
   parentTaskId?: string;
   originMessageId: string;
@@ -178,6 +190,7 @@ export interface CollaborationRepository {
 }
 export interface CollaborationTaskDraft {
   key?: string;
+  teamParticipantId?: string;
   assigneeMemberId: string;
   title: string;
   instructions: string;
@@ -190,20 +203,20 @@ export interface CollaborationTaskDraft {
   timeoutSeconds?: number;
 }
 export type CollaborationCommand =
-  | { action: 'create'; clientRequestId: string; kind: CollaborationKind; title: string; workspaceId?: string; agentIds: string[]; coordinatorAgentId?: string; modelId?: string; teamId?: string }
+  | { action: 'create'; clientRequestId: string; kind: CollaborationKind; title: string; workspaceId?: string; agentIds: string[]; coordinatorAgentId?: string; modelId?: string; teamId?: string; teamIds?: string[] }
   | { action: 'get'; conversationId: string }
   | { action: 'promote-direct'; conversationId: string }
   | { action: 'promote-team'; conversationId: string }
   | { action: 'list'; workspaceId?: string }
   | { action: 'activity'; workspaceId?: string }
-  | { action: 'send'; conversationId: string; clientRequestId: string; text: string; recipientMemberIds?: string[]; replyToMessageId?: string; expectsResponse?: boolean }
+  | { action: 'send'; conversationId: string; clientRequestId: string; text: string; mentions?: { memberId: string; label: string; start: number; end: number }[]; recipientMemberIds?: string[]; replyToMessageId?: string; expectsResponse?: boolean }
   | { action: 'start-workflow'; conversationId: string; clientRequestId: string; goal: string; originMessageId?: string; parentTaskId?: string }
   | { action: 'dispatch'; conversationId: string; clientRequestId: string; tasks: CollaborationTaskDraft[]; originMessageId?: string; parentTaskId?: string }
   | { action: 'cancel'; conversationId: string; taskId: string; includeChildren?: boolean }
   | { action: 'retry'; conversationId: string; taskId: string; clientRequestId: string }
   | { action: 'retry-message'; conversationId: string; messageId: string; clientRequestId: string }
   | { action: 'policy'; conversationId: string; policy: Partial<CollaborationPolicy> }
-  | { action: 'members'; conversationId: string; addAgentIds?: string[]; removeMemberIds?: string[]; coordinatorMemberId?: string; roles?: Record<string, string> }
+  | { action: 'members'; conversationId: string; addAgentIds?: string[]; addTeamIds?: string[]; expectedTopologyRevision?: number; removeMemberIds?: string[]; coordinatorMemberId?: string; roles?: Record<string, string> }
   | { action: 'direct'; conversationId: string; clientRequestId: string; memberIds: string[] };
 /** Sidebar-sized view of a collaboration conversation; returned by `list`. */
 export interface CollaborationRosterSummary {

@@ -1,6 +1,7 @@
 /**
  * @vitest-environment jsdom
  */
+import { agentMentionToken } from './collaboration-mentions.js';
 import { createRef, useState, type Ref } from 'react';
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -476,4 +477,18 @@ describe('ComposerEditor', () => {
     expect(onKeyDown).toHaveBeenCalledOnce();
     expect(onFocusChange.mock.calls.map(([focused]) => focused)).toEqual([true, false]);
   });
+});
+
+
+it('deletes an inline agent mention atomically without invoking attachment removal', () => {
+  const token = agentMentionToken('agent:a', '研究员');
+  const editorRef = createRef<ComposerEditorHandle>();
+  const onRemoveAttachment = vi.fn();
+  render(<ControlledEditor editorRef={editorRef} ariaLabel="消息" initialValue={`先问${token} 这个问题`} inputTestId="compat-input" onRemoveAttachment={onRemoveAttachment} />);
+  const textbox = screen.getByRole('textbox', { name: '消息' });
+  expect(textbox.textContent).toBe('先问研究员 这个问题');
+  editorRef.current?.setSelectionRange(2 + token.length + 1, 2 + token.length + 1);
+  fireEvent.keyDown(textbox, { key: 'Backspace' });
+  expect((screen.getByTestId('compat-input') as HTMLTextAreaElement).value).toBe('先问这个问题');
+  expect(onRemoveAttachment).not.toHaveBeenCalled();
 });

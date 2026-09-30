@@ -10,10 +10,7 @@
  */
 
 import type { ScheduledTask } from '@sync-think/shared';
-import {
-  decideCatchup,
-  type SchedulerDecision,
-} from '../scheduler-core.js';
+import { decideCatchup, type SchedulerDecision } from '../scheduler-core.js';
 
 export type CatchupActionType = 'catchup' | 'defer';
 
@@ -33,6 +30,8 @@ export interface CatchupSweepPlan {
 
 export interface PlanCatchupSweepInput {
   tasks: ScheduledTask[];
+  /** Live timer callbacks are not recovery, even when delivered milliseconds late. */
+  trigger?: 'timer' | 'recovery';
   /** 当前时间（注入）。 */
   now: Date;
   /** 补跑窗口（毫秒，默认 24h）。 */
@@ -46,6 +45,7 @@ export interface PlanCatchupSweepInput {
  * 纯函数（时间注入、计数注入），消费方执行副作用。
  */
 export function planCatchupSweep(input: PlanCatchupSweepInput): CatchupSweepPlan {
+  if (input.trigger === 'timer') return { actions: [], catchupCount: 0 };
   const actions: CatchupAction[] = [];
   let catchupCount = 0;
 

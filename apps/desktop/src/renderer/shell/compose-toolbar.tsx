@@ -769,6 +769,8 @@ export function ModelPickerMenu(props: {
  * Session cost/duration hover lives on the message footer metrics instead.
  */
 export function ContextRing(props: {
+  /** Desktop status bar exposes the same measured occupancy as the tooltip. */
+  showUsageLabel?: boolean;
   /** Context occupancy used by the ring (input-side tokens). */
   used: number;
   /** Context window limit for the ring. */
@@ -909,6 +911,7 @@ export function ContextRing(props: {
             transform="rotate(-90 11 11)"
           />
         </svg>
+        {props.showUsageLabel ? <span className="shell-context-percent">{pct}%</span> : null}
       </button>
       {open && tipStyle && typeof document !== 'undefined'
         ? createPortal(
@@ -958,6 +961,8 @@ export function resolveComposerActionKind(params: {
 }
 
 export interface ComposerActionSlotProps {
+  /** Keep microphone and a disabled empty send button visible in the compact chat. */
+  presentation?: 'switch' | 'paired';
   hasContent: boolean;
   running: boolean;
   /** Optional stable prefix for entry-point-specific regression selectors. */
@@ -978,6 +983,12 @@ export interface ComposerActionSlotProps {
 
 /** One NewMax action slot: microphone -> send -> stop as composer state changes. */
 export function ComposerActionSlot(props: ComposerActionSlotProps) {
+  if (props.presentation === 'paired') {
+    return <div className="shell-composer-paired-actions">
+      <ComposerActionSlot {...props} presentation="switch" hasContent={false} running={false} voiceDisabled={props.voiceDisabled || (props.running && !props.voiceActive)} />
+      <ComposerActionSlot {...props} presentation="switch" hasContent={props.hasContent || !props.running} voiceActive={false} sendDisabled={props.sendDisabled || !props.hasContent || props.voiceActive} />
+    </div>;
+  }
   const kind = resolveComposerActionKind(props);
   const voiceLabel = props.voiceActive
     ? (props.voiceStopLabel ?? '停止语音输入')

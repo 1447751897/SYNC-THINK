@@ -43,3 +43,21 @@ it('honours reduced motion without hiding the avatar', async () => {
   await waitFor(() => expect(frames.size).toBe(0));
   expect(view.getByRole('img', { name: '小美' })).toBeTruthy();
 });
+
+it('labels execution motion separately from idle roaming', () => {
+  const view = render(<AgentWorkspaceAvatar name="小美" avatar="aw:v1:drop:#55aadd:idle" animate size={34} />);
+  expect(view.getByRole('img', { name: '小美' }).getAttribute('data-motion')).toBe('idle');
+  view.rerender(<AgentWorkspaceAvatar name="小美" avatar="aw:v1:drop:#55aadd:idle" state="working" animate size={34} />);
+  expect(view.getByRole('img', { name: '小美' }).getAttribute('data-motion')).toBe('working');
+});
+
+it('glances and breathes without a full-turn somersault', () => {
+  render(face);
+  for (let time = 40; time <= 9000; time += 80) {
+    if (!frames.size) break;
+    act(() => frame(time));
+  }
+  const turns = context.rotate.mock.calls.map(([angle]) => Math.abs(Number(angle)));
+  expect(turns.length).toBeGreaterThan(8);
+  expect(Math.max(...turns)).toBeLessThan(0.3);
+});

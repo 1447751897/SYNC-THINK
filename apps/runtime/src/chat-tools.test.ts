@@ -1314,12 +1314,12 @@ describe('chatToolRequiresApproval', () => {
     expect(chatToolRequiresApproval('workspace', 'write_file')).toBe(false);
   });
 
-  it('gates agent mutations (create/update/archive) outside full-access', async () => {
+  it('always approves definition mutations; archive keeps its existing permission tier', async () => {
     const { chatToolRequiresApproval } = await import('./chat-tools.js');
     for (const tool of ['create_agent', 'update_agent', 'archive_agent']) {
       expect(chatToolRequiresApproval('ask', tool)).toBe(true);
       expect(chatToolRequiresApproval('workspace', tool)).toBe(true);
-      expect(chatToolRequiresApproval('full-access', tool)).toBe(false);
+      expect(chatToolRequiresApproval('full-access', tool)).toBe(tool !== 'archive_agent');
     }
     // read-only agent tool never needs approval
     expect(chatToolRequiresApproval('ask', 'list_agent_resources')).toBe(false);

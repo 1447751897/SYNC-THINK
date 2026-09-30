@@ -314,8 +314,8 @@ it('includes a bounded real-message preview in the paged conversation catalog', 
     test.append(1, 'agent reply');
     const response = await test.response(test.dispatch('conversation.list', { workspaceId: test.workspace.id, limit: 100 }));
     expect(response).toMatchObject({ kind: 'response', type: 'conversation.list', payload: { conversations: expect.arrayContaining([
-      expect.objectContaining({ id: test.conversation.id, lastMessagePreview: 'agent reply' }),
-      expect.objectContaining({ id: test.empty.id }),
+      expect.objectContaining({ id: test.conversation.id, lastMessagePreview: 'agent reply', hasMessages: true }),
+      expect.objectContaining({ id: test.empty.id, hasMessages: false }),
     ]) } });
     const catalog = (response.payload as { conversations: Array<{ id: string; lastMessagePreview?: string }> }).conversations;
     expect(catalog.find((c) => c.id === test.empty.id)?.lastMessagePreview).toBeUndefined();

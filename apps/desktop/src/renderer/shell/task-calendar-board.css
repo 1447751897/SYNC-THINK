@@ -1,0 +1,893 @@
+/* Board-style task calendar. Structural styles consume the existing light/dark tokens. */
+.task-panel--calendar {
+  container: scheduled-page / inline-size;
+  padding: 6px 18px 10px;
+}
+.task-cal--board {
+  display: flex;
+  flex-direction: column;
+  border: 0;
+  min-width: 0;
+  gap: 0;
+}
+.task-cal--board .task-cal__toolbar {
+  min-height: 66px;
+  padding: 4px 2px 12px;
+  border: 0;
+  gap: 10px;
+}
+.task-cal__heading {
+  margin-right: auto;
+  min-width: 0;
+}
+.task-cal--board .task-cal__range {
+  margin: 0;
+  font-size: 24px;
+  line-height: 1.4;
+  font-weight: 600;
+  letter-spacing: -0.5px;
+}
+.task-cal__heading p {
+  margin: 3px 0 0;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+}
+.task-cal__navigation {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  background: var(--color-control);
+}
+.task-cal__navigation button,
+.task-cal--board .task-cal__toolbar > button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--color-text-secondary);
+}
+.task-cal__navigation .task-cal__date-trigger {
+  width: auto;
+  padding: 0 10px;
+  color: var(--color-text);
+  font-size: 12px;
+}
+.task-cal__navigation button:hover {
+  color: var(--color-text);
+  background: var(--color-hover);
+}
+.task-cal--board .task-cal__toolbar > .task-cal__refresh {
+  width: 38px;
+  height: 38px;
+  border: 1px solid var(--color-border);
+  background: var(--color-control);
+  border-radius: 10px;
+}
+.task-cal--board .task-cal__toolbar > .task-panel__new {
+  width: auto;
+  height: 38px;
+  padding: 0 14px;
+  gap: 7px;
+  color: var(--color-accent-fg);
+  background: var(--color-accent);
+  border-radius: 10px;
+  font-size: 13px;
+}
+.task-cal--board .task-cal__toolbar > .task-panel__new:hover {
+  background: var(--task-accent-strong);
+}
+.task-cal__controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 2px 12px;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+.task-cal__controls > .task-cal__scope-trigger {
+  width: auto;
+  max-width: 220px;
+  min-height: 34px;
+  border: 0;
+  background: var(--color-sidebar);
+  border-radius: 8px;
+}
+.task-cal__filter-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 34px;
+  border: 0;
+  background: transparent;
+  padding: 0 10px;
+  border-radius: 8px;
+  color: var(--color-text-secondary);
+  font-size: 12px !important;
+}
+.task-cal__filter-toggle:hover,
+.task-cal__filter-toggle[aria-expanded='true'] {
+  background: var(--color-sidebar);
+  color: var(--color-text);
+}
+.task-cal__filter-toggle small {
+  display: grid;
+  place-items: center;
+  width: 17px;
+  height: 17px;
+  border-radius: 50%;
+  background: var(--color-accent-soft);
+  color: var(--color-accent-text);
+  font-size: 10px;
+}
+.task-cal__legend {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  margin-left: 6px;
+  font-size: 11px;
+  color: var(--color-text-secondary);
+}
+.task-cal__legend > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.task-cal__legend i {
+  width: 7px;
+  height: 7px;
+  border-radius: 3px;
+  background: var(--event-title);
+}
+.task-cal--board .task-cal__views {
+  border: 0;
+  background: var(--color-sidebar);
+  border-radius: 9px;
+  padding: 3px;
+}
+.task-cal--board .task-cal__views button {
+  min-height: 28px;
+  padding: 4px 12px;
+  border-radius: 6px;
+}
+.task-cal--board .task-cal__views button[aria-pressed='true'] {
+  background: var(--color-surface);
+  color: var(--color-text);
+  box-shadow: 0 1px 3px var(--color-modal-shadow);
+}
+.task-cal__body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  position: relative;
+}
+.task-cal__body[data-filters-open='true'] {
+  grid-template-columns: 224px minmax(0, 1fr);
+}
+.task-cal--board .task-cal__sidebar {
+  border: 1px solid var(--color-border);
+  border-radius: 14px;
+  padding: 16px 14px;
+  background: var(--color-sidebar);
+}
+.task-cal__filter-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 24px;
+  font-size: 13px;
+}
+.task-cal__filter-head button {
+  border: 0;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  padding: 4px 6px;
+  border-radius: 5px;
+}
+.task-cal__filter-head button:hover {
+  background: var(--color-hover);
+  color: var(--color-text);
+}
+.task-cal--board .task-cal__mini {
+  gap: 4px 2px;
+}
+.task-cal--board .task-cal__mini button {
+  border-radius: 50%;
+  aspect-ratio: 1;
+  padding: 3px;
+}
+.task-cal--board .task-cal__filter-label {
+  margin-top: 22px;
+  margin-bottom: 8px;
+  font-size: 11px;
+}
+.task-cal--board .task-cal__filter {
+  padding: 8px 4px;
+}
+.task-cal--board .task-cal__filter input {
+  width: 14px;
+  height: 14px;
+}
+.task-cal--board .task-cal__filter[data-target='model'] input:checked {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+}
+.task-cal--board .task-cal__filter[data-target='team'] input:checked {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+}
+.task-cal--board .task-cal__status-filter {
+  padding: 8px 4px;
+}
+.task-cal--board .task-cal__main {
+  background: var(--color-sidebar);
+  border-radius: 16px;
+  overflow: hidden;
+}
+.task-cal--board .task-cal__scroll {
+  scrollbar-gutter: auto;
+}
+.task-cal--board .task-cal__month {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  grid-template-rows: 28px repeat(var(--calendar-weeks), minmax(116px, 1fr));
+  gap: 6px;
+  height: 100%;
+  min-height: 0;
+  min-width: 600px;
+  padding: 8px;
+  border: 0;
+  background: var(--color-sidebar);
+}
+.task-cal--board .task-cal__month-weekday {
+  padding: 6px 3px;
+  font-size: 12px;
+  align-self: center;
+}
+.task-cal--board .task-cal__month-cell {
+  display: flex;
+  flex-direction: column;
+  min-height: 116px;
+  padding: 6px;
+  border: 0;
+  border-radius: 12px;
+  background: var(--color-surface);
+  outline: 1px solid transparent;
+  outline-offset: -1px;
+}
+.task-cal--board .task-cal__month-cell[data-outside='true'] {
+  background: var(--color-hover);
+}
+.task-cal--board
+  .task-cal__month-cell[data-outside='true']
+  .task-cal__month-date
+  > button:first-child {
+  color: var(--color-text-secondary);
+}
+.task-cal--board .task-cal__month-cell[data-today='true'] {
+  outline-color: color-mix(in srgb, var(--color-accent) 45%, transparent);
+}
+.task-cal--board .task-cal__month-date {
+  margin: 0 0 6px;
+  min-height: 24px;
+}
+.task-cal--board .task-cal__month-date button {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  display: inline-grid;
+  place-items: center;
+  color: var(--color-text);
+  border-radius: 50%;
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+}
+.task-cal--board .task-cal__month-date button[data-today='true'] {
+  color: var(--color-accent-fg);
+}
+.task-cal--board .task-cal__month-add {
+  opacity: 0;
+  color: var(--color-text-secondary);
+  transition: opacity var(--shell-duration-fast);
+}
+.task-cal--board .task-cal__month-cell:hover .task-cal__month-add,
+.task-cal--board .task-cal__month-cell:focus-within .task-cal__month-add {
+  opacity: 1;
+}
+.task-cal__month-events {
+  margin-top: auto;
+  min-width: 0;
+}
+/* The palette is keyed by task identity, consistently across every occurrence/view. */
+[data-palette='lime'] {
+  --event-bg: var(--calendar-event-lime-background);
+  --event-title: var(--calendar-event-lime-title);
+  --event-time: var(--calendar-event-lime-time);
+}
+[data-palette='pink'] {
+  --event-bg: var(--calendar-event-pink-background);
+  --event-title: var(--calendar-event-pink-title);
+  --event-time: var(--calendar-event-pink-time);
+}
+[data-palette='purple'] {
+  --event-bg: var(--calendar-event-purple-background);
+  --event-title: var(--calendar-event-purple-title);
+  --event-time: var(--calendar-event-purple-time);
+}
+[data-palette='blue'] {
+  --event-bg: var(--calendar-event-blue-background);
+  --event-title: var(--calendar-event-blue-title);
+  --event-time: var(--calendar-event-blue-time);
+}
+[data-palette='emerald'] {
+  --event-bg: var(--calendar-event-emerald-background);
+  --event-title: var(--calendar-event-emerald-title);
+  --event-time: var(--calendar-event-emerald-time);
+}
+.task-cal--board .task-cal__event {
+  --event-color: var(--event-title);
+  border-radius: 6px;
+  background: var(--event-bg);
+  color: var(--event-title);
+}
+.task-cal--board .task-cal__event[data-status='failed'],
+.task-cal--board .task-cal__event[data-kind='overdue'] {
+  --event-bg: color-mix(in srgb, var(--color-error) 14%, var(--color-surface));
+  --event-title: var(--color-error);
+  --event-time: var(--color-error);
+}
+.task-cal--board .task-cal__event[data-kind='paused'] {
+  --event-bg: var(--color-hover);
+  --event-title: var(--color-text-secondary);
+  --event-time: var(--color-text-secondary);
+}
+.task-cal--board .task-cal__event[data-kind='window'] {
+  background: repeating-linear-gradient(
+    135deg,
+    var(--event-bg) 0 5px,
+    color-mix(in srgb, var(--event-bg) 75%, var(--color-surface)) 5px 8px
+  );
+}
+.task-cal--board .task-cal__event:hover {
+  filter: brightness(0.96);
+}
+.task-cal--board .task-cal__event[aria-expanded='true'] {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+  z-index: 4;
+}
+.task-cal--board .task-cal__event.is-compact {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 5px;
+  padding: 2px 6px;
+  margin-top: 3px;
+  min-height: 20px;
+  line-height: 1.25;
+  border-left: 0;
+  border-radius: 5px;
+}
+.task-cal--board .task-cal__event.is-compact strong {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--event-title);
+}
+.task-cal__event time {
+  color: var(--event-time);
+  opacity: 0.7;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+.task-cal--board .task-cal__more {
+  align-self: flex-start;
+  margin: 2px 0 0;
+  padding: 2px 5px;
+  font-size: 10px;
+  color: var(--color-text-secondary);
+}
+.task-cal--board .task-cal__empty {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 18px;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--color-border);
+}
+.task-cal__empty > svg {
+  color: var(--color-text-secondary);
+  flex-shrink: 0;
+}
+.task-cal__empty > div {
+  flex: 1;
+  min-width: 0;
+}
+.task-cal__empty strong {
+  display: block;
+  color: var(--color-text);
+  font-size: 13px;
+  font-weight: 500;
+}
+.task-cal__empty span {
+  display: block;
+  margin-top: 3px;
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  line-height: 1.5;
+}
+.task-cal__empty button,
+.task-cal__period-empty button {
+  border: 0;
+  border-radius: 7px;
+  padding: 6px 9px;
+  color: var(--color-accent-text);
+  background: var(--color-accent-soft);
+  font-size: 11px !important;
+  flex-shrink: 0;
+}
+.task-cal__period-empty {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.task-cal--board .task-cal__notice {
+  background: var(--color-sidebar);
+}
+.task-cal--board .task-cal__outside {
+  border-top: 0;
+  padding: 8px 12px;
+  max-height: 70px;
+}
+.task-cal--board .task-cal__outside button {
+  border: 0;
+  background: var(--color-surface);
+}
+.task-cal--board .task-cal__footer {
+  border: 0;
+  padding: 10px 2px 0;
+  font-size: 10px;
+}
+.task-cal--board .task-cal__footer > span:last-child {
+  display: block;
+  text-align: right;
+}
+.task-cal--board .task-cal__list-view {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 14px;
+}
+.task-cal--board .task-cal__week-head {
+  background: var(--color-sidebar);
+}
+.task-cal--board .task-cal__week-head > div {
+  padding: 8px 12px;
+  gap: 4px;
+}
+.task-cal--board .task-cal__week-head strong {
+  width: 28px;
+  height: 28px;
+  font-size: 17px;
+  font-weight: 500;
+}
+.task-cal--board .task-cal__time-body {
+  background: var(--color-surface);
+}
+.task-cal--board .task-cal__time-grid {
+  min-width: 600px;
+}
+.task-cal--board[data-view='day'] .task-cal__time-grid {
+  min-width: 0;
+}
+.task-cal--board .task-cal__now {
+  z-index: 3;
+}
+.task-cal--board .task-cal__slot:focus-visible {
+  outline-offset: -3px;
+}
+@container scheduled-page (max-width: 960px) {
+  .task-cal__legend {
+    display: none;
+  }
+  .task-cal__body[data-filters-open='true'] {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .task-cal--board .task-cal__sidebar {
+    position: absolute;
+    width: 224px;
+    inset: 0 auto 0 0;
+    z-index: 6;
+    box-shadow: 0 8px 24px var(--color-modal-shadow);
+    background: var(--color-overlay);
+  }
+}
+@container scheduled-page (max-width: 620px) {
+  .task-cal--board .task-cal__toolbar {
+    gap: 6px;
+  }
+  .task-cal--board .task-cal__range {
+    font-size: 19px;
+  }
+  .task-cal__heading {
+    flex-basis: 100%;
+  }
+  .task-cal__navigation {
+    margin-right: auto;
+  }
+  .task-cal__controls {
+    gap: 6px;
+  }
+  .task-cal__controls > .task-cal__scope-trigger {
+    max-width: 150px;
+  }
+  .task-cal--board .task-cal__views button {
+    padding-inline: 8px;
+  }
+  .task-cal__empty {
+    flex-wrap: wrap;
+  }
+  .task-cal__empty button {
+    margin-left: 32px;
+  }
+  .task-cal__footer-note {
+    display: none;
+  }
+  .task-cal--board .task-cal__footer {
+    flex-wrap: wrap;
+  }
+}
+@media (pointer: coarse) {
+  .task-cal--board .task-cal__month-add {
+    opacity: 1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .task-cal--board .task-cal__month-add {
+    transition: none;
+  }
+}
+
+/* Overflow stays in the date header instead of stretching every week row. */
+.task-cal--board .task-cal__month-date .task-cal__more {
+  width: auto;
+  min-width: 20px;
+  height: 24px;
+  flex: 1;
+  margin: 0;
+  padding: 0 2px;
+  font-size: 10px;
+  line-height: 14px;
+  color: var(--color-text-secondary);
+  border-radius: 5px;
+}
+.task-cal--board .task-cal__month-date .task-cal__month-add {
+  width: 20px;
+  height: 24px;
+  flex-shrink: 0;
+}
+.task-cal--board .task-cal__toolbar > .task-cal__today {
+  width: auto;
+  padding: 0 9px;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+.task-cal__navigation .task-cal__date-trigger[aria-expanded='true'] {
+  background: var(--color-hover);
+  color: var(--color-text);
+}
+.task-cal__sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+}
+.task-cal__popover {
+  z-index: 120;
+  box-sizing: border-box;
+  padding: 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 16px;
+  background: var(--color-overlay);
+  box-shadow: 0 3px 12px var(--color-modal-shadow);
+  color: var(--color-text);
+  font-family: var(--font-sans);
+  outline: none;
+  overflow: auto;
+  animation: task-calendar-popover-in 140ms ease-out;
+}
+.task-cal__popover button {
+  cursor: pointer;
+  font-family: inherit;
+  border: 0;
+  color: inherit;
+  background: transparent;
+}
+.task-cal__popover button:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+.task-cal__date-picker > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 32px;
+  margin-bottom: 2px;
+}
+.task-cal__date-picker h2 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 500;
+}
+.task-cal__date-picker header button {
+  display: grid;
+  place-items: center;
+  height: 28px;
+  width: 28px;
+  padding: 0;
+  border-radius: 6px;
+}
+.task-cal__date-picker header button:hover {
+  background: var(--color-hover);
+}
+.task-cal__date-picker table {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+}
+.task-cal__date-picker th {
+  height: 32px;
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  font-weight: 400;
+}
+.task-cal__date-picker td {
+  height: 44px;
+  padding: 0;
+  text-align: center;
+}
+.task-cal__date-picker td button {
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  padding: 0;
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+.task-cal__date-picker td button:hover {
+  background: var(--color-hover);
+}
+.task-cal__date-picker td button[data-today='true'] {
+  color: var(--color-accent-text);
+  background: var(--color-accent-soft);
+}
+.task-cal__date-picker td button[data-selected='true'] {
+  color: var(--color-accent-fg);
+  background: var(--color-accent);
+}
+.task-cal__event-details {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.task-cal__detail-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px;
+  border-radius: 10px;
+  background: var(--color-sidebar);
+}
+.task-cal__detail-head > div {
+  min-width: 0;
+}
+.task-cal__detail-head h2 {
+  font-size: 15px;
+  line-height: 1.5;
+  font-weight: 600;
+  margin: 3px 0 0;
+  overflow-wrap: anywhere;
+}
+.task-cal__detail-head p {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  margin: 3px 0 0;
+}
+.task-cal__detail-head > button {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border-radius: 6px;
+  flex-shrink: 0;
+  color: var(--color-text-secondary);
+}
+.task-cal__detail-head > button:hover {
+  background: var(--color-hover);
+}
+.task-cal__detail-status {
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--event-bg);
+  color: var(--event-title);
+}
+.task-cal__detail-status[data-status='failed'],
+.task-cal__detail-status[data-kind='overdue'] {
+  background: color-mix(in srgb, var(--color-error) 14%, var(--color-surface));
+  color: var(--color-error);
+}
+.task-cal__detail-status[data-kind='paused'] {
+  background: var(--color-hover);
+  color: var(--color-text-secondary);
+}
+.task-cal__detail-time {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--color-sidebar);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 13px;
+}
+.task-cal__detail-time > svg {
+  color: var(--color-text-secondary);
+}
+.task-cal__detail-time strong {
+  font-weight: 500;
+}
+.task-cal__detail-time > span {
+  margin-left: auto;
+  color: var(--color-text-secondary);
+  font-size: 11px;
+}
+.task-cal__detail-facts {
+  margin: 0;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  border-radius: 10px;
+  background: var(--color-sidebar);
+}
+.task-cal__detail-facts > div {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.task-cal__detail-facts dt {
+  width: 50px;
+  flex-shrink: 0;
+  color: var(--color-text-secondary);
+}
+.task-cal__detail-facts dd {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.task-cal__detail-facts .task-panel__target {
+  margin: 0;
+  min-width: 0;
+  font-size: 12px;
+}
+.task-cal__detail-instruction {
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: var(--color-sidebar);
+}
+.task-cal__detail-instruction h3 {
+  margin: 0 0 5px;
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  font-weight: 400;
+}
+.task-cal__detail-instruction p {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  line-height: 1.6;
+  max-height: 100px;
+  overflow: auto;
+}
+.task-cal__detail-links,
+.task-cal__event-details > footer {
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+}
+.task-cal__detail-links button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  padding: 4px;
+  color: var(--color-text-secondary);
+  border-radius: 5px;
+}
+.task-cal__detail-links button:hover {
+  color: var(--color-text);
+  background: var(--color-hover);
+}
+.task-cal__event-details > footer {
+  border-top: 1px solid var(--color-border);
+  padding-top: 10px;
+}
+.task-cal__event-details > footer button {
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  padding: 8px;
+  font-size: 12px;
+  border-radius: 8px;
+  background: var(--color-sidebar);
+}
+.task-cal__event-details > footer button.is-primary {
+  background: var(--color-accent);
+  color: var(--color-accent-fg);
+}
+.task-cal__event-details > footer button:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+@keyframes task-calendar-popover-in {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .task-cal__popover {
+    animation: none;
+  }
+}
+
+.task-cal--board .task-cal__event > span {
+  color: var(--event-time);
+}
+
+/* Missing slots are projected from the current rule, never successful run records. */
+.task-cal__event[data-kind='unrecorded'] {
+  border: 1px dashed var(--color-border-strong);
+  background: var(--color-sidebar);
+  color: var(--color-text-secondary);
+}
+.task-cal__detail-notice {
+  margin: 10px 0;
+  padding: 10px;
+  border-radius: var(--radius-row);
+  background: var(--color-sidebar);
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  line-height: 1.6;
+}

@@ -143,6 +143,9 @@ describe('conversation sidebar previews', () => {
         JSON.stringify([{ type: 'text', text: 'tool payload' }]),
         '2026-09-24',
       );
+      store.touchLastMessage(b.id); // Even a recency timestamp is not evidence of a message.
+      expect(store.listChatPresence([a.id, b.id])).toEqual(new Set([a.id]));
+      expect(store.listChatPresence([])).toEqual(new Set());
       const previews = store.listMessagePreviews([a.id, b.id]);
       expect(previews.get(a.id)).toMatch(/^新的 消息 /);
       expect(previews.get(a.id)!.length).toBeLessThanOrEqual(160);
@@ -165,4 +168,22 @@ describe('conversation sidebar previews', () => {
       close();
     }
   });
+});
+
+
+it('distinguishes empty prepared collaborations from durable chat records', async () => {
+  const { store, raw, close } = await openStore();
+  try {
+    const conversation = store.create({ target: { track: 'model', modelId: 'm' as ModelId }, collaborationKind: 'group' });
+    store.bindTask(conversation.id, 'prepared' as TaskId);
+    store.touchLastMessage(conversation.id);
+    expect(store.listChatPresence([conversation.id]).size).toBe(0);
+    raw.prepare('INSERT INTO collaboration_conversation (id, workspace_id, kind, title, payload_json, revision, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+      .run(conversation.id, 'w', 'group', 'Chat', '{}', 0, '2026-09-29');
+    raw.prepare('INSERT INTO collaboration_message (conversation_id, id, sequence, position, kind, sender_member_id, created_at, payload_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(conversation.id, 'm', 1, 0, 'system', 'system', '2026-09-29', JSON.stringify({ kind: 'system' }));
+    expect(store.listChatPresence([conversation.id]).size).toBe(0);
+    raw.prepare('UPDATE collaboration_message SET kind = ?, payload_json = ? WHERE id = ?').run('chat', JSON.stringify({ kind: 'chat' }), 'm');
+    expect(store.listChatPresence([conversation.id])).toEqual(new Set([conversation.id]));
+  } finally { close(); }
 });

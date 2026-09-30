@@ -1,0 +1,165 @@
+/* Agent-family desktop workbench. Every rule is opt-in on the document root.
+ * This shared stylesheet is also built by the website; never style an unscoped selector.
+ * Runtime palettes still own colors, and native resize/drag/layout logic stays intact. */
+:root[data-shell-design='agent'] {
+  --shell-board-inset: 12px;
+  --shell-board-gap: 16px;
+  --shell-board-radius: 24px;
+  --radius-shell: 24px;
+  --radius-card: 16px;
+  --radius-modal: 24px;
+  --radius-row: 10px;
+  --radius-compose: 22px;
+  --composer-surface: var(--color-surface);
+  --composer-text: var(--color-text);
+  --composer-text-secondary: var(--color-text-secondary);
+  --composer-text-faint: var(--color-text-faint);
+  --composer-hover: var(--color-hover);
+  --composer-border: var(--color-border);
+  --composer-border-strong: var(--color-border-strong);
+  --composer-menu-radius: 18px;
+  --composer-menu-row-radius: 10px;
+  --composer-menu-row-height: 36px;
+  --composer-card-shadow: 0 2px 8px color-mix(in srgb, var(--color-text) 3%, transparent);
+  --composer-card-shadow-focus: 0 0 0 2px color-mix(in srgb, var(--color-accent) 16%, transparent);
+  --composer-menu-shadow: 0 8px 32px color-mix(in srgb, var(--color-text) 10%, transparent);
+  --wb-bubble: color-mix(in srgb, var(--color-chat) 94%, var(--color-text));
+  --wb-surface-shadow: 0 2px 8px color-mix(in srgb, var(--color-text) 2%, transparent);
+  --wb-panel-radius: 24px;
+}
+/* 1. Window and panel hierarchy: quiet page, detached sidebar, soft content canvas. */
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-boards { padding: var(--shell-board-inset); gap: var(--shell-board-gap); }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-sidebar-panel { background: var(--color-sidebar); border-color: var(--color-border); box-shadow: var(--wb-surface-shadow); }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-board { border-radius: var(--wb-panel-radius); }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-board.shell-stage--talk { border-radius: 0; background: transparent; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-workspace-content-frame { border-radius: var(--wb-panel-radius); box-shadow: none; background: transparent; gap: 12px; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-workspace-content-row { gap: 12px; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-workspace-primary-content { border-radius: var(--wb-panel-radius); background: var(--color-chat); min-width: min(320px, 100%); }
+:root[data-shell-design='agent'] .shell-normal-workspace :is(.shell-pane, .shell-pane-canvas) { background: var(--color-chat); }
+/* 2. Navigation: a compact two-column tool shelf above real conversation history. */
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-sidebar-panel__body { padding: 10px 8px; gap: 12px; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-sidebar-navigation { padding: 0 4px; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-sidebar-brand { height: 38px; padding: 0 7px; margin-bottom: 10px; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-sidebar-brand > span { font-size: 14px; font-weight: 600; letter-spacing: 0; }
+:root[data-shell-design='agent'] .shell-normal-workspace .sidebar-mode-switch { display: flex; gap: 4px; padding: 4px; margin: 0 0 14px; border: 0; border-radius: 999px; background: var(--color-hover); }
+:root[data-shell-design='agent'] .shell-normal-workspace .sidebar-mode-switch button { min-height: 30px; border: 0; border-radius: 999px; color: var(--color-text-secondary); font-size: 13px; }
+:root[data-shell-design='agent'] .shell-normal-workspace .sidebar-mode-switch button[aria-pressed='true'] { background: var(--color-surface); color: var(--color-text); box-shadow: var(--wb-surface-shadow); }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-sidebar-actions { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 4px; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-sidebar-actions .st-nav-item { min-width: 0; height: 36px; padding: 0 9px; gap: 7px; border-radius: 12px; font-size: 12px; color: var(--color-text-secondary); }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-sidebar-actions .st-nav-item svg { flex-shrink: 0; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-sidebar-actions [data-testid='nav-new-chat'] { grid-column: 1 / -1; height: 38px; justify-content: center; margin-bottom: 4px; border-radius: 999px; background: var(--color-accent); color: var(--color-accent-fg); font-size: 13px; font-weight: 500; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-sidebar-actions [data-testid='nav-new-chat']:hover { filter: brightness(.96); }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-sidebar-actions [data-testid='nav-search'] { grid-column: 1 / -1; margin-bottom: 6px; background: var(--color-hover); }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-sidebar-actions .shell-row-active { color: var(--color-text); background: var(--color-hover); box-shadow: none; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-sidebar-recent { border: 0; border-radius: 0; background: transparent; padding: 0 3px; }
+:root[data-shell-design='agent'] .shell-normal-workspace .st-conv-row { min-height: 42px; padding: 9px 9px; margin-bottom: 4px; border-radius: 14px; background: transparent; box-shadow: none; border-color: transparent; font-size: 13px; }
+:root[data-shell-design='agent'] .shell-normal-workspace .st-conv-row.shell-row-active { background: var(--color-hover); border-color: transparent; box-shadow: none; }
+:root[data-shell-design='agent'] .shell-normal-workspace .st-conv-row:hover { background: var(--color-hover); }
+:root[data-shell-design='agent'] .shell-normal-workspace .st-conv-row__sub { margin-top: 3px; color: var(--color-text-secondary); }
+/* 3. Project and conversation tabs share rounded chips rather than interlocking browser shapes. */
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-topbar { height: 44px; min-height: 44px; margin: 0; padding: 3px 6px 9px; align-items: center; gap: 6px; background: transparent; border: 0; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-workspace-tab-shape { display: none; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-workspace-tabs__surface { height: 30px; border-radius: 999px; background: var(--color-hover); box-shadow: none; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-workspace-tab__body { border-radius: 999px; font-size: 13px; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-workspace-tab-active { box-shadow: none; }
+:root[data-shell-design='agent'] .shell-normal-workspace :is(.shell-conversation-tabs, .shell-workbench__tabbar) { height: 48px; min-height: 48px; padding: 8px 10px; border: 0; background: transparent; }
+:root[data-shell-design='agent'] .shell-normal-workspace :is(.shell-conversation-tab, .shell-workbench-tab) { height: 32px; border-radius: 999px; font-size: 13px; box-shadow: none; }
+:root[data-shell-design='agent'] .shell-normal-workspace :is(.shell-conversation-tab-active, .shell-workbench-tab.is-active) { background: var(--color-surface); color: var(--color-text); border-color: transparent; box-shadow: var(--wb-surface-shadow); }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-conversation-tabs__divider { opacity: 0; }
+/* 4. A home that belongs to this canvas, not a second landing-page design. */
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-chat-column--empty-newmax { padding: clamp(32px, 7vh, 72px) 0; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-chat-column--empty-newmax > :is(.shell-empty-newmax-tips, .shell-welcome--newmax, .shell-empty-newmax-composer-wrap, .shell-empty-newmax-scenarios) { transform: none; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-welcome--newmax { order: 1; margin-bottom: 28px; gap: 12px; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-welcome-title { font-size: 26px; line-height: 36px; font-weight: 550; letter-spacing: -.4px; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-welcome-description { margin: 0; color: var(--color-text-secondary); font-size: 14px; line-height: 22px; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-empty-newmax-composer-wrap { order: 2; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-empty-newmax-scenarios { order: 3; margin-top: 20px; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-empty-newmax-scenarios__pills { flex-wrap: wrap; gap: 6px; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-empty-newmax-scenarios__pill { height: 32px; padding: 0 14px; background: var(--color-surface); font-weight: 400; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-empty-newmax-scenarios__pill[aria-pressed='true'] { background: var(--color-accent-soft); color: var(--color-accent-text); }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-empty-newmax-scenarios__template { border-radius: 14px; background: var(--color-surface); box-shadow: none; padding: 12px 16px; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-empty-newmax-tips { order: 4; margin: 24px auto 0; padding: 0; background: transparent; min-height: 24px; font-size: 12px; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-empty-newmax-tips__icon { width: 22px; height: 22px; flex-basis: 22px; background: transparent; color: var(--color-text-secondary); }
+/* 5. Messages, reasoning, results and composer: same surfaces as agent chat.
+ * Keep readable line lengths and rich tool content instead of forcing every reply into a narrow bubble. */
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-chat-content { max-width: 920px; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-chat-content--composer { max-width: 920px; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-chat-column--empty-newmax .shell-chat-content--composer { max-width: 744px; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-chat-message-scroller { padding-top: 22px; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-message-window-item { padding-bottom: 28px; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-user-bubble { background: var(--color-surface); border: 0; border-radius: 20px; box-shadow: none; padding: 12px 16px; font-size: var(--shell-chat-font-size, 14px); }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-streaming-response[data-variant='bubble'] > .shell-response__content:not(:empty) { background: var(--wb-bubble); border: 0; border-radius: 20px; box-shadow: none; padding: 16px 18px; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-msg-avatar { border-radius: 12px; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-response__footer { padding-inline: 4px; }
+:root[data-shell-design='agent'] .shell-normal-workspace :is(.shell-process-group, .shell-inline-process, .shell-harness-terminal) { border-radius: 14px; box-shadow: none; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-process-group { border-color: var(--color-border); }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-md-code { border-radius: 14px; box-shadow: none; }
+:root[data-shell-design='agent'] .shell-normal-workspace :is(.shell-compose, .shell-newmax-composer) { border: 1px solid var(--color-border); border-radius: 22px; background: var(--composer-surface); box-shadow: var(--composer-card-shadow); }
+:root[data-shell-design='agent'] .shell-normal-workspace :is(.shell-compose, .shell-newmax-composer):focus-within { border-color: color-mix(in srgb, var(--color-accent) 42%, var(--color-border)); box-shadow: var(--composer-card-shadow-focus); }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-compose__bar { padding: 6px 10px 10px; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-compose__tool { border-radius: 999px; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-compose__send { border-radius: 50%; background: var(--color-accent); color: var(--color-accent-fg); }
+/* 6. Workbenches preserve all resize handles and pane sizes. Gaps only exist for open panes. */
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-workspace-content-row:not(:has(.shell-workbench--right[data-workspace-panel-open='true'])) { gap: 0; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-workspace-content-frame:not(:has(.shell-workbench--bottom[data-workspace-panel-open='true'])) { gap: 0; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-workbench { border-radius: var(--wb-panel-radius); background: var(--color-workbench); }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-workbench--right { max-width: calc(100% - 332px); }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-workbench__content { border-radius: 0 0 var(--wb-panel-radius) var(--wb-panel-radius); overflow: hidden; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-workbench__divider { background: var(--color-border); }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-workbench__tabbar { border-radius: var(--wb-panel-radius) var(--wb-panel-radius) 0 0; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-workspace-files-switcher { padding: 8px; border-color: var(--color-border); }
+:root[data-shell-design='agent'] .shell-normal-workspace :is(.shell-workspace-tree-row, .shell-workspace-file-row) { min-height: 32px; border-radius: 9px; }
+:root[data-shell-design='agent'] .shell-normal-workspace :is(.shell-workspace-file-row__primary, .shell-workspace-tree-row) { font-size: 13px; }
+:root[data-shell-design='agent'] .shell-normal-workspace :is(.shell-file-view, .shell-terminal-pane, .shell-review-panel) { border-radius: 0 0 20px 20px; }
+/* 7. Portal surfaces live outside ShellApp: document scope is intentional here. */
+:root[data-shell-design='agent'] :is(.shell-menu, .shell-context-menu, .shell-workbench-menu, .shell-new-resource-menu, .shell-tab-manager, .shell-mention-pop, .shell-empty-newmax-scenarios__menu) { border: 1px solid var(--color-border); border-radius: 18px; background: var(--color-overlay); color: var(--color-text); padding: 6px; box-shadow: var(--composer-menu-shadow); }
+:root[data-shell-design='agent'] :is(.shell-menu__item, .shell-context-menu__item, .shell-new-resource-menu__item, .shell-workbench-menu > button) { min-height: 34px; border-radius: 10px; font-size: 13px; }
+:root[data-shell-design='agent'] :is(.shell-menu__item, .shell-context-menu__item)[data-highlighted] { background: var(--color-hover); }
+:root[data-shell-design='agent'] :is(.shell-toast, .st-modal-in, .shell-model-picker) { border-radius: 20px; border-color: var(--color-border); background: var(--color-overlay); box-shadow: var(--composer-menu-shadow); }
+:root[data-shell-design='agent'] .st-modal-in { padding: 22px; }
+:root[data-shell-design='agent'] .st-dialog-primary { border-radius: 999px; min-height: 34px; padding-inline: 18px; }
+:root[data-shell-design='agent'] .st-field-input { border-radius: 10px; min-height: 36px; }
+:root[data-shell-design='agent'] .st-popover-in[role='menu'] { border-radius: 16px; padding: 6px; box-shadow: var(--composer-menu-shadow); }
+:root[data-shell-design='agent'] :is(.shell-menu, .shell-context-menu, .st-modal-in) :is(button, input):focus-visible,
+:root[data-shell-design='agent'] .shell-normal-workspace :is(button, [role='button']):focus-visible { outline: 2px solid var(--color-focus-ring); outline-offset: 2px; }
+/* Keep wallpaper readability layers authoritative; only change geometry above. */
+:root[data-shell-design='agent'][data-image-theme='active'] .shell-normal-workspace :is(.shell-user-bubble, .shell-response__content:not(:empty)) { background: color-mix(in srgb, var(--color-overlay) 90%, transparent); }
+:root[data-shell-design='agent'][data-image-theme='active'] .shell-normal-workspace :is(.shell-compose, .shell-newmax-composer) { background: var(--shell-chat-composer-surface); }
+@media (max-width: 1000px) {
+  :root[data-shell-design='agent'] { --shell-board-inset: 8px; --shell-board-gap: 10px; }
+  :root[data-shell-design='agent'] .shell-normal-workspace .shell-chat-content-wrap { padding-inline: 16px; }
+}
+@media (max-width: 700px) {
+  :root[data-shell-design='agent'] { --shell-board-inset: 6px; --shell-board-gap: 8px; --wb-panel-radius: 18px; }
+  :root[data-shell-design='agent'] .shell-normal-workspace .shell-topbar { height: 40px; min-height: 40px; }
+  :root[data-shell-design='agent'] .shell-normal-workspace .shell-welcome-title { font-size: 22px; line-height: 30px; }
+  :root[data-shell-design='agent'] .shell-normal-workspace .shell-welcome-description { font-size: 13px; }
+  :root[data-shell-design='agent'] .shell-normal-workspace .shell-chat-content-wrap { padding-inline: 10px; }
+  :root[data-shell-design='agent'] .shell-normal-workspace .shell-compose__bar { padding-inline: 6px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  :root[data-shell-design='agent'] .shell-normal-workspace :is(.shell-welcome, .shell-welcome-title, .shell-empty-newmax-tips) { animation: none; transition: none; }
+}
+:root[data-shell-design='agent'][data-reduced-motion] .shell-normal-workspace :is(.shell-welcome, .shell-welcome-title, .shell-empty-newmax-tips) { animation: none; transition: none; }
+
+/* Shared footprint for input, approval stack and attached Git context. */
+:root[data-shell-design='agent'] .shell-normal-workspace :is(.shell-newmax-composer-frame, .shell-composer-approval-stack) { max-width: none; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-sidebar-actions [data-testid='nav-new-chat'] > span { flex: 0 1 auto; }
+:root[data-shell-design='agent'] .settings-page { border-radius: 24px; background: var(--color-page); }
+:root[data-shell-design='agent'] .settings-sidebar { border-color: var(--color-border); background: var(--color-sidebar); padding: 16px 12px; }
+:root[data-shell-design='agent'] .settings-nav__item { min-height: 38px; border-radius: 12px; font-size: 13px; }
+:root[data-shell-design='agent'] .settings-nav__item.is-active { background: var(--color-hover); color: var(--color-text); }
+:root[data-shell-design='agent'] :is(.settings-content__topbar, .settings-footer) { border-color: var(--color-border); }
+
+/* Dense states: every action stays reachable when a wide preview shrinks the chat. */
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-plan-card__composer-summary { width: 100%; max-width: 100%; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-plan-card__composer-summary > span { flex: 1; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-plan-card__composer-actions { flex-wrap: wrap; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-workbench--right { container-type: inline-size; container-name: wb-side; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-workbench--right > :is(.shell-workbench__tabbar, .shell-workbench__divider, .shell-workbench__content) { min-width: 0; }
+@container wb-side (max-width: 560px) {
+  :root[data-shell-design='agent'] .shell-normal-workspace .shell-workbench__content:has(> .shell-workbench__files[data-open='true']) { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) 160px; }
+  :root[data-shell-design='agent'] .shell-normal-workspace .shell-workbench__files[data-open='true'] { max-width: 100%; min-width: 100%; width: 100%; justify-self: stretch; border-left: 0; border-top: 1px solid var(--color-border); }
+  :root[data-shell-design='agent'] .shell-normal-workspace .shell-workbench__files-body { min-width: 0; }
+  :root[data-shell-design='agent'] .shell-normal-workspace .shell-workbench__files-resizer { display: none; }
+}

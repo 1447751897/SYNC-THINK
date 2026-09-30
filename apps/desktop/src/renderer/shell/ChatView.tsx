@@ -236,6 +236,7 @@ import { MessageTextContent, type MessageTextPart } from './MessageTextContent.j
 import { ImageLightbox } from './ImageLightbox.js';
 import { resolveMessageText } from './message-text-source.js';
 import type { OpenHtmlInBrowser } from './html-browser.js';
+import { useVisibleResults } from './use-visible-results.js';
 import { StreamingResponse, responseStatus } from './StreamingResponse.js';
 import { collectAnswerSources } from './answer-sources.js';
 import {
@@ -1124,6 +1125,7 @@ interface ChatViewProps {
   /** Shell transport state; intentionally transient and never persisted as a message. */
   runtimeConnectionNotice?: RuntimeConnectionNotice;
   onTitleUpdated: (title: string) => void;
+  onResultsViewed?: (runIds: readonly string[]) => void;
   /** Fired after permission mode is persisted so the shell can refresh the conversation list. */
   onConversationUpdated?: () => void;
   /** One-shot selection carried from the welcome-page first send. */
@@ -1177,6 +1179,7 @@ export function ChatView({
   runtimeConnectionNotice,
   active: surfaceActive = true,
   onTitleUpdated,
+  onResultsViewed,
   onConversationUpdated,
   initialSkillVersionIds,
   onInitialSkillSelectionConsumed,
@@ -1923,7 +1926,7 @@ export function ChatView({
   const speechRecognitionRef = useRef<BrowserSpeechRecognition | null>(null);
   const suppressPickerRefreshRef = useRef(false);
   const imageInputRef = useRef<HTMLInputElement>(null);
-  const composeRef = useRef<HTMLDivElement>(null);
+  const composeRef = useRef<HTMLDivElement | null>(null);
   const slashListRef = useRef<HTMLDivElement>(null);
   const lastSlashQueryRef = useRef('');
   if (slash) lastSlashQueryRef.current = slash.query;
@@ -3544,6 +3547,9 @@ export function ChatView({
     pendingUserMessagesForDisplay,
     visibleStreamingMessage,
   ]);
+
+  useVisibleResults({ viewport: messagesScrollRef, active, ready: initialLoaded && loadedMessagesScopeKey === historyScopeKey,
+    runIds: messages.filter(message => message.role === 'assistant' && !message.streaming && message.runId).map(message => String(message.runId)), onViewed: onResultsViewed });
 
   const navigationItems = useMemo<ConversationNavigationItem[]>(() => {
     const byId = new Map<string, ChatMessage>(
@@ -6116,6 +6122,214 @@ export function ChatView({
     [conversation.id, conversation.taskId, durableTaskPlan, eventHistory, threadId],
   );
 
+  // Presentation slots reuse the same controls; run/permission behavior stays here.
+  const pillAttachControl = (
+    <ComposerAddControl
+      variant="conversation"
+      open={composerAddOpen}
+      inputRef={inputRef}
+      composerRef={composeRef}
+      value={input}
+      onValueChange={setInput}
+      onOpenChange={setComposerAddOpen}
+      onBeforeOpen={closeComposePickers}
+      workspaceFolder={projectFolder}
+      selectedFilePaths={attachments
+        .filter((attachment) => attachment.kind !== 'image')
+        .map((attachment) => attachment.path)}
+      networkEnabled={netEnabled}
+      permissionMode={permissionMode}
+      showPermissionItems={composerToolbar.collapseLevel >= PERMISSION_MODE_COLLAPSED_TOOLBAR_LEVEL}
+      disabled={Boolean(composerPendingAsk) || compactProgress?.status === 'running'}
+      attachDisabled={
+        imageUploads.items.filter((attachment) => attachment.kind === 'image').length >= 8
+      }
+      onAttach={() => imageInputRef.current?.click()}
+      onPlan={() =>
+        window.dispatchEvent(
+          new CustomEvent('shell-toggle-plan-mode', {
+            detail: { conversationId: conversation.id },
+          }),
+        )
+      }
+      onGoal={() =>
+        window.dispatchEvent(
+          new CustomEvent('shell-toggle-goal-mode', {
+            detail: { conversationId: conversation.id },
+          }),
+        )
+      }
+      onNetworkChange={handleNetworkSettingChange}
+      onPermissionChange={setPermission}
+      onFile={(file) =>
+        setAttachments((current) =>
+          current.some((attachment) => attachment.path === file.path)
+            ? removeAttachment(current, file.path)
+            : addAttachment(current, {
+                path: file.path,
+                name: file.name || fileNameFromPath(file.path),
+                kind: file.kind,
+              }),
+        )
+      }
+      triggerTestId="compose-add-trigger"
+      menuTestId="compose-add-menu"
+    />
+  );
+  const pillStatusControls = (
+    <>
+      {helpCommandPreview ? (
+        <ComposerActiveModePill
+          mode="help"
+          onClick={() => {
+            const next = input.replace(/^\s*\/help(?:\s+|$)/i, '');
+            setInput(next);
+            window.requestAnimationFrame(() => {
+              resizeComposeInput();
+              inputRef.current?.focus();
+              inputRef.current?.setSelectionRange(next.length, next.length);
+            });
+          }}
+        />
+      ) : null}
+      {planCommandPreview || interactionMode === 'plan' ? (
+        <ComposerActiveModePill
+          mode="plan"
+          onClick={() =>
+            window.dispatchEvent(
+              new CustomEvent('shell-toggle-plan-mode', {
+                detail: { conversationId: conversation.id },
+              }),
+            )
+          }
+        />
+      ) : null}
+      {goalCommandPreview || visibleGoal ? (
+        <ComposerActiveModePill
+          mode="goal"
+          goalStatus={visibleGoal?.status}
+          onClick={() =>
+            window.dispatchEvent(
+              new CustomEvent('shell-toggle-goal-mode', {
+                detail: { conversationId: conversation.id },
+              }),
+            )
+          }
+        />
+      ) : null}
+      {/* Permission menu */}
+      <div
+        ref={composerToolbar.permissionRef}
+        className="shell-compose__tool-wrap"
+        data-testid="compose-permission-control"
+        hidden={
+          agentWorkspace && composerToolbar.collapseLevel >= PERMISSION_MODE_COLLAPSED_TOOLBAR_LEVEL
+        }
+      >
+        <PermissionTrigger
+          ref={permissionBtnRef}
+          value={permissionMode}
+          open={menu === 'permission'}
+          onClick={() => setMenu((m) => (m === 'permission' ? null : 'permission'))}
+        />
+        <PermissionMenu
+          open={menu === 'permission'}
+          value={permissionMode}
+          anchorEl={permissionBtnRef.current}
+          onClose={() => setMenu(null)}
+          onChange={setPermission}
+        />
+      </div>
+
+      <div
+        className="shell-compose__tool-wrap"
+        data-testid="compose-skill-control"
+        hidden={agentWorkspace && composerToolbar.collapseLevel >= SKILL_COLLAPSED_TOOLBAR_LEVEL}
+      >
+        <TurnSkillControl
+          owner={skillOwner}
+          workspaceId={conversation.workspaceId}
+          open={menu === 'skill'}
+          selectedSkillVersionIds={selectedSkillVersionIds}
+          onShortcut={() => insertComposeToken('/')}
+          shortcutActive={slashMenuOpen}
+          onOpenChange={(open) => setMenu(open ? 'skill' : null)}
+          onChange={setSelectedSkillVersionIds}
+        />
+      </div>
+    </>
+  );
+  const pillKernelStatus = (
+    <>
+      {kernelOverride !== 'native'
+        ? (() => {
+            const chipLabel = resolveKernelDisplayName(kernelOverride, activeKernel?.name);
+            const chipLogo = resolveKernelBrandLogo(
+              activeKernel ? activeKernel.icon : kernelOverride,
+            );
+            return (
+              <span
+                className={`shell-kernel-chip${chipLogo ? ' shell-kernel-chip--logo' : ''}`}
+                data-testid="compose-kernel-chip"
+                title={`内核：${chipLabel}`}
+                aria-label={chipLogo ? `内核：${chipLabel}` : undefined}
+                role={chipLogo ? 'img' : undefined}
+              >
+                {chipLogo ? <BrandLogoMark logo={chipLogo} size={18} /> : chipLabel}
+              </span>
+            );
+          })()
+        : null}
+    </>
+  );
+  const pillIdentityStatus = (
+    <>
+      <ComposerIdentity
+        track={conversation.track}
+        label={identityLabel}
+        avatar={identityAvatar}
+        testId="compose-identity"
+      />
+
+      {/* NewMax ring: context occupancy + hover shows session/cost/context */}
+      <ContextRing
+        showUsageLabel={!agentWorkspace}
+        used={contextUsed}
+        limit={contextLimit}
+        kernelId={kernelOverride === 'native' ? undefined : kernelOverride}
+        kernelLabel={
+          kernelOverride === 'native'
+            ? undefined
+            : resolveKernelDisplayName(kernelOverride, activeKernel?.name)
+        }
+        modelContextWindow={contextModelWindow}
+        contextWindowEstimated={displayedContext.estimated}
+        contextWindowSource={contextWindowSource}
+        // External kernels report the authoritative watermark;
+        // the Runtime snapshot ratio describes the host estimate
+        // and must not override it in ContextRing.
+        usageRatio={
+          kernelSelfManaged || contextStatus?.contextWindow !== displayedContext.contextWindow
+            ? undefined
+            : contextStatus?.usageRatio
+        }
+        compactThreshold={contextStatus?.compactThreshold}
+        compactedAt={contextStatus?.compactedAt}
+        sections={contextStatus?.sections}
+        kernelSelfManaged={kernelSelfManaged}
+        occupancySections={kernelContextOccupancy?.categories}
+        sessionDurationMs={sessionMetrics.durationMs}
+        sessionTokens={
+          durableUsageSummary
+            ? durableUsageSummary.totalTokens
+            : sessionMetrics.requestCount > 0
+              ? sessionMetrics.totalTokens
+              : undefined
+        }
+      />
+    </>
+  );
+
   return (
     <div className="flex min-h-0 flex-1 overflow-hidden">
       {/* ─── Chat column ───────────────────────────────────────────── */}
@@ -6124,7 +6338,7 @@ export function ChatView({
       <div className="shell-chat-column flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-chat">
         {!hasProjectFolder ? (
           <div className="shell-warning-banner border-b px-4 py-2 text-[12px] leading-relaxed">
-            当前对话没有绑定本地项目文件夹，所以 AI 不能读取工作区目录。 请先在工作区 Tab
+            当前对话没有绑定本地项目文件夹，所以 AI 不能读取工作区目录。 请先在工作区菜单
             选择/打开项目（带真实文件夹路径），再新建对话。
           </div>
         ) : null}
@@ -6606,6 +6820,9 @@ export function ChatView({
             />
             <NewMaxComposerFrame
               variant="conversation"
+              presentation={agentWorkspace ? 'default' : 'pill'}
+              leadingAction={!agentWorkspace ? <div ref={composerToolbar.leftRef}>{pillAttachControl}</div> : undefined}
+              statusBar={!agentWorkspace ? <div className="shell-ai-composer-status"><div className="shell-ai-composer-status__controls">{pillStatusControls}</div><div className="shell-ai-composer-status__identity">{pillIdentityStatus}{pillKernelStatus}</div></div> : undefined}
               contextBar={
                 projectFolder && boundWorkspace?.folderPath && onOpenGit ? (
                   <ComposerGitBar
@@ -6619,7 +6836,7 @@ export function ChatView({
               modeBanner={composerModeBanner}
               className={`relative ${dragOver ? 'is-dragover' : ''}`}
               data-layout="tall"
-              innerRef={composeRef}
+              innerRef={(element) => { composeRef.current = element; if (!agentWorkspace) composerToolbar.outerRef.current = element; }}
               onDragEnter={handleDragEnter}
               onDragOver={handleDragOver}
               onDragLeave={handleDragLeave}
@@ -6777,190 +6994,17 @@ export function ChatView({
 
               {/* Bottom toolbar */}
               <div
-                ref={composerToolbar.outerRef}
+                ref={agentWorkspace ? composerToolbar.outerRef : undefined}
                 className="shell-compose__bar"
                 data-testid="compose-toolbar"
                 data-collapse-level={composerToolbar.collapseLevel}
               >
-                <div ref={composerToolbar.leftRef} className="shell-compose__bar-left">
-                  <ComposerAddControl
-                    variant="conversation"
-                    open={composerAddOpen}
-                    inputRef={inputRef}
-                    composerRef={composeRef}
-                    value={input}
-                    onValueChange={setInput}
-                    onOpenChange={setComposerAddOpen}
-                    onBeforeOpen={closeComposePickers}
-                    workspaceFolder={projectFolder}
-                    selectedFilePaths={attachments
-                      .filter((attachment) => attachment.kind !== 'image')
-                      .map((attachment) => attachment.path)}
-                    networkEnabled={netEnabled}
-                    permissionMode={permissionMode}
-                    showPermissionItems={
-                      composerToolbar.collapseLevel >= PERMISSION_MODE_COLLAPSED_TOOLBAR_LEVEL
-                    }
-                    disabled={Boolean(composerPendingAsk) || compactProgress?.status === 'running'}
-                    attachDisabled={
-                      imageUploads.items.filter((attachment) => attachment.kind === 'image').length >= 8
-                    }
-                    onAttach={() => imageInputRef.current?.click()}
-                    onPlan={() =>
-                      window.dispatchEvent(
-                        new CustomEvent('shell-toggle-plan-mode', {
-                          detail: { conversationId: conversation.id },
-                        }),
-                      )
-                    }
-                    onGoal={() =>
-                      window.dispatchEvent(
-                        new CustomEvent('shell-toggle-goal-mode', {
-                          detail: { conversationId: conversation.id },
-                        }),
-                      )
-                    }
-                    onNetworkChange={handleNetworkSettingChange}
-                    onPermissionChange={setPermission}
-                    onFile={(file) =>
-                      setAttachments((current) =>
-                        current.some((attachment) => attachment.path === file.path)
-                          ? removeAttachment(current, file.path)
-                          : addAttachment(current, {
-                              path: file.path,
-                              name: file.name || fileNameFromPath(file.path),
-                              kind: file.kind,
-                            }),
-                      )
-                    }
-                    triggerTestId="compose-add-trigger"
-                    menuTestId="compose-add-menu"
-                  />
-                  {helpCommandPreview ? (
-                    <ComposerActiveModePill
-                      mode="help"
-                      onClick={() => {
-                        const next = input.replace(/^\s*\/help(?:\s+|$)/i, '');
-                        setInput(next);
-                        window.requestAnimationFrame(() => {
-                          resizeComposeInput();
-                          inputRef.current?.focus();
-                          inputRef.current?.setSelectionRange(next.length, next.length);
-                        });
-                      }}
-                    />
-                  ) : null}
-                  {planCommandPreview || interactionMode === 'plan' ? (
-                    <ComposerActiveModePill
-                      mode="plan"
-                      onClick={() =>
-                        window.dispatchEvent(
-                          new CustomEvent('shell-toggle-plan-mode', {
-                            detail: { conversationId: conversation.id },
-                          }),
-                        )
-                      }
-                    />
-                  ) : null}
-                  {goalCommandPreview || visibleGoal ? (
-                    <ComposerActiveModePill
-                      mode="goal"
-                      goalStatus={visibleGoal?.status}
-                      onClick={() =>
-                        window.dispatchEvent(
-                          new CustomEvent('shell-toggle-goal-mode', {
-                            detail: { conversationId: conversation.id },
-                          }),
-                        )
-                      }
-                    />
-                  ) : null}
-                  {/* Permission menu */}
-                  <div
-                    ref={composerToolbar.permissionRef}
-                    className="shell-compose__tool-wrap"
-                    data-testid="compose-permission-control"
-                    hidden={
-                      composerToolbar.collapseLevel >= PERMISSION_MODE_COLLAPSED_TOOLBAR_LEVEL
-                    }
-                  >
-                    <PermissionTrigger
-                      ref={permissionBtnRef}
-                      value={permissionMode}
-                      open={menu === 'permission'}
-                      onClick={() => setMenu((m) => (m === 'permission' ? null : 'permission'))}
-                    />
-                    <PermissionMenu
-                      open={menu === 'permission'}
-                      value={permissionMode}
-                      anchorEl={permissionBtnRef.current}
-                      onClose={() => setMenu(null)}
-                      onChange={setPermission}
-                    />
-                  </div>
-
-                  <div
-                    className="shell-compose__tool-wrap"
-                    data-testid="compose-skill-control"
-                    hidden={composerToolbar.collapseLevel >= SKILL_COLLAPSED_TOOLBAR_LEVEL}
-                  >
-                    <TurnSkillControl
-                      owner={skillOwner}
-                      workspaceId={conversation.workspaceId}
-                      open={menu === 'skill'}
-                      selectedSkillVersionIds={selectedSkillVersionIds}
-                      onShortcut={() => insertComposeToken('/')}
-                      shortcutActive={slashMenuOpen}
-                      onOpenChange={(open) => setMenu(open ? 'skill' : null)}
-                      onChange={setSelectedSkillVersionIds}
-                    />
-                  </div>
-                </div>
+                {agentWorkspace ? (<div ref={composerToolbar.leftRef} className="shell-compose__bar-left">
+                  {pillAttachControl}{pillStatusControls}
+                </div>) : null}
 
                 <div ref={composerToolbar.rightRef} className="shell-compose__bar-right">
-                  <ComposerIdentity
-                    track={conversation.track}
-                    label={identityLabel}
-                    avatar={identityAvatar}
-                    testId="compose-identity"
-                  />
-
-                  {/* NewMax ring: context occupancy + hover shows session/cost/context */}
-                  <ContextRing
-                    used={contextUsed}
-                    limit={contextLimit}
-                    kernelId={kernelOverride === 'native' ? undefined : kernelOverride}
-                    kernelLabel={
-                      kernelOverride === 'native'
-                        ? undefined
-                        : resolveKernelDisplayName(kernelOverride, activeKernel?.name)
-                    }
-                    modelContextWindow={contextModelWindow}
-                    contextWindowEstimated={displayedContext.estimated}
-                    contextWindowSource={contextWindowSource}
-                    // External kernels report the authoritative watermark;
-                    // the Runtime snapshot ratio describes the host estimate
-                    // and must not override it in ContextRing.
-                    usageRatio={
-                      kernelSelfManaged ||
-                      contextStatus?.contextWindow !== displayedContext.contextWindow
-                        ? undefined
-                        : contextStatus?.usageRatio
-                    }
-                    compactThreshold={contextStatus?.compactThreshold}
-                    compactedAt={contextStatus?.compactedAt}
-                    sections={contextStatus?.sections}
-                    kernelSelfManaged={kernelSelfManaged}
-                    occupancySections={kernelContextOccupancy?.categories}
-                    sessionDurationMs={sessionMetrics.durationMs}
-                    sessionTokens={
-                      durableUsageSummary
-                        ? durableUsageSummary.totalTokens
-                        : sessionMetrics.requestCount > 0
-                          ? sessionMetrics.totalTokens
-                          : undefined
-                    }
-                  />
+                  {agentWorkspace ? pillIdentityStatus : null}
 
                   {/* Model conversations own their picker; agents use their saved settings. */}
                   {!followsAgentConfig && <div className="shell-compose__tool-wrap">
@@ -7038,31 +7082,11 @@ export function ChatView({
                         writeConversationReasoningEffort(String(conversation.id), value);
                       }}
                     />
-                    {kernelOverride !== 'native'
-                      ? (() => {
-                          const chipLabel = resolveKernelDisplayName(
-                            kernelOverride,
-                            activeKernel?.name,
-                          );
-                          const chipLogo = resolveKernelBrandLogo(
-                            activeKernel ? activeKernel.icon : kernelOverride,
-                          );
-                          return (
-                            <span
-                              className={`shell-kernel-chip${chipLogo ? ' shell-kernel-chip--logo' : ''}`}
-                              data-testid="compose-kernel-chip"
-                              title={`内核：${chipLabel}`}
-                              aria-label={chipLogo ? `内核：${chipLabel}` : undefined}
-                              role={chipLogo ? 'img' : undefined}
-                            >
-                              {chipLogo ? <BrandLogoMark logo={chipLogo} size={18} /> : chipLabel}
-                            </span>
-                          );
-                        })()
-                      : null}
+                    {agentWorkspace ? pillKernelStatus : null}
                   </div>}
 
                   <ComposerActionSlot
+                    presentation={agentWorkspace ? 'switch' : 'paired'}
                     hasContent={!goalIsActive && Boolean(input.trim() || imageUploads.items.length > 0)}
                     running={canStop}
                     voiceActive={voiceInputActive}
@@ -8603,6 +8627,7 @@ const MessageBubble = memo(function MessageBubble({
         </AgentExecutionStatus> : executionTrace}
         <StreamingResponse
           variant="bubble"
+          showContent={Boolean(message.answerText || (!message.processItems?.length && message.text)) || Boolean(showFileChanges && !agentWorkspace && !message.streaming && processView?.fileChanges.length)}
           status={responseStatus({
             streaming: message.streaming,
             waitingForApproval,

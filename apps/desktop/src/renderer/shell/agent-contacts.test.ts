@@ -32,6 +32,7 @@ const conv = (id: string, partial: Partial<Conversation> = {}): Conversation =>
     track: 'agent',
     targetRef: 'a',
     createdAt: '2026-09-20',
+    lastMessageAt: '2026-09-20',
     ...partial,
   }) as Conversation;
 afterEach(() => localStorage.clear());

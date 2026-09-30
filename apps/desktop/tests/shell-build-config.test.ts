@@ -9,13 +9,14 @@ import {
 import { join, resolve } from 'node:path';
 import { runInNewContext } from 'node:vm';
 import { transform } from 'esbuild';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   SHELL_BUDGET,
   assertGeneratedPath,
   assertProductionShellBuild,
   assertShellBudget,
   removeGeneratedDirectory,
+  promoteGeneratedDirectory,
   shellBuildOptions,
   summarizeShellBuild,
 } from '../scripts/shell-build-config.mjs';
@@ -149,5 +150,35 @@ describe('renderer build isolation and budget', () => {
       JSON.stringify({ ...manifest, mode: 'production' }),
     );
     expect(assertProductionShellBuild(fixture).mode).toBe('production');
+  });
+});
+
+
+describe('Windows build directory promotion', () => {
+  const source = join(scratchRoot, 'promotion-staging'), target = join(scratchRoot, 'promotion-output');
+  it('retries transient directory locks and preserves the successful staging build', async () => {
+    const lock = Object.assign(new Error('temporarily busy'), { code: 'EPERM' });
+    const rename = vi.fn().mockImplementationOnce(() => { throw lock; }).mockImplementationOnce(() => { throw lock; }).mockImplementation(() => {});
+    const wait = vi.fn(async () => {});
+    await promoteGeneratedDirectory(source, target, scratchRoot, { platform: 'win32', rename, wait });
+    expect(rename).toHaveBeenCalledTimes(3);
+    expect(rename).toHaveBeenLastCalledWith(source, target);
+    expect(wait.mock.calls).toEqual([[100], [200]]);
+  });
+  it('bounds retries and propagates a persistent lock', async () => {
+    const lock = Object.assign(new Error('busy'), { code: 'EBUSY' });
+    const rename = vi.fn(() => { throw lock; }), wait = vi.fn(async () => {});
+    await expect(promoteGeneratedDirectory(source, target, scratchRoot, { platform: 'win32', rename, wait })).rejects.toBe(lock);
+    expect(rename).toHaveBeenCalledTimes(9);
+    expect(wait).toHaveBeenCalledTimes(8);
+  });
+  it('does not retry unrelated failures or move an unchecked output path', async () => {
+    const missing = Object.assign(new Error('missing staging'), { code: 'ENOENT' });
+    const rename = vi.fn(() => { throw missing; }), wait = vi.fn(async () => {});
+    await expect(promoteGeneratedDirectory(source, target, scratchRoot, { platform: 'win32', rename, wait })).rejects.toBe(missing);
+    expect(wait).not.toHaveBeenCalled();
+    rename.mockClear();
+    await expect(promoteGeneratedDirectory(source, join(scratchRoot, '../preserved'), scratchRoot, { platform: 'win32', rename, wait })).rejects.toThrow('outside_generated');
+    expect(rename).not.toHaveBeenCalled();
   });
 });

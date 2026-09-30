@@ -33,6 +33,8 @@ import {
 } from './markdown-image-gallery.js';
 import { MarkdownImageGallery } from './MarkdownImageGallery.js';
 
+const InlineReferencesContext = createContext<ReadonlyMap<string, ReactNode> | undefined>(undefined);
+
 const CodeReadingContext = createContext<Map<number, CodeBlockReadingState> | undefined>(undefined);
 
 interface MarkdownReadingState {
@@ -68,6 +70,7 @@ interface MarkdownContentProps {
   text: string;
   /** Stable owner for code-block reading state across virtualized row remounts. */
   readingStateKey?: string;
+  inlineReferences?: ReadonlyMap<string, ReactNode>;
   /** When true, show a trailing caret for streaming replies. */
   streaming?: boolean;
   /** File previews disable executable HTML embeds while keeping passive Markdown rendering. */
@@ -262,6 +265,8 @@ function ResourceLink({
 }) {
   const value = href ?? '';
   const citation = useCitationLink(value, extractText(children), projectFolder);
+  const inlineReference = useContext(InlineReferencesContext)?.get(value);
+  if (inlineReference !== undefined) return <>{inlineReference}</>;
   if (citation) {
     return (
       <button
@@ -650,6 +655,7 @@ export function MarkdownContent({
   onOpenHtmlInBrowser,
   onOpenUrl,
   imageModelBySrc,
+  inlineReferences,
 }: MarkdownContentProps) {
   const localReadingRef = useRef({
     source: text,
@@ -679,7 +685,7 @@ export function MarkdownContent({
     [displayText, streaming],
   );
   return (
-    <CodeReadingContext.Provider value={readingState.states}>
+    <InlineReferencesContext.Provider value={inlineReferences}><CodeReadingContext.Provider value={readingState.states}>
       <GeneratedImageModelsContext.Provider value={generatedImageModels}>
         <div className={`shell-md ${className ?? ''}`} data-streaming={streaming ? '1' : '0'}>
           {useIncrementalRenderer ? (
@@ -730,6 +736,6 @@ export function MarkdownContent({
           {streaming ? <span className="shell-md-cursor" aria-hidden="true" /> : null}
         </div>
       </GeneratedImageModelsContext.Provider>
-    </CodeReadingContext.Provider>
+    </CodeReadingContext.Provider></InlineReferencesContext.Provider>
   );
 }

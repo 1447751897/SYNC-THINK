@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, lstatSync, readFileSync, renameSync, rmSync } from 'node:fs';
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { gzipSync } from 'node:zlib';
 
@@ -85,7 +85,10 @@ import { gzipSync } from 'node:zlib';
 export const SHELL_BUDGET = Object.freeze({ initialJsBytes: 2_240_000, // 2026-09-29: lazy workflow trace + versioned artifact preview/download.
   // Measured total 3,492,446 vs 3,482,819 before (+9,627 bytes); no new library.
   // Reserve 12 KB for this surface only; initial-load ceiling is unchanged.
-  totalJsBytes: 3_495_000 });
+  // 2026-09-29: BoardUI-parity avatar motion (idle gaze/hops, stronger working
+  // motion, animated active roster/group clusters) measures 3,495,980 bytes.
+  // Add 5 KB to total only; the initial-load ceiling remains unchanged.
+  totalJsBytes: 3_500_000 });
 
 export function shellBuildOptions(args, desktopRoot) {
   let mode = 'production';
@@ -218,4 +221,23 @@ export function assertProductionShellBuild(outdir) {
   }
   assertShellBudget(manifest.shell);
   return manifest;
+}
+
+
+/** Windows may still hold the just-removed directory briefly. Keep the checked staging
+ * tree intact during a bounded retry, rather than deleting the only successful build. */
+export async function promoteGeneratedDirectory(source, target, root, {
+  platform = process.platform,
+  rename = renameSync,
+  wait = (ms) => new Promise((done) => setTimeout(done, ms)),
+} = {}) {
+  const from = assertGeneratedPath(source, root);
+  const to = assertGeneratedPath(target, root);
+  for (let attempt = 0; ; attempt++) {
+    try { rename(from, to); return; }
+    catch (error) {
+      if (platform !== 'win32' || attempt >= 8 || !['EPERM', 'EACCES', 'EBUSY'].includes(error?.code)) throw error;
+      await wait(100 * (attempt + 1));
+    }
+  }
 }

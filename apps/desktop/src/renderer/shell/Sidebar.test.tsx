@@ -2,7 +2,7 @@
  * @vitest-environment jsdom
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type { Conversation, GlobalAgent, Team } from '@sync-think/shared';
 import type { DesktopUpdateSnapshot } from '../../desktop-update-contract.js';
 import { DialogProvider } from './Dialog.js';
@@ -308,4 +308,114 @@ it('switches to contacts and back without navigating away from the current chat'
   expect(onSelectStage).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole('button', { name: '会话' }));
   expect(screen.getByTestId('nav-new-chat')).toBeTruthy();
+});
+
+
+describe('main chat project navigation', () => {
+  it('expands projects independently without switching the current workspace or exposing hidden entries', () => {
+    const onSelectWorkspace = vi.fn();
+    renderSidebar({
+      workspaces: [
+        { workspaceId: 'ws-a' as NonNullable<Conversation['workspaceId']>, name: '项目 A', folderPath: '/a', createdAt: agent.createdAt, updatedAt: agent.updatedAt },
+        { workspaceId: 'ws-b' as NonNullable<Conversation['workspaceId']>, name: '项目 B', folderPath: '/b', createdAt: agent.createdAt, updatedAt: agent.updatedAt },
+        { workspaceId: 'ws-hidden' as NonNullable<Conversation['workspaceId']>, name: '隐藏项目', hidden: true, createdAt: agent.createdAt, updatedAt: agent.updatedAt },
+      ],
+      onSelectWorkspace,
+      conversations: [conv({ id: 'project-chat', workspaceId: 'ws-a' as Conversation['workspaceId'], track: 'model', title: '真实对话' })],
+    });
+    expect(screen.getByTestId('recent-section-toggle').textContent).toBe('项目 A');
+    expect(screen.getByTestId('recent-section-toggle').getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getByText('真实对话')).toBeTruthy();
+    expect(screen.queryByText('隐藏项目')).toBeNull();
+    fireEvent.click(screen.getByTestId('sidebar-workspace-ws-b'));
+    expect(onSelectWorkspace).not.toHaveBeenCalled();
+    expect(screen.getByTestId('sidebar-workspace-ws-b').getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getByTestId('recent-section-toggle').getAttribute('aria-expanded')).toBe('true');
+  });
+
+  it('toggles the same persisted appearance setting used by Settings', () => {
+    renderSidebar();
+    fireEvent.click(screen.getByRole('button', { name: '深色模式' }));
+    expect(document.documentElement.classList.contains('dark')).toBe(true);
+    expect(screen.getByRole('button', { name: '深色模式' }).getAttribute('aria-pressed')).toBe('true');
+    fireEvent.click(screen.getByRole('button', { name: '浅色模式' }));
+    expect(document.documentElement.classList.contains('dark')).toBe(false);
+  });
+});
+
+
+describe('developer component library navigation', () => {
+  it('keeps developer-only previews out of the public sidebar', () => {
+    renderSidebar();
+    expect(screen.queryByTestId('nav-design-system')).toBeNull();
+    expect(screen.queryByRole('button', { name: '组件库' })).toBeNull();
+    expect(screen.getByTestId('nav-scheduled')).toBeTruthy();
+    expect(screen.getByTestId('nav-settings')).toBeTruthy();
+  });
+});
+
+
+describe('independent workspace conversation trees', () => {
+  const workspaceProps = () => ({
+    workspaces: ['a', 'b'].map(id => ({ workspaceId: ('ws-' + id) as NonNullable<Conversation['workspaceId']>, name: '项目 ' + id.toUpperCase(), createdAt: agent.createdAt, updatedAt: agent.updatedAt })),
+    onSelectWorkspace: vi.fn(),
+    conversations: [
+      conv({ id: 'chat-a', workspaceId: 'ws-a' as Conversation['workspaceId'], track: 'model', title: 'A 的会话' }),
+      conv({ id: 'chat-b', workspaceId: 'ws-b' as Conversation['workspaceId'], track: 'model', title: 'B 的会话' }),
+      conv({ id: 'archive-b', workspaceId: 'ws-b' as Conversation['workspaceId'], track: 'model', title: 'B 的归档', archivedAt: agent.createdAt }),
+    ],
+  });
+  it('keeps each conversation and archive in its owning branch', () => {
+    renderSidebar(workspaceProps());
+    fireEvent.click(screen.getByTestId('sidebar-workspace-ws-b'));
+    const a = screen.getByTestId('sidebar-workspace-section-ws-a');
+    const b = screen.getByTestId('sidebar-workspace-section-ws-b');
+    expect(a.textContent).toContain('A 的会话');
+    expect(a.textContent).not.toContain('B 的会话');
+    expect(a.textContent).not.toContain('B 的归档');
+    expect(b.textContent).toContain('B 的会话');
+    expect(b.textContent).toContain('B 的归档');
+    fireEvent.click(screen.getByTestId('recent-section-toggle'));
+    expect(screen.getByTestId('recent-section-toggle').getAttribute('aria-expanded')).toBe('false');
+    expect(screen.getByTestId('sidebar-workspace-ws-b').getAttribute('aria-expanded')).toBe('true');
+  });
+  it('persists expansion independently of the active workspace', () => {
+    const props = workspaceProps();
+    const view = renderSidebar(props);
+    fireEvent.click(screen.getByTestId('sidebar-workspace-ws-b'));
+    fireEvent.click(screen.getByTestId('recent-section-toggle'));
+    view.unmount();
+    renderSidebar(props);
+    expect(screen.getByTestId('recent-section-toggle').getAttribute('aria-expanded')).toBe('false');
+    expect(screen.getByTestId('sidebar-workspace-ws-b').getAttribute('aria-expanded')).toBe('true');
+  });
+  it('opens a conversation by its ID and creates drafts in the selected branch', () => {
+    const onOpenConversation = vi.fn();
+    const onNewConversation = vi.fn();
+    renderSidebar({ ...workspaceProps(), onOpenConversation, onNewConversation });
+    fireEvent.click(screen.getByTestId('sidebar-workspace-ws-b'));
+    fireEvent.click(screen.getByTestId('conversation-chat-b'));
+    expect(onOpenConversation).toHaveBeenCalledWith('chat-b');
+    fireEvent.click(screen.getByTestId('recent-new-conversation-ws-b'));
+    expect(onNewConversation).toHaveBeenCalledWith('model', 'ws-b');
+  });
+});
+
+
+it('renders and toggles groups using their owning workspace, not the current workspace', () => {
+  const group = (name: string, id: string) => ({ id, name, collapsed: false, conversationIds: ['chat-b'] });
+  const onToggleGroupCollapsed = vi.fn();
+  renderSidebar({
+    workspaces: ['a', 'b'].map(id => ({ workspaceId: ('ws-' + id) as NonNullable<Conversation['workspaceId']>, name: id, createdAt: agent.createdAt, updatedAt: agent.updatedAt })),
+    onSelectWorkspace: vi.fn(),
+    conversations: [conv({ id: 'chat-b', workspaceId: 'ws-b' as Conversation['workspaceId'], track: 'model', title: 'B 的会话' })],
+    workspaceGroups: { 'ws-a': { ...emptyConversationGroups(), model: [group('A 分组', 'a-group')] }, 'ws-b': { ...emptyConversationGroups(), model: [group('B 分组', 'b-group')] } },
+    onToggleGroupCollapsed,
+  });
+  fireEvent.click(screen.getByTestId('sidebar-workspace-ws-b'));
+  const branchB = screen.getByTestId('sidebar-workspace-section-ws-b');
+  expect(branchB.textContent).toContain('B 分组');
+  expect(branchB.textContent).not.toContain('A 分组');
+  fireEvent.click(within(branchB).getByRole('button', { name: 'B 分组 1' }));
+  expect(onToggleGroupCollapsed).toHaveBeenCalledWith('model', 'b-group', 'ws-b');
 });

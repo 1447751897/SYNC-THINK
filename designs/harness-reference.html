@@ -1,0 +1,2006 @@
+<!doctype html>
+<!--
+  SYNC-THINK · AI 原生界面 harness（参考稿 v2）
+
+  与 v1 的区别：这一版**不使用 SYNC-THINK 主题令牌**，完全复刻
+  beautifului.dev 那套视觉语言（OKLCH 暗色面板、Inter/JetBrains Mono、
+  6/8/10/14 圆角、白色发丝描边阴影、像素 loader、流式光标），
+  目的是让用户看到「那套美感」长什么样，再决定要不要、要多少。
+
+  所有颜色取自参考站 .dark 主题的运行时令牌（OKLCH 原值）。
+  内容沿用它「Creamery Ops 冰淇淋运营助手」的设定，便于 1:1 对比。
+-->
+<html lang="zh-CN" class="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Creamery Ops — harness 参考稿</title>
+    <style>
+      /* ── 令牌：照抄参考站 .dark 主题（OKLCH 原值）────────────── */
+      :root {
+        --font-sans: Inter, 'Inter Fallback', ui-sans-serif, system-ui, sans-serif;
+        --font-mono: 'JetBrains Mono', 'JetBrains Mono Fallback', ui-monospace, monospace;
+
+        --page: oklch(20.9% 0.004 264.477);
+        --canvas: oklch(23.1% 0.004 264.487);
+        --surface: oklch(26% 0.006 271.191);
+        --inset: oklch(24.3% 0.004 264.492);
+        --hover: oklch(28.9% 0.006 271.22);
+        --hover-2: oklch(31.8% 0.007 274.747);
+        --ink: oklch(96.4% 0.002 247.839);
+        --ink-2: oklch(73.1% 0.008 260.731);
+        --ink-3: oklch(54.1% 0.01 264.484);
+        --line: oklch(30.8% 0.006 258.354);
+        --line-strong: oklch(35.6% 0.007 264.474);
+        --field: oklch(29.3% 0.006 271.223);
+        --accent: oklch(68% 0.173 253.301);
+        --accent-ink: oklch(78.8% 0.113 248.33);
+        --accent-tint: oklch(68% 0.173 253.301 / 0.16);
+        --green: oklch(70.5% 0.154 153.814);
+        --green-tint: oklch(70.5% 0.154 153.814 / 0.14);
+        --orange: oklch(74.6% 0.156 55.642);
+        --orange-tint: oklch(74.6% 0.156 55.642 / 0.14);
+        --red: oklch(66.6% 0.18 21.433);
+        --red-tint: oklch(66.6% 0.18 21.433 / 0.14);
+
+        --shadow-hairline: 0 0 0 1px var(--line);
+        --shadow-btn: 0 0 0 1px oklch(100% 0 0 / 0.1), 0 1px 2px oklch(0% 0 0 / 0.3);
+        --shadow-card: 0 0 0 1px oklch(100% 0 0 / 0.11), 0 1px 2px oklch(0% 0 0 / 0.2),
+          0 2px 6px oklch(0% 0 0 / 0.2);
+        --shadow-raised: 0 0 0 1px oklch(100% 0 0 / 0.13), 0 2px 10px oklch(0% 0 0 / 0.22);
+        --shadow-overlay: 0 0 0 1px oklch(100% 0 0 / 0.15), 0 8px 28px oklch(0% 0 0 / 0.34);
+        --shadow-inset-field: inset 0 1px 2px oklch(0% 0 0 / 0.4);
+
+        --radius-chip: 6px;
+        --radius-control: 8px;
+        --radius-card: 10px;
+        --radius-window: 14px;
+        --ease-out-strong: cubic-bezier(0.23, 1, 0.32, 1);
+        --ease-in-out-strong: cubic-bezier(0.77, 0, 0.175, 1);
+      }
+
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+        border: 0 solid;
+        margin: 0;
+        padding: 0;
+      }
+      html {
+        -webkit-text-size-adjust: 100%;
+        color-scheme: dark;
+      }
+      body {
+        min-height: 100vh;
+        background: var(--page);
+        color: var(--ink);
+        font-family: var(--font-sans);
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+      }
+      button {
+        font: inherit;
+        color: inherit;
+        background: none;
+        cursor: pointer;
+      }
+      ::selection {
+        background: var(--accent-tint);
+      }
+
+      /* ── harness 外壳：三栏，像参考站 /harness 那样铺满 ──────── */
+      .app {
+        display: grid;
+        grid-template-columns: 232px minmax(0, 1fr);
+        height: 100vh;
+        overflow: hidden;
+      }
+
+      /* 侧栏 */
+      .sidebar {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        padding: 14px 12px;
+        background: var(--canvas);
+        border-right: 1px solid var(--line);
+        overflow: hidden;
+      }
+      .sidebar__brand {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        padding: 4px 8px 12px;
+      }
+      .sidebar__logo {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 28px;
+        height: 28px;
+        border-radius: var(--radius-control);
+        background: var(--accent-tint);
+        color: var(--accent-ink);
+      }
+      .sidebar__name {
+        font-size: 13.5px;
+        font-weight: 600;
+        letter-spacing: -0.01em;
+      }
+      .sidebar__top {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 0 8px 10px;
+      }
+      .sidebar__btn {
+        display: flex;
+        flex: 1;
+        align-items: center;
+        gap: 7px;
+        height: 32px;
+        padding: 0 9px;
+        border-radius: var(--radius-control);
+        color: var(--ink-2);
+        font-size: 12.5px;
+        font-weight: 500;
+        transition: background-color 0.12s ease-out, color 0.12s ease-out;
+      }
+      .sidebar__btn:hover {
+        background: var(--hover);
+        color: var(--ink);
+      }
+      .sidebar__btn svg {
+        color: var(--ink-3);
+      }
+      .sidebar__invite {
+        flex: 0 0 auto;
+        height: 32px;
+        padding: 0 10px;
+        border-radius: var(--radius-control);
+        color: var(--ink-2);
+        font-size: 11.5px;
+        font-variant-numeric: tabular-nums;
+        transition: background-color 0.12s ease-out;
+      }
+      .sidebar__invite:hover {
+        background: var(--hover);
+      }
+      .sidebar__label {
+        padding: 10px 10px 5px;
+        color: var(--ink-3);
+        font-size: 10.5px;
+        font-weight: 500;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+      }
+      .sidebar__chats {
+        display: flex;
+        flex-direction: column;
+        gap: 1px;
+        overflow-y: auto;
+        scrollbar-width: none;
+      }
+      .sidebar__chats::-webkit-scrollbar {
+        display: none;
+      }
+      .chat-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        height: 31px;
+        padding: 0 9px;
+        border-radius: var(--radius-control);
+        color: var(--ink-2);
+        font-size: 12.5px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        transition: background-color 0.12s ease-out, color 0.12s ease-out;
+        cursor: pointer;
+      }
+      .chat-row:hover {
+        background: var(--hover);
+        color: var(--ink);
+      }
+      .chat-row.is-active {
+        background: var(--accent-tint);
+        color: var(--ink);
+      }
+      .chat-row svg {
+        flex-shrink: 0;
+        color: var(--ink-3);
+      }
+      .chat-row.is-active svg {
+        color: var(--accent-ink);
+      }
+
+      /* 主区 */
+      .main {
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
+        overflow: hidden;
+      }
+      .topbar {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        height: 52px;
+        padding: 0 16px;
+        border-bottom: 1px solid var(--line);
+        background: color-mix(in srgb, var(--canvas) 88%, transparent);
+        backdrop-filter: blur(10px);
+      }
+      .topbar__title {
+        font-size: 13.5px;
+        font-weight: 600;
+        letter-spacing: -0.01em;
+      }
+      .topbar__fork {
+        margin-left: auto;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        height: 30px;
+        padding: 0 11px;
+        border-radius: var(--radius-control);
+        box-shadow: var(--shadow-btn);
+        background: var(--surface);
+        color: var(--ink-2);
+        font-size: 12px;
+        font-weight: 500;
+        transition: background-color 0.12s ease-out, color 0.12s ease-out;
+      }
+      .topbar__fork:hover {
+        background: var(--hover);
+        color: var(--ink);
+      }
+      .scroll {
+        flex: 1;
+        overflow-y: auto;
+        padding: 34px 28px 120px;
+        scrollbar-color: var(--line-strong) transparent;
+      }
+      .scroll::-webkit-scrollbar {
+        width: 10px;
+      }
+      .scroll::-webkit-scrollbar-thumb {
+        border: 3px solid var(--page);
+        border-radius: 99px;
+        background: var(--line-strong);
+      }
+
+      /* ── 欢迎区 ───────────────────────────────────────────── */
+      .greet {
+        max-width: 640px;
+        margin: 24px auto 0;
+        text-align: center;
+      }
+      .greet__hello {
+        font-size: 30px;
+        font-weight: 600;
+        letter-spacing: -0.03em;
+      }
+      .greet__sub {
+        margin-top: 6px;
+        color: var(--ink-3);
+        font-size: 14px;
+      }
+      .suggest {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+        gap: 9px;
+        margin-top: 22px;
+        text-align: left;
+      }
+      .suggest__card {
+        padding: 13px 14px;
+        border-radius: var(--radius-card);
+        box-shadow: var(--shadow-card);
+        background: var(--surface);
+        cursor: pointer;
+        transition: box-shadow 0.16s ease-out, transform 0.16s var(--ease-out-strong),
+          background-color 0.12s ease-out;
+      }
+      .suggest__card:hover {
+        transform: translateY(-2px);
+        box-shadow: var(--shadow-raised);
+        background: var(--hover);
+      }
+      .suggest__card h4 {
+        font-size: 13px;
+        font-weight: 600;
+      }
+      .suggest__card p {
+        margin-top: 4px;
+        color: var(--ink-3);
+        font-size: 11.5px;
+        line-height: 1.5;
+      }
+      .connect {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        margin: 26px auto 0;
+        max-width: 520px;
+        padding: 10px 13px;
+        border-radius: var(--radius-card);
+        box-shadow: var(--shadow-hairline);
+        background: var(--inset);
+      }
+      .connect__icon {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 26px;
+        height: 26px;
+        border-radius: 7px;
+        background: var(--green-tint);
+        color: var(--green);
+      }
+      .connect__text {
+        min-width: 0;
+        flex: 1;
+        font-size: 12px;
+        color: var(--ink-2);
+      }
+      .connect__shuffle {
+        flex: 0 0 auto;
+        height: 27px;
+        padding: 0 10px;
+        border-radius: var(--radius-chip);
+        color: var(--accent-ink);
+        font-size: 11.5px;
+        font-weight: 500;
+        transition: background-color 0.12s ease-out;
+      }
+      .connect__shuffle:hover {
+        background: var(--accent-tint);
+      }
+
+      /* ── 通用卡片 ─────────────────────────────────────────── */
+      .stage {
+        max-width: 720px;
+        margin: 0 auto;
+      }
+      .block {
+        margin-top: 30px;
+      }
+      .block__head {
+        display: flex;
+        align-items: baseline;
+        gap: 9px;
+        margin-bottom: 11px;
+        padding: 0 2px;
+      }
+      .block__num {
+        color: var(--ink-3);
+        font-family: var(--font-mono);
+        font-size: 10.5px;
+        font-variant-numeric: tabular-nums;
+      }
+      .block__title {
+        font-size: 13px;
+        font-weight: 600;
+      }
+      .block__hint {
+        color: var(--ink-3);
+        font-size: 11.5px;
+      }
+      .card {
+        box-shadow: var(--shadow-card);
+        border-radius: var(--radius-card);
+        background: var(--surface);
+        overflow: hidden;
+      }
+
+      /* ── 01 Loading：像素网格 + shimmer + 计时 ──────────────── */
+      .loading {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        padding: 18px;
+      }
+      .pixel-grid {
+        display: grid;
+        grid-template-columns: repeat(3, 4px);
+        grid-template-rows: repeat(3, 4px);
+        gap: 1.5px;
+      }
+      .pixel-grid i {
+        background: var(--accent);
+        border-radius: 1px;
+        animation: pixel-on 1.4s ease-in-out infinite;
+      }
+      @keyframes pixel-on {
+        0%,
+        to {
+          opacity: 0.15;
+        }
+        18%,
+        42% {
+          opacity: 1;
+        }
+      }
+      .loading__copy {
+        min-width: 0;
+        flex: 1;
+      }
+      .loading__label {
+        display: flex;
+        align-items: baseline;
+        gap: 7px;
+        font-size: 13px;
+        font-weight: 500;
+      }
+      .loading__elapsed {
+        font-family: var(--font-mono);
+        font-size: 11.5px;
+        font-variant-numeric: tabular-nums;
+        color: var(--ink-3);
+      }
+      .loading__sub {
+        margin-top: 3px;
+        color: var(--ink-3);
+        font-size: 11.5px;
+      }
+      .eq {
+        display: flex;
+        align-items: flex-end;
+        gap: 2px;
+        height: 14px;
+        margin-top: 9px;
+      }
+      .eq i {
+        width: 2.5px;
+        height: 100%;
+        border-radius: 99px;
+        background: var(--accent);
+        animation: eq-bounce 1s ease-in-out infinite;
+      }
+      .eq i:nth-child(2) {
+        animation-delay: 0.15s;
+      }
+      .eq i:nth-child(3) {
+        animation-delay: 0.3s;
+      }
+      .eq i:nth-child(4) {
+        animation-delay: 0.45s;
+      }
+      @keyframes eq-bounce {
+        0%,
+        to {
+          transform: scaleY(0.35);
+        }
+        50% {
+          transform: scaleY(1);
+        }
+      }
+
+      /* ── 02 Thinking：可折叠轨迹 + 标签页 ───────────────────── */
+      .thinking__head {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        padding: 13px 16px;
+        cursor: pointer;
+        user-select: none;
+      }
+      .thinking__dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: var(--accent);
+        animation: records-pulse 1.4s ease-in-out infinite;
+      }
+      @keyframes records-pulse {
+        0%,
+        to {
+          opacity: 0.35;
+          transform: scale(0.8);
+        }
+        50% {
+          opacity: 1;
+          transform: scale(1);
+        }
+      }
+      .thinking__title {
+        font-size: 13px;
+        font-weight: 500;
+      }
+      .thinking__meta {
+        color: var(--ink-3);
+        font-size: 11.5px;
+        font-family: var(--font-mono);
+      }
+      .thinking__chev {
+        margin-left: auto;
+        color: var(--ink-3);
+        transition: transform 0.16s var(--ease-out-strong);
+      }
+      .thinking.is-open .thinking__chev {
+        transform: rotate(180deg);
+      }
+      .thinking__body {
+        display: none;
+        padding: 2px 16px 15px;
+        border-top: 1px solid var(--line);
+      }
+      .thinking.is-open .thinking__body {
+        display: block;
+        animation: fade-in 0.18s ease-out;
+      }
+      @keyframes fade-in {
+        from {
+          opacity: 0;
+        }
+        to {
+          opacity: 1;
+        }
+      }
+      .tabs {
+        position: relative;
+        display: flex;
+        gap: 2px;
+        margin: 12px 0 11px;
+        padding: 2px;
+      }
+      .tabs__pill {
+        position: absolute;
+        top: 2px;
+        left: 2px;
+        z-index: 0;
+        height: calc(100% - 4px);
+        border-radius: var(--radius-chip);
+        background: var(--hover-2);
+        transition: transform 0.18s var(--ease-out-strong),
+          width 0.18s var(--ease-out-strong);
+      }
+      .tabs button {
+        position: relative;
+        z-index: 1;
+        flex: 1;
+        height: 27px;
+        border-radius: var(--radius-chip);
+        color: var(--ink-3);
+        font-size: 12px;
+        font-weight: 500;
+        transition: color 0.12s ease-out;
+      }
+      .tabs button[aria-selected='true'] {
+        color: var(--ink);
+      }
+      .trace {
+        font-size: 12.5px;
+        line-height: 1.6;
+        color: var(--ink-2);
+      }
+      .trace-step {
+        display: flex;
+        gap: 9px;
+        padding: 4px 0;
+        opacity: 0;
+        animation: fade-in 0.24s ease-out forwards;
+      }
+      .trace-step:nth-child(1) {
+        animation-delay: 30ms;
+      }
+      .trace-step:nth-child(2) {
+        animation-delay: 90ms;
+      }
+      .trace-step:nth-child(3) {
+        animation-delay: 150ms;
+      }
+      .trace-step:nth-child(4) {
+        animation-delay: 210ms;
+      }
+      .trace-step__n {
+        flex: 0 0 15px;
+        height: 15px;
+        margin-top: 1px;
+        border-radius: 4px;
+        background: var(--accent-tint);
+        color: var(--accent-ink);
+        font-family: var(--font-mono);
+        font-size: 9.5px;
+        font-weight: 600;
+        line-height: 15px;
+        text-align: center;
+      }
+      .trace code {
+        padding: 1px 5px;
+        border-radius: 4px;
+        background: var(--inset);
+        color: var(--ink);
+        font-family: var(--font-mono);
+        font-size: 11px;
+      }
+
+      /* ── 03 Tool Chips + Task Rows ────────────────────────── */
+      .tools {
+        padding: 15px 16px;
+      }
+      .chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 5px;
+        margin-bottom: 13px;
+      }
+      .chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        height: 24px;
+        padding: 0 9px;
+        border-radius: var(--radius-chip);
+        background: var(--inset);
+        color: var(--ink-2);
+        font-size: 11.5px;
+        font-weight: 500;
+        opacity: 0;
+        animation: pop-in 0.2s var(--ease-out-strong) both;
+      }
+      .chip i {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: var(--green);
+      }
+      .chip.is-running i {
+        background: var(--accent);
+        animation: spin 0.9s linear infinite;
+      }
+      @keyframes spin {
+        to {
+          transform: rotate(1turn);
+        }
+      }
+      @keyframes pop-in {
+        0% {
+          opacity: 0;
+          transform: scale(0.95);
+        }
+        to {
+          opacity: 1;
+          transform: scale(1);
+        }
+      }
+      .tasks {
+        border-top: 1px solid var(--line);
+      }
+      .task {
+        display: grid;
+        grid-template-columns: 16px minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 9px;
+        padding: 9px 0;
+        border-bottom: 1px solid var(--line);
+      }
+      .task:last-child {
+        border-bottom: 0;
+      }
+      .task__icon {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 15px;
+        height: 15px;
+      }
+      .task__icon svg {
+        width: 14px;
+        height: 14px;
+      }
+      .task__name {
+        min-width: 0;
+        font-size: 12.5px;
+        font-weight: 500;
+      }
+      .task__name small {
+        display: block;
+        margin-top: 2px;
+        color: var(--ink-3);
+        font-size: 10.5px;
+        font-weight: 400;
+      }
+      .task__status {
+        color: var(--ink-3);
+        font-size: 11px;
+        font-family: var(--font-mono);
+        font-variant-numeric: tabular-nums;
+      }
+      .task__bar {
+        grid-column: 2 / 4;
+        height: 3px;
+        border-radius: 99px;
+        background: var(--inset);
+        overflow: hidden;
+      }
+      .task__bar i {
+        display: block;
+        height: 100%;
+        width: 0%;
+        border-radius: 99px;
+        background: var(--accent);
+        transition: width 0.7s var(--ease-out-strong);
+      }
+      .task.is-done .task__bar i {
+        background: var(--green);
+      }
+      .task.is-failed .task__bar i {
+        background: var(--red);
+      }
+      .icon-spin {
+        animation: spin 0.9s linear infinite;
+        color: var(--accent);
+      }
+      .icon-ok {
+        color: var(--green);
+      }
+      .icon-err {
+        color: var(--red);
+      }
+
+      /* ── 04 Streaming Text ───────────────────────────────── */
+      .stream {
+        padding: 16px;
+      }
+      .turn {
+        display: flex;
+        gap: 11px;
+      }
+      .turn__av {
+        flex: 0 0 26px;
+        width: 26px;
+        height: 26px;
+        border-radius: 8px;
+        background: var(--accent-tint);
+        color: var(--accent-ink);
+        font-size: 11.5px;
+        font-weight: 600;
+        line-height: 26px;
+        text-align: center;
+      }
+      .turn__body {
+        min-width: 0;
+        flex: 1;
+        padding-top: 2px;
+      }
+      .turn__who {
+        margin-bottom: 5px;
+        font-size: 11.5px;
+        font-weight: 600;
+        color: var(--ink-2);
+      }
+      .stream-text {
+        font-size: 13px;
+        line-height: 1.65;
+        color: var(--ink);
+        white-space: pre-wrap;
+      }
+      .stream-caret {
+        display: inline-block;
+        background: var(--ink);
+        vertical-align: text-bottom;
+        border-radius: 1px;
+        width: 2px;
+        height: 1.05em;
+        margin-left: 1.5px;
+        translate: 0 -0.5px;
+        animation: caret-blink 1s step-end infinite;
+      }
+      @keyframes caret-blink {
+        0%,
+        to {
+          opacity: 1;
+        }
+        50% {
+          opacity: 0;
+        }
+      }
+      .sources {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-top: 12px;
+      }
+      .source {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        height: 25px;
+        padding: 0 9px 0 5px;
+        border-radius: var(--radius-chip);
+        box-shadow: var(--shadow-hairline);
+        background: var(--surface);
+        color: var(--ink-2);
+        font-size: 11px;
+        opacity: 0;
+        animation: pop-in 0.2s var(--ease-out-strong) both;
+      }
+      .source i {
+        flex: 0 0 14px;
+        width: 14px;
+        height: 14px;
+        border-radius: 4px;
+      }
+      .followups {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-top: 12px;
+      }
+      .followup {
+        height: 28px;
+        padding: 0 11px;
+        border-radius: 99px;
+        box-shadow: var(--shadow-hairline);
+        color: var(--ink-2);
+        font-size: 11.5px;
+        font-weight: 500;
+        opacity: 0;
+        animation: pop-in 0.2s var(--ease-out-strong) both;
+        transition: background-color 0.12s ease-out, color 0.12s ease-out;
+      }
+      .followup:hover {
+        background: var(--hover);
+        color: var(--ink);
+      }
+
+      /* ── 05 Approval Card ────────────────────────────────── */
+      .approval {
+        padding: 16px;
+        max-width: 460px;
+      }
+      .approval__q {
+        font-size: 13.5px;
+        font-weight: 600;
+      }
+      .approval__sub {
+        margin-top: 4px;
+        color: var(--ink-3);
+        font-size: 11.5px;
+      }
+      .approval__opts {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        margin-top: 12px;
+      }
+      .opt {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        padding: 10px 11px;
+        border-radius: var(--radius-control);
+        box-shadow: var(--shadow-hairline);
+        background: var(--inset);
+        cursor: pointer;
+        transition: box-shadow 0.14s ease-out, background-color 0.12s ease-out;
+      }
+      .opt:hover {
+        box-shadow: var(--shadow-card);
+        background: var(--hover);
+      }
+      .opt input {
+        accent-color: var(--accent);
+      }
+      .opt__label {
+        font-size: 12.5px;
+      }
+      .opt__hint {
+        margin-left: auto;
+        color: var(--ink-3);
+        font-size: 10.5px;
+      }
+      .approval__foot {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        margin-top: 13px;
+      }
+      .approval__step {
+        color: var(--ink-3);
+        font-family: var(--font-mono);
+        font-size: 11px;
+        font-variant-numeric: tabular-nums;
+      }
+      .btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        height: 30px;
+        padding: 0 13px;
+        border-radius: var(--radius-control);
+        font-size: 12px;
+        font-weight: 500;
+        transition: background-color 0.12s ease-out, color 0.12s ease-out,
+          box-shadow 0.14s ease-out;
+      }
+      .btn--ghost {
+        box-shadow: var(--shadow-btn);
+        background: var(--surface);
+        color: var(--ink-2);
+      }
+      .btn--ghost:hover {
+        background: var(--hover);
+        color: var(--ink);
+      }
+      .btn--primary {
+        margin-left: auto;
+        background: var(--accent);
+        color: oklch(100% 0 0);
+      }
+      .btn--primary:hover {
+        filter: brightness(1.08);
+      }
+
+      /* ── 06 Recommendation（置信度 meter）───────────────── */
+      .reco {
+        padding: 16px;
+        max-width: 460px;
+      }
+      .reco__q {
+        font-size: 13.5px;
+        font-weight: 600;
+      }
+      .reco__main {
+        display: flex;
+        align-items: center;
+        gap: 11px;
+        margin-top: 11px;
+        padding: 11px 12px;
+        border-radius: var(--radius-control);
+        box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 30%, transparent);
+        background: var(--accent-tint);
+      }
+      .reco__main-text {
+        min-width: 0;
+        flex: 1;
+        font-size: 12.5px;
+        font-weight: 500;
+      }
+      .reco__main-text small {
+        display: block;
+        margin-top: 3px;
+        color: var(--ink-3);
+        font-size: 10.5px;
+        font-weight: 400;
+      }
+      .meter {
+        flex: 0 0 82px;
+      }
+      .meter__track {
+        height: 4px;
+        border-radius: 99px;
+        background: color-mix(in srgb, var(--ink) 12%, transparent);
+        overflow: hidden;
+      }
+      .meter__track i {
+        display: block;
+        height: 100%;
+        width: 0%;
+        border-radius: 99px;
+        background: var(--accent);
+        transition: width 0.9s var(--ease-out-strong);
+      }
+      .meter__label {
+        margin-top: 5px;
+        color: var(--ink-3);
+        font-size: 9.5px;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+      .reco__alts {
+        margin-top: 9px;
+      }
+      .reco__alt {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 3px;
+        border-bottom: 1px solid var(--line);
+        color: var(--ink-2);
+        font-size: 12px;
+      }
+      .reco__alt:last-child {
+        border-bottom: 0;
+      }
+      .reco__alt-tag {
+        margin-left: auto;
+        height: 20px;
+        padding: 0 7px;
+        border-radius: var(--radius-chip);
+        background: var(--inset);
+        color: var(--ink-3);
+        font-size: 10px;
+        line-height: 20px;
+      }
+
+      /* ── 07 Context Cards ───────────────────────────────── */
+      .context {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 9px;
+        padding: 13px;
+      }
+      .ctx {
+        padding: 11px 12px;
+        border-radius: var(--radius-control);
+        box-shadow: var(--shadow-hairline);
+        background: var(--inset);
+        opacity: 0;
+        animation: fade-in 0.24s ease-out forwards;
+      }
+      .ctx:nth-child(1) {
+        animation-delay: 50ms;
+      }
+      .ctx:nth-child(2) {
+        animation-delay: 120ms;
+      }
+      .ctx h4 {
+        font-size: 12px;
+        font-weight: 600;
+      }
+      .ctx p {
+        margin: 4px 0 8px;
+        color: var(--ink-2);
+        font-size: 11.5px;
+        line-height: 1.55;
+      }
+      .ctx__src {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        color: var(--ink-3);
+        font-size: 10px;
+      }
+      .ctx__src i {
+        width: 5px;
+        height: 5px;
+        border-radius: 50%;
+        background: var(--accent);
+      }
+
+      /* ── 08 Diff Table ──────────────────────────────────── */
+      .diff {
+        padding: 14px 16px;
+      }
+      .diff__title {
+        margin-bottom: 10px;
+        font-size: 12.5px;
+        font-weight: 600;
+      }
+      table.tbl {
+        width: 100%;
+        border-collapse: separate;
+        border-spacing: 0;
+        font-size: 12.5px;
+      }
+      table.tbl th {
+        text-align: left;
+        padding: 7px 10px;
+        border-bottom: 1px solid var(--line);
+        color: var(--ink-3);
+        font-size: 10.5px;
+        font-weight: 500;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+      table.tbl td {
+        padding: 8px 10px;
+        border-bottom: 1px solid var(--line);
+        color: var(--ink);
+      }
+      table.tbl tr:last-child td {
+        border-bottom: 0;
+      }
+      .diff tr.is-changed td {
+        background: var(--accent-tint);
+        animation: diff-sweep 1.6s ease-out;
+      }
+      @keyframes diff-sweep {
+        0% {
+          background: color-mix(in srgb, var(--accent) 30%, transparent);
+        }
+        100% {
+          background: var(--accent-tint);
+        }
+      }
+      .del {
+        color: var(--red);
+        text-decoration: line-through;
+        text-decoration-thickness: 1px;
+      }
+      .ins {
+        color: var(--green);
+        font-weight: 500;
+      }
+      .diff__foot {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-top: 12px;
+      }
+      .diff__count {
+        color: var(--ink-3);
+        font-size: 11px;
+        font-family: var(--font-mono);
+      }
+
+      /* ── 09 Records Table（排序 + 标签 + 强度）──────────── */
+      .records {
+        padding: 13px 16px;
+        overflow-x: auto;
+      }
+      table.tbl th.sortable {
+        cursor: pointer;
+        user-select: none;
+        transition: color 0.12s ease-out;
+      }
+      table.tbl th.sortable:hover {
+        color: var(--ink);
+      }
+      .arrow {
+        display: inline-block;
+        margin-left: 4px;
+        opacity: 0;
+        transform: translateY(-2px);
+        transition: opacity 0.12s ease-out, transform 0.16s var(--ease-out-strong);
+      }
+      th[aria-sort] .arrow {
+        opacity: 1;
+        transform: none;
+      }
+      th[aria-sort='descending'] .arrow {
+        transform: rotate(180deg);
+      }
+      .tag {
+        display: inline-flex;
+        align-items: center;
+        height: 21px;
+        margin-right: 4px;
+        padding: 0 7px;
+        border-radius: var(--radius-chip);
+        background: var(--inset);
+        color: var(--ink-2);
+        font-size: 11px;
+        font-weight: 500;
+      }
+      .tag--green {
+        background: var(--green-tint);
+        color: var(--green);
+      }
+      .tag--orange {
+        background: var(--orange-tint);
+        color: var(--orange);
+      }
+      .strength {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        color: var(--ink-2);
+        font-size: 12px;
+      }
+      .strength__dots {
+        display: inline-flex;
+        gap: 3px;
+      }
+      .strength__dots i {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: var(--line-strong);
+      }
+      .strength__dots i.on {
+        background: var(--green);
+      }
+      .records tbody tr {
+        animation: fade-in 0.2s ease-out backwards;
+      }
+      .records tbody tr:nth-child(1) {
+        animation-delay: 30ms;
+      }
+      .records tbody tr:nth-child(2) {
+        animation-delay: 70ms;
+      }
+      .records tbody tr:nth-child(3) {
+        animation-delay: 110ms;
+      }
+      .records tbody tr:nth-child(4) {
+        animation-delay: 150ms;
+      }
+      .records tbody tr:nth-child(5) {
+        animation-delay: 190ms;
+      }
+
+      /* ── 10 Filter Table ────────────────────────────────── */
+      .filter {
+        padding: 13px 16px;
+      }
+      .filter__chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 5px;
+        margin-bottom: 10px;
+      }
+      .fchip {
+        height: 25px;
+        padding: 0 10px;
+        border-radius: var(--radius-chip);
+        box-shadow: var(--shadow-hairline);
+        color: var(--ink-2);
+        font-size: 11.5px;
+        font-weight: 500;
+        transition: background-color 0.12s ease-out, color 0.12s ease-out;
+      }
+      .fchip:hover {
+        background: var(--hover);
+        color: var(--ink);
+      }
+      .fchip[aria-pressed='true'] {
+        background: var(--accent-tint);
+        color: var(--accent-ink);
+      }
+      .filter__count {
+        margin-bottom: 8px;
+        color: var(--ink-3);
+        font-size: 11px;
+        font-family: var(--font-mono);
+      }
+      .filter tbody tr {
+        animation: fade-in 0.2s ease-out backwards;
+      }
+      .filter tbody tr.is-hidden {
+        display: none;
+      }
+
+      /* ── 顶部工具条（动效开关 + 重播全部）───────────────── */
+      .dock {
+        position: sticky;
+        bottom: 0;
+        z-index: 30;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin: 0 auto;
+        max-width: 720px;
+        padding: 9px 13px;
+        border-radius: var(--radius-window);
+        box-shadow: var(--shadow-overlay);
+        background: color-mix(in srgb, var(--surface) 92%, transparent);
+        backdrop-filter: blur(16px) saturate(1.2);
+        transform: translateY(14px);
+      }
+      .dock__brand {
+        font-size: 12px;
+        font-weight: 600;
+        letter-spacing: -0.01em;
+      }
+      .dock__sub {
+        color: var(--ink-3);
+        font-size: 10.5px;
+      }
+      .dock__right {
+        margin-left: auto;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .switch {
+        position: relative;
+        width: 36px;
+        height: 20px;
+        border-radius: 99px;
+        background: var(--hover-2);
+        transition: background-color 0.18s ease-out;
+      }
+      .switch::after {
+        content: '';
+        position: absolute;
+        top: 2px;
+        left: 2px;
+        width: 16px;
+        height: 16px;
+        border-radius: 50%;
+        background: var(--ink);
+        transition: transform 0.18s var(--ease-out-strong);
+      }
+      html[data-motion='on'] .switch {
+        background: var(--accent);
+      }
+      html[data-motion='on'] .switch::after {
+        transform: translateX(16px);
+      }
+      .dock__label {
+        color: var(--ink-2);
+        font-size: 11px;
+      }
+
+      @media (max-width: 760px) {
+        .app {
+          grid-template-columns: 1fr;
+        }
+        .sidebar {
+          display: none;
+        }
+        .scroll {
+          padding: 24px 14px 110px;
+        }
+        .greet__hello {
+          font-size: 24px;
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        *,
+        *::before,
+        *::after {
+          transition-duration: 0.01ms !important;
+          animation-duration: 0.01ms !important;
+          animation-iteration-count: 1 !important;
+        }
+      }
+      html[data-motion='off'] *,
+      html[data-motion='off'] *::before,
+      html[data-motion='off'] *::after {
+        transition-duration: 0.01ms !important;
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+      }
+      html[data-motion='off'] .trace-step,
+      html[data-motion='off'] .chip,
+      html[data-motion='off'] .source,
+      html[data-motion='off'] .followup,
+      html[data-motion='off'] .ctx,
+      html[data-motion='off'] .records tbody tr,
+      html[data-motion='off'] .filter tbody tr {
+        opacity: 1 !important;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="app">
+      <!-- 侧栏 -->
+      <aside class="sidebar">
+        <div class="sidebar__brand">
+          <span class="sidebar__logo">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+          </span>
+          <span class="sidebar__name">Creamery Ops</span>
+        </div>
+        <div class="sidebar__top">
+          <button type="button" class="sidebar__btn">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
+            New chat
+          </button>
+          <button type="button" class="sidebar__invite">3/10</button>
+        </div>
+        <div class="sidebar__label">Chats</div>
+        <div class="sidebar__chats">
+          <div class="chat-row is-active">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+            Parking ticket appeal
+          </div>
+          <div class="chat-row">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+            Supplier records
+          </div>
+          <div class="chat-row">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+            Urgent to-dos this morning
+          </div>
+          <div class="chat-row">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+            Flavor page ticket
+          </div>
+          <div class="chat-row">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+            Workload summary
+          </div>
+          <div class="chat-row">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+            Off-board a supplier
+          </div>
+          <div class="chat-row">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+            Batch restock function
+          </div>
+          <div class="chat-row">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+            Propose flavor edits
+          </div>
+        </div>
+      </aside>
+
+      <!-- 主区 -->
+      <main class="main">
+        <div class="topbar">
+          <span class="topbar__title">Parking ticket appeal</span>
+          <button type="button" class="topbar__fork">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M6 6h3v3M15 6h3v3M6 18h3v-3M15 18h3v-3"/></svg>
+            Fork this
+          </button>
+        </div>
+
+        <div class="scroll">
+          <!-- 欢迎区 -->
+          <div class="greet">
+            <div class="greet__hello">Hello Shane</div>
+            <div class="greet__sub">What can I help you with?</div>
+            <div class="suggest">
+              <div class="suggest__card">
+                <h4>Appeal my parking ticket</h4>
+                <p>Draft a dispute letter using the citation details and photos.</p>
+              </div>
+              <div class="suggest__card">
+                <h4>Show me our supplier records</h4>
+                <p>Compare dairy vendors by lead time and cold-chain status.</p>
+              </div>
+              <div class="suggest__card">
+                <h4>Urgent to-dos this morning</h4>
+                <p>What needs attention before the noon delivery window.</p>
+              </div>
+            </div>
+            <div class="connect">
+              <span class="connect__icon">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+              </span>
+              <span class="connect__text">Connect your apps for a better experience</span>
+              <button type="button" class="connect__shuffle">Shuffle suggestions</button>
+            </div>
+          </div>
+
+          <div class="stage">
+            <!-- 01 Loading -->
+            <section class="block">
+              <div class="block__head">
+                <span class="block__num">01</span>
+                <span class="block__title">Loading State</span>
+                <span class="block__hint">像素网格 + shimmer + 计时</span>
+              </div>
+              <div class="card loading">
+                <div class="pixel-grid" aria-hidden="true"></div>
+                <div class="loading__copy">
+                  <div class="loading__label">
+                    Churning <span class="loading__elapsed" data-elapsed>0.0s</span>
+                  </div>
+                  <div class="loading__sub">Reading 3 exports · indexing 214 rows</div>
+                  <div class="eq" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+                </div>
+              </div>
+            </section>
+
+            <!-- 02 Thinking -->
+            <section class="block">
+              <div class="block__head">
+                <span class="block__num">02</span>
+                <span class="block__title">Thinking</span>
+                <span class="block__hint">可折叠轨迹 · 标签页</span>
+              </div>
+              <div class="card thinking is-open" data-thinking>
+                <div class="thinking__head" data-thinking-toggle>
+                  <span class="thinking__dot" aria-hidden="true"></span>
+                  <span class="thinking__title">Thinking</span>
+                  <span class="thinking__meta">4 steps · 2.4s</span>
+                  <svg class="thinking__chev" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+                </div>
+                <div class="thinking__body">
+                  <div class="tabs" role="tablist" aria-label="轨迹分类" data-tabs>
+                    <span class="tabs__pill" aria-hidden="true"></span>
+                    <button type="button" role="tab" aria-selected="true" data-tab="steps">Steps</button>
+                    <button type="button" role="tab" aria-selected="false" data-tab="reasoning">Reasoning</button>
+                    <button type="button" role="tab" aria-selected="false" data-tab="search">Search</button>
+                    <button type="button" role="tab" aria-selected="false" data-tab="coding">Coding</button>
+                  </div>
+                  <div class="trace" data-pane="steps">
+                    <div class="trace-step"><span class="trace-step__n">1</span><span>Read citation <code>#PK-8842</code> and the two photo attachments.</span></div>
+                    <div class="trace-step"><span class="trace-step__n">2</span><span>Checked municipal code §12-40 for no-standing zones.</span></div>
+                    <div class="trace-step"><span class="trace-step__n">3</span><span>Matched signage in photo 2 to the posted zone map.</span></div>
+                    <div class="trace-step"><span class="trace-step__n">4</span><span>Drafted the dispute letter in a neutral tone.</span></div>
+                  </div>
+                  <div class="trace" data-pane="reasoning" hidden>
+                    <div class="trace-step"><span class="trace-step__n">1</span><span>Signage is partially obscured — strong argument for ambiguity.</span></div>
+                    <div class="trace-step"><span class="trace-step__n">2</span><span>Prior appeal for the same zone was granted in March.</span></div>
+                    <div class="trace-step"><span class="trace-step__n">3</span><span>Recommend citing photos, not just the written description.</span></div>
+                  </div>
+                  <div class="trace" data-pane="search" hidden>
+                    <div class="trace-step"><span class="trace-step__n">1</span><span>Searched municipal code for <code>no-standing</code> exemptions.</span></div>
+                    <div class="trace-step"><span class="trace-step__n">2</span><span>Pulled the zone map PDF for block 400 of Maple Ave.</span></div>
+                  </div>
+                  <div class="trace" data-pane="coding" hidden>
+                    <div class="trace-step"><span class="trace-step__n">1</span><span>Rendered the letter into the <code>appeal-letter.pdf</code> template.</span></div>
+                    <div class="trace-step"><span class="trace-step__n">2</span><span>Attached both photos at full resolution.</span></div>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <!-- 03 Tool Chips + Task Rows -->
+            <section class="block">
+              <div class="block__head">
+                <span class="block__num">03</span>
+                <span class="block__title">Tool Chips + Task Rows</span>
+                <span class="block__hint">工具调用压缩 · 实时任务状态</span>
+              </div>
+              <div class="card tools">
+                <div class="chips" data-chips>
+                  <span class="chip" style="animation-delay: 0ms"><i></i>read_citation ×2</span>
+                  <span class="chip is-running" style="animation-delay: 80ms"><i></i>search_municipal_code</span>
+                  <span class="chip" style="animation-delay: 160ms"><i></i>render_letter</span>
+                  <span class="chip" style="animation-delay: 240ms"><i></i>attach_photos ×2</span>
+                </div>
+                <div class="tasks" data-tasks>
+                  <div class="task">
+                    <span class="task__icon"><svg class="icon-ok" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>
+                    <span class="task__name">Verified vendor records<small>12 suppliers matched on tax and contact IDs</small></span>
+                    <span class="task__status">Completed</span>
+                    <span class="task__bar"><i style="width: 100%"></i></span>
+                  </div>
+                  <div class="task">
+                    <span class="task__icon"><svg class="icon-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg></span>
+                    <span class="task__name">Scoring stockout risk<small>Reading POS export across 3 files</small></span>
+                    <span class="task__status" data-task-status>68%</span>
+                    <span class="task__bar"><i data-task-bar></i></span>
+                  </div>
+                  <div class="task is-failed">
+                    <span class="task__icon"><svg class="icon-err" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg></span>
+                    <span class="task__name">Draft supplier emails<small>Cone supplier follow-up is still a draft</small></span>
+                    <span class="task__status">Failed</span>
+                    <span class="task__bar"><i style="width: 45%"></i></span>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <!-- 04 Streaming Text -->
+            <section class="block">
+              <div class="block__head">
+                <span class="block__num">04</span>
+                <span class="block__title">Streaming Text</span>
+                <span class="block__hint">流式 + 内联来源 + Follow-ups</span>
+              </div>
+              <div class="card stream">
+                <div class="turn">
+                  <div class="turn__av">V</div>
+                  <div class="turn__body">
+                    <div class="turn__who">Vanilla 1</div>
+                    <div class="stream-text" data-stream-text></div>
+                    <div class="sources" data-sources hidden>
+                      <span class="source" style="animation-delay: 0ms"><i style="background: #1f7a5f"></i>Scoop Data</span>
+                      <span class="source" style="animation-delay: 80ms"><i style="background: #2f6fec"></i>Trends Index</span>
+                      <span class="source" style="animation-delay: 160ms"><i style="background: #e56d24"></i>Market Basket</span>
+                    </div>
+                    <div class="followups" data-followups hidden>
+                      <button type="button" class="followup" style="animation-delay: 0ms">Which flavors sell best in winter</button>
+                      <button type="button" class="followup" style="animation-delay: 60ms">Compare gelato and soft serve margins</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <!-- 05 Approval Card -->
+            <section class="block">
+              <div class="block__head">
+                <span class="block__num">05</span>
+                <span class="block__title">Approval Card</span>
+                <span class="block__hint">人在回路 · 需要确认才执行</span>
+              </div>
+              <div class="card approval">
+                <div class="approval__q">How many flavors should we launch?</div>
+                <div class="approval__sub">The agent asks before committing to a production run.</div>
+                <div class="approval__opts" role="radiogroup" aria-label="上新数量">
+                  <label class="opt">
+                    <input type="radio" name="launch" value="three" checked />
+                    <span class="opt__label">Three (core line)</span>
+                    <span class="opt__hint">Recommended</span>
+                  </label>
+                  <label class="opt">
+                    <input type="radio" name="launch" value="five" />
+                    <span class="opt__label">Five (full case)</span>
+                    <span class="opt__hint">Higher risk</span>
+                  </label>
+                  <label class="opt">
+                    <input type="radio" name="launch" value="one" />
+                    <span class="opt__label">Just one hero</span>
+                    <span class="opt__hint">Safest</span>
+                  </label>
+                </div>
+                <div class="approval__foot">
+                  <span class="approval__step">1 / 3</span>
+                  <button type="button" class="btn btn--ghost">Skip</button>
+                  <button type="button" class="btn btn--primary">Continue</button>
+                </div>
+              </div>
+            </section>
+
+            <!-- 06 Recommendation -->
+            <section class="block">
+              <div class="block__head">
+                <span class="block__num">06</span>
+                <span class="block__title">Recommendation Card</span>
+                <span class="block__hint">置信度 meter · 备选方案</span>
+              </div>
+              <div class="card reco">
+                <div class="reco__q">Want me to place this restock order?</div>
+                <div class="reco__main">
+                  <div class="reco__main-text">
+                    Reorder waffle cones from CCone King
+                    <small>Lead time 7 days · arrives before the weekend rush</small>
+                  </div>
+                  <div class="meter">
+                    <div class="meter__track"><i data-meter></i></div>
+                    <div class="meter__label">High confidence</div>
+                  </div>
+                </div>
+                <div class="reco__alts">
+                  <div class="reco__alt"><span>Switch to Vanilla Madagascar</span><span class="reco__alt-tag">Needs review</span></div>
+                  <div class="reco__alt"><span>Full restock across every SKU</span><span class="reco__alt-tag">No signal</span></div>
+                </div>
+                <div class="approval__foot">
+                  <button type="button" class="btn btn--ghost">Other options</button>
+                  <button type="button" class="btn btn--primary">Accept</button>
+                </div>
+              </div>
+            </section>
+
+            <!-- 07 Context Cards -->
+            <section class="block">
+              <div class="block__head">
+                <span class="block__num">07</span>
+                <span class="block__title">Context Cards</span>
+                <span class="block__hint">带来源的检索块</span>
+              </div>
+              <div class="card">
+                <div class="context">
+                  <div class="ctx">
+                    <h4>Vendor onboarding rule</h4>
+                    <p>Cold-chain certification must be verified before a new dairy can be added to the reorder workflow.</p>
+                    <span class="ctx__src"><i></i>PDF · Dairy Onboarding SOP</span>
+                  </div>
+                  <div class="ctx">
+                    <h4>Seasonal demand row</h4>
+                    <p>Q4 velocity table: pistachio +18%, vanilla +6%, rocky road −11%; retire flavors below 40 scoops weekly.</p>
+                    <span class="ctx__src"><i></i>CSV · Sales Velocity Export</span>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <!-- 08 Diff Table -->
+            <section class="block">
+              <div class="block__head">
+                <span class="block__num">08</span>
+                <span class="block__title">Diff Table</span>
+                <span class="block__hint">AI 提议的批量表格改动</span>
+              </div>
+              <div class="card diff">
+                <div class="diff__title">Proposed menu cleanup</div>
+                <table class="tbl">
+                  <thead><tr><th>Flavor</th><th>Category</th><th>Supplier</th></tr></thead>
+                  <tbody>
+                    <tr><td>Rocky Road</td><td>Classic</td><td>aurora-scoops</td></tr>
+                    <tr class="is-changed">
+                      <td><span class="del">Bubblegum</span> → <span class="ins">Mint Chip</span></td>
+                      <td><span class="del">Retro</span> → <span class="ins">Classic</span></td>
+                      <td>kumo-creamery → maple-orbit</td>
+                    </tr>
+                    <tr><td>Pistachio</td><td>Seasonal</td><td>maple-orbit</td></tr>
+                  </tbody>
+                </table>
+                <div class="diff__foot">
+                  <span class="diff__count">2 cells changed</span>
+                  <button type="button" class="btn btn--ghost">Reject</button>
+                  <button type="button" class="btn btn--primary">Accept</button>
+                </div>
+              </div>
+            </section>
+
+            <!-- 09 Records Table -->
+            <section class="block">
+              <div class="block__head">
+                <span class="block__num">09</span>
+                <span class="block__title">Records Table</span>
+                <span class="block__hint">可排序 · 标签 · 关联强度</span>
+              </div>
+              <div class="card records">
+                <table class="tbl" data-records>
+                  <thead>
+                    <tr>
+                      <th class="sortable" data-key="name">Company<span class="arrow">↑</span></th>
+                      <th class="sortable" data-key="cats">Categories<span class="arrow">↑</span></th>
+                      <th class="sortable" data-key="last">Last interaction<span class="arrow">↑</span></th>
+                      <th class="sortable" data-key="strength">Connection strength<span class="arrow">↑</span></th>
+                    </tr>
+                  </thead>
+                  <tbody></tbody>
+                </table>
+              </div>
+            </section>
+
+            <!-- 10 Filter Table -->
+            <section class="block">
+              <div class="block__head">
+                <span class="block__num">10</span>
+                <span class="block__title">Filter Table</span>
+                <span class="block__hint">筛选 chip · 实时计数</span>
+              </div>
+              <div class="card filter">
+                <div class="filter__chips" role="group" aria-label="按状态筛选">
+                  <button type="button" class="fchip" data-filter="all" aria-pressed="true">All</button>
+                  <button type="button" class="fchip" data-filter="running" aria-pressed="false">In progress</button>
+                  <button type="button" class="fchip" data-filter="done" aria-pressed="false">Completed</button>
+                  <button type="button" class="fchip" data-filter="failed" aria-pressed="false">Failed</button>
+                </div>
+                <div class="filter__count" data-filter-count></div>
+                <table class="tbl">
+                  <thead><tr><th>Task</th><th>Status</th><th>Elapsed</th></tr></thead>
+                  <tbody>
+                    <tr data-status="done"><td>Verified vendor records</td><td><span class="tag tag--green">Completed</span></td><td>0.8s</td></tr>
+                    <tr data-status="running"><td>Scoring stockout risk</td><td><span class="tag tag--orange">In progress</span></td><td>1.4s</td></tr>
+                    <tr data-status="failed"><td>Draft supplier emails</td><td><span class="tag" style="background:var(--red-tint);color:var(--red)">Failed</span></td><td>2.1s</td></tr>
+                    <tr data-status="done"><td>Matched tax and contact IDs</td><td><span class="tag tag--green">Completed</span></td><td>0.5s</td></tr>
+                    <tr data-status="running"><td>Reading POS export</td><td><span class="tag tag--orange">In progress</span></td><td>0.9s</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          </div>
+
+          <!-- 底部停靠条 -->
+          <div class="dock">
+            <div>
+              <div class="dock__brand">Creamery Ops · harness 参考稿</div>
+              <div class="dock__sub">对照 beautifului.dev/harness · 非 SYNC-THINK 令牌</div>
+            </div>
+            <div class="dock__right">
+              <span class="dock__label">Motion</span>
+              <button type="button" class="switch" id="motion-switch" role="switch" aria-checked="true" aria-label="动效开关"></button>
+            </div>
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <script>
+      (function () {
+        'use strict';
+
+        var switchEl = document.getElementById('motion-switch');
+        function setMotion(on) {
+          document.documentElement.dataset.motion = on ? 'on' : 'off';
+          switchEl.setAttribute('aria-checked', String(on));
+        }
+        setMotion(true);
+        switchEl.addEventListener('click', function () {
+          setMotion(document.documentElement.dataset.motion !== 'on');
+        });
+
+        /* 像素网格 3×3 */
+        var grid = document.querySelector('.pixel-grid');
+        for (var i = 0; i < 9; i++) {
+          var cell = document.createElement('i');
+          cell.style.animationDelay = (i * 90) + 'ms';
+          grid.appendChild(cell);
+        }
+
+        /* loading 计时 */
+        var elapsedTimer = null;
+        function startElapsed() {
+          var el = document.querySelector('[data-elapsed]');
+          if (!el) return;
+          var t0 = performance.now();
+          clearInterval(elapsedTimer);
+          elapsedTimer = setInterval(function () {
+            el.textContent = ((performance.now() - t0) / 1000).toFixed(1) + 's';
+          }, 100);
+        }
+        startElapsed();
+
+        /* thinking 折叠 */
+        var thinking = document.querySelector('[data-thinking]');
+        document.querySelector('[data-thinking-toggle]').addEventListener('click', function () {
+          thinking.classList.toggle('is-open');
+        });
+
+        /* 标签页滑动药丸 */
+        var tabs = document.querySelectorAll('[data-tabs] button');
+        var pill = document.querySelector('[data-tabs] .tabs__pill');
+        function positionPill() {
+          var active = document.querySelector('[data-tabs] button[aria-selected="true"]');
+          if (!active || !pill) return;
+          pill.style.width = active.offsetWidth + 'px';
+          pill.style.transform = 'translateX(' + active.offsetLeft + 'px)';
+        }
+        function selectTab(btn) {
+          tabs.forEach(function (t) {
+            t.setAttribute('aria-selected', String(t === btn));
+          });
+          document.querySelectorAll('[data-pane]').forEach(function (p) {
+            p.hidden = p.dataset.pane !== btn.dataset.tab;
+          });
+          positionPill();
+          var pane = document.querySelector('[data-pane="' + btn.dataset.tab + '"]:not([hidden])');
+          if (pane) {
+            pane.querySelectorAll('.trace-step').forEach(function (s) {
+              s.style.animation = 'none';
+              void s.offsetWidth;
+              s.style.animation = '';
+            });
+          }
+        }
+        tabs.forEach(function (t) {
+          t.addEventListener('click', function () {
+            selectTab(t);
+          });
+        });
+        positionPill();
+        window.addEventListener('resize', positionPill);
+
+        /* task row 进度动画 */
+        function playTasks() {
+          var bar = document.querySelector('[data-task-bar]');
+          var status = document.querySelector('[data-task-status]');
+          if (!bar) return;
+          var task = bar.closest('.task');
+          bar.style.width = '0%';
+          status.textContent = '0%';
+          task.classList.remove('is-done');
+          setTimeout(function () {
+            bar.style.width = '68%';
+            status.textContent = '68%';
+          }, 120);
+          setTimeout(function () {
+            bar.style.width = '100%';
+            status.textContent = '100%';
+            task.classList.add('is-done');
+          }, 1600);
+        }
+
+        /* 流式文本 */
+        var STREAM_TEXT =
+          'Your strongest argument is the obscured sign in photo 2 —\n' +
+          'the municipal code requires clear posting in no-standing zones.\n' +
+          'I drafted a dispute letter citing that plus your clean record.';
+        var streamTimer = null;
+        function playStream() {
+          var el = document.querySelector('[data-stream-text]');
+          var srcs = document.querySelector('[data-sources]');
+          var fus = document.querySelector('[data-followups]');
+          if (!el) return;
+          clearInterval(streamTimer);
+          el.innerHTML = '<span class="stream-caret"></span>';
+          srcs.hidden = true;
+          fus.hidden = true;
+          var i = 0;
+          streamTimer = setInterval(function () {
+            i += 2;
+            var slice = STREAM_TEXT.slice(0, i);
+            el.innerHTML = '';
+            el.appendChild(document.createTextNode(slice));
+            var caret = document.createElement('span');
+            caret.className = 'stream-caret';
+            el.appendChild(caret);
+            if (i >= STREAM_TEXT.length) {
+              clearInterval(streamTimer);
+              el.textContent = STREAM_TEXT;
+              srcs.hidden = false;
+              srcs.querySelectorAll('.source').forEach(function (s) {
+                s.style.animation = 'none';
+                void s.offsetWidth;
+                s.style.animation = '';
+              });
+              setTimeout(function () {
+                fus.hidden = false;
+                fus.querySelectorAll('.followup').forEach(function (f) {
+                  f.style.animation = 'none';
+                  void f.offsetWidth;
+                  f.style.animation = '';
+                });
+              }, 320);
+            }
+          }, 22);
+        }
+
+        /* meter */
+        function playMeter() {
+          var m = document.querySelector('[data-meter]');
+          if (!m) return;
+          m.style.width = '0%';
+          setTimeout(function () {
+            m.style.width = '86%';
+          }, 140);
+        }
+
+        /* records 排序 */
+        var RECORDS = [
+          { name: 'Alpine Churn — Zürich', cats: ['B2B', 'Gelato', 'Wholesale'], last: 4, strength: 4 },
+          { name: 'Amber Scoop — Prague', cats: ['Gelato', 'B2B'], last: 380, strength: 1 },
+          { name: 'Andes Snow — Quito', cats: ['Gelato', 'Catering'], last: 660, strength: 1 },
+          { name: 'Apricot Atlas — Algiers', cats: ['Sorbet', 'Imports'], last: 330, strength: 2 },
+          { name: 'Aurora Scoops — Reykjavík', cats: ['Gelato', 'Seasonal'], last: 9, strength: 4 },
+        ];
+        var sortKey = 'name';
+        var sortDir = 1;
+        var tbody = document.querySelector('[data-records] tbody');
+        function renderRecords() {
+          tbody.innerHTML = '';
+          RECORDS.slice()
+            .sort(function (a, b) {
+              var av = a[sortKey];
+              var bv = b[sortKey];
+              if (typeof av === 'string') return av.localeCompare(bv) * sortDir;
+              return (av - bv) * sortDir;
+            })
+            .forEach(function (r) {
+              var tr = document.createElement('tr');
+              var dots = [1, 2, 3, 4]
+                .map(function (n) {
+                  return '<i class="' + (n <= r.strength ? 'on' : '') + '"></i>';
+                })
+                .join('');
+              var labels = { 1: 'Very weak', 2: 'Weak', 3: 'Strong', 4: 'Very strong' };
+              tr.innerHTML =
+                '<td>' + r.name + '</td>' +
+                '<td>' + r.cats.map(function (c) { return '<span class="tag">' + c + '</span>'; }).join('') + '</td>' +
+                '<td>' + (r.last < 30 ? r.last + ' days ago' : 'over 1 year ago') + '</td>' +
+                '<td><span class="strength"><span class="strength__dots">' + dots + '</span>' + labels[r.strength] + '</span></td>';
+              tbody.appendChild(tr);
+            });
+        }
+        document.querySelectorAll('[data-records] th').forEach(function (th) {
+          th.addEventListener('click', function () {
+            var key = th.dataset.key;
+            if (sortKey === key) {
+              sortDir = -sortDir;
+            } else {
+              sortKey = key;
+              sortDir = 1;
+            }
+            document.querySelectorAll('[data-records] th').forEach(function (h) {
+              if (h === th) {
+                h.setAttribute('aria-sort', sortDir === 1 ? 'ascending' : 'descending');
+              } else {
+                h.removeAttribute('aria-sort');
+              }
+            });
+            renderRecords();
+          });
+        });
+        renderRecords();
+
+        /* filter */
+        document.querySelectorAll('.fchip').forEach(function (chip) {
+          chip.addEventListener('click', function () {
+            document.querySelectorAll('.fchip').forEach(function (c) {
+              c.setAttribute('aria-pressed', String(c === chip));
+            });
+            var f = chip.dataset.filter;
+            var rows = document.querySelectorAll('.filter tbody tr');
+            var shown = 0;
+            rows.forEach(function (tr) {
+              var match = f === 'all' || tr.dataset.status === f;
+              tr.classList.toggle('is-hidden', !match);
+              if (match) {
+                shown++;
+                tr.style.animation = 'none';
+                void tr.offsetWidth;
+                tr.style.animation = '';
+              }
+            });
+            document.querySelector('[data-filter-count]').textContent =
+              shown + ' of ' + rows.length + ' tasks';
+          });
+        });
+        document.querySelector('.fchip[data-filter="all"]').click();
+
+        /* 首播 */
+        playTasks();
+        playStream();
+        playMeter();
+      })();
+    </script>
+  </body>
+</html>

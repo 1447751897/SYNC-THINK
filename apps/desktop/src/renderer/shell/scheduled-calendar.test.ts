@@ -3,6 +3,7 @@ import type { ScheduledTask } from '@sync-think/shared';
 import {
   calendarDays,
   calendarOccurrences,
+  calendarScrollMinute,
   localDateTimeInput,
   positionCalendarEvents,
 } from './scheduled-calendar.js';
@@ -22,6 +23,75 @@ const start = Date.parse('2026-09-22T00:00:00Z');
 const end = start + 3 * 86400_000;
 
 describe('calendar schedule projection', () => {
+  it('keeps 13:00 and 14:00 visible without inventing execution results for an hourly task', () => {
+    const hourly = {
+      ...task,
+      id: 'hourly-evidence',
+      timeZone: 'Etc/GMT-8',
+      rule: {
+        kind: 'every' as const,
+        intervalMinutes: 60,
+        windowStart: '12:00',
+        windowEnd: '18:00',
+      },
+      createdAt: '2026-09-30T03:42:31.982Z',
+      nextRunAt: '2026-09-30T07:00:00.000Z',
+      lastResult: { status: 'success' as const, firedAt: '2026-09-30T04:00:00.101Z' },
+    };
+    const result = calendarOccurrences(
+      [hourly],
+      Date.parse('2026-09-29T16:00:00Z'),
+      Date.parse('2026-09-30T16:00:00Z'),
+      Date.parse('2026-09-30T06:10:00Z'),
+    );
+    expect(result.events.map((event) => [new Date(event.start).toISOString(), event.kind])).toEqual(
+      [
+        ['2026-09-30T04:00:00.101Z', 'history'],
+        ['2026-09-30T05:00:00.000Z', 'unrecorded'],
+        ['2026-09-30T06:00:00.000Z', 'unrecorded'],
+        ['2026-09-30T07:00:00.000Z', 'planned'],
+        ['2026-09-30T08:00:00.000Z', 'planned'],
+        ['2026-09-30T09:00:00.000Z', 'planned'],
+        ['2026-09-30T10:00:00.000Z', 'planned'],
+      ],
+    );
+    expect(
+      result.events
+        .filter((event) => event.kind === 'unrecorded')
+        .every((event) => event.status === undefined),
+    ).toBe(true);
+  });
+
+  it('does not project missing occurrences before task creation', () => {
+    const recent = {
+      ...task,
+      timeZone: 'UTC',
+      rule: {
+        kind: 'every' as const,
+        intervalMinutes: 60,
+        windowStart: '12:00',
+        windowEnd: '18:00',
+      },
+      createdAt: '2026-09-30T13:42:00Z',
+      nextRunAt: '2026-09-30T16:00:00Z',
+    };
+    const result = calendarOccurrences(
+      [recent],
+      Date.parse('2026-09-30T00:00:00Z'),
+      Date.parse('2026-10-01T00:00:00Z'),
+      Date.parse('2026-09-30T15:30:00Z'),
+    );
+    expect(result.events.map((event) => [new Date(event.start).getUTCHours(), event.kind])).toEqual(
+      [
+        [14, 'unrecorded'],
+        [15, 'unrecorded'],
+        [16, 'planned'],
+        [17, 'planned'],
+        [18, 'planned'],
+      ],
+    );
+  });
+
   it('projects cron in the task timezone without treating plans as completed runs', () => {
     const result = calendarOccurrences([task], start, end, start);
     expect(result.events.map((event) => new Date(event.start).toISOString())).toEqual([
@@ -41,8 +111,11 @@ describe('calendar schedule projection', () => {
       end,
       [{ id: 'run-1', taskId: task.id, status: 'failed', firedAt }],
     );
-    expect(result.events).toHaveLength(1);
+    expect(result.events.filter((event) => event.kind === 'history')).toHaveLength(1);
     expect(result.events[0]).toMatchObject({ kind: 'history', status: 'failed' });
+    expect(
+      result.events.filter((event) => event.kind === 'unrecorded').every((event) => !event.status),
+    ).toBe(true);
   });
 
   it('jumps over years of old intervals and bounds dense projections', () => {
@@ -144,5 +217,38 @@ describe('calendar schedule projection', () => {
       '2026-09-23T01:00:00.000Z',
       '2026-09-24T01:00:00.000Z',
     ]);
+  });
+});
+
+describe('calendar initial time focus', () => {
+  const day = new Date(2026, 8, 30);
+  const nextDay = new Date(2026, 9, 1);
+  it('focuses an hour before now and clamps midnight', () => {
+    expect(
+      calendarScrollMinute(
+        [],
+        day.getTime(),
+        nextDay.getTime(),
+        new Date(2026, 8, 30, 10, 30).getTime(),
+      ),
+    ).toBe(570);
+    expect(
+      calendarScrollMinute(
+        [],
+        day.getTime(),
+        nextDay.getTime(),
+        new Date(2026, 8, 30, 0, 15).getTime(),
+      ),
+    ).toBe(0);
+  });
+  it('focuses the earliest event in a non-current period', () => {
+    const at = new Date(2026, 8, 30, 14).getTime();
+    const events = [{ id: 'focus', task, start: at, kind: 'planned' as const }];
+    expect(calendarScrollMinute(events, day.getTime(), nextDay.getTime(), nextDay.getTime())).toBe(
+      780,
+    );
+  });
+  it('defaults to daytime rather than midnight when there is no event', () => {
+    expect(calendarScrollMinute([], day.getTime(), nextDay.getTime(), nextDay.getTime())).toBe(480);
   });
 });

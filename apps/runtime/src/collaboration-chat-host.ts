@@ -9,6 +9,7 @@ import {
   type AgentId, type ConversationId, type MessageId, type ModelId, type TeamId, type WorkspaceId,
 } from '@sync-think/shared';
 import type { SqliteMessageStore, SqliteConversationStore, SqliteGlobalAgentStore, SqliteTeamStore, SqliteWorkspaceStore } from '@sync-think/storage';
+import { expandTeamParticipants } from './collaboration-team-participants.js';
 import { compileCollaborationWorkflow } from './collaboration-workflow.js';
 import { CollaborationChatService, type CollaborationChatPorts } from './collaboration-chat-service.js';
 
@@ -35,7 +36,7 @@ const BUSY_ATTEMPT = new Set(['queued', 'running', 'waiting_input', 'stopping'])
 
 /** Sidebar summary: faces, whether anyone is replying, and the latest line of chat. */
 export function collaborationRoster(snapshot: CollaborationSnapshot): CollaborationRosterSummary {
-  const members = snapshot.members.filter((m) => m.active && m.kind !== 'user').map(({ id, name, avatar }) => ({ id, name, avatar }));
+  const members = snapshot.members.filter((m) => m.active && m.kind !== 'user' && !m.teamParticipantId).map(({ id, name, avatar }) => ({ id, name, avatar }));
   const current = new Set(snapshot.tasks.map((task) => task.currentAttemptId));
   const busy = snapshot.attempts.some((attempt) => current.has(attempt.id) && BUSY_ATTEMPT.has(attempt.status));
   const last = [...snapshot.messages].reverse().find((message) => message.kind !== 'system'
@@ -56,10 +57,38 @@ export class CollaborationChatHost {
       execute: runStarter ? (input) => runStarter.start({ workspaceId: input.snapshot.conversation.workspaceId, snapshot: input.snapshot, task: input.task, attempt: input.attempt, signal: input.signal, onProgress: input.onProgress }) : ports.execute,
       resourceClaims: (snapshot, task) => this.resourceClaims(snapshot, task),
     });
+    // Repair historical metadata projections without changing conversation identity/history.
+    for (const snapshot of this.repository.list()) this.refreshConversationMetadata(snapshot.conversation.id, false);
     for (const parent of this.repository.list().filter((snapshot) =>
       snapshot.conversation.kind === 'group' && !snapshot.conversation.policy.allowPeerDirect)) {
       this.revokePeerDirectChildren(parent.conversation.id);
     }
+  }
+
+  refreshConversationMetadata(conversationId: string, notify = true): void {
+    const snapshot = this.repository.transaction(() => {
+      const current = this.repository.read(conversationId);
+      const record = this.ports.conversations.get(conversationId as ConversationId);
+      if (!current || !record) return undefined;
+      if (current.conversation.title !== record.title) {
+        current.conversation.title = record.title;
+        current.revision++;
+        this.repository.save(current);
+      }
+      return current;
+    });
+    if (snapshot && notify) this.ports.onChanged(snapshot);
+  }
+
+  private teamMembers(teamId: string, workspaceId: string): CollaborationMember[] {
+    const team = this.ports.teams?.get(teamId as TeamId);
+    if (!team || !team.members.length) throw new Error('collaboration.team_not_found');
+    const leaderId = team.coordinatorAgentId ?? team.members[0].agentId;
+    if (!team.members.some(member => member.agentId === leaderId)) throw new Error('collaboration.team_leader_not_member');
+    const participantId = `team:${team.id}`;
+    const leader = this.agentMember(leaderId, workspaceId);
+    return [{ ...leader, id: participantId, kind: 'team', name: team.name, avatar: team.avatar, role: '小队负责人：' + leader.name, teamSnapshot: structuredClone(team) },
+      ...team.members.map(config => ({ ...this.agentMember(config.agentId, workspaceId), id: `${participantId}:agent:${config.agentId}`, role: config.role, teamParticipantId: participantId }))];
   }
 
   private agentMember(agentId: string, workspaceId: string): CollaborationMember {
@@ -200,13 +229,14 @@ export class CollaborationChatHost {
         const roster = selfOnly ? { ...current, members: current.members.filter(m => m.id === actorMemberId) } : current;
         snapshot = this.service.dispatch({ action: 'dispatch', conversationId: command.conversationId,
           clientRequestId: `workflow:${command.clientRequestId}`, originMessageId: command.originMessageId,
-          parentTaskId: command.parentTaskId, tasks: compileCollaborationWorkflow(roster, command.goal, team) }, actorMemberId);
+          parentTaskId: command.parentTaskId, tasks: expandTeamParticipants(current, compileCollaborationWorkflow(roster, command.goal, team)) }, actorMemberId);
         break;
       }
       case 'dispatch': {
         const parent = command.parentTaskId ? current.tasks.find(t => t.id === command.parentTaskId) : undefined;
         if (actorMemberId && parent?.kind === 'reply' && current.tasks.some(t => t.parentTaskId === parent.id && t.kind === 'task')) return { snapshot: current };
-        snapshot = this.service.dispatch(command, actorMemberId); break;
+        if (actorMemberId && actorMemberId !== current.conversation.coordinatorMemberId && command.tasks.some(task => task.assigneeMemberId !== actorMemberId)) throw new Error('collaboration.coordinator_required');
+        snapshot = this.service.dispatch({ ...command, tasks: expandTeamParticipants(current, command.tasks) }, actorMemberId); break;
       }
       case 'cancel':
         if (actorMemberId) throw new Error('collaboration.user_action_required');
@@ -383,19 +413,22 @@ export class CollaborationChatHost {
       const team = command.teamId ? this.ports.teams?.get(command.teamId as TeamId) : undefined;
       if (command.teamId && !team) throw new Error('collaboration.team_not_found');
       const agentIds = [...new Set(command.agentIds.length ? command.agentIds : team?.members.map((m) => m.agentId) ?? [])];
+      if (command.teamId && command.teamIds?.length) throw new Error('collaboration.ambiguous_team_binding');
+      if (command.kind !== 'group' && command.teamIds?.length) throw new Error('collaboration.team_requires_group');
       if (command.kind === 'direct' && agentIds.length !== 1) throw new Error('collaboration.direct_requires_one_agent');
-      if (command.kind === 'group' && agentIds.length < 2) throw new Error('collaboration.group_requires_two_agents');
+      if (command.kind === 'group' && agentIds.length < 2 && !command.teamIds?.length) throw new Error('collaboration.group_requires_two_agents');
       if (command.kind === 'model' && !command.modelId) throw new Error('collaboration.model_required');
       const members: CollaborationMember[] = [
         { id: 'user:local', kind: 'user', name: '你', avatar: '', role: '用户', active: true },
         ...agentIds.map((id) => this.agentMember(id, workspaceId)),
+        ...[...new Set(command.teamIds ?? [])].flatMap(id => this.teamMembers(id, workspaceId)),
       ];
       for (const member of members) {
         const role = team?.members.find((m) => m.agentId === member.agentId)?.role;
         if (role) member.role = role;
       }
-      const coordinatorAgentId = command.coordinatorAgentId ?? team?.coordinatorAgentId ?? agentIds[0];
-      const coordinatorMemberId = command.kind === 'model' ? 'assistant:main' : `agent:${coordinatorAgentId}`;
+      const coordinatorAgentId = command.coordinatorAgentId ?? team?.coordinatorAgentId ?? agentIds[0] ?? members.find(member => member.kind === 'team')?.agentId;
+      const coordinatorMemberId = command.kind === 'model' ? 'assistant:main' : members.find(member => !member.teamParticipantId && member.agentId === coordinatorAgentId)?.id ?? '';
       if (command.kind === 'model') members.push({ id: coordinatorMemberId, kind: 'assistant', name: '主助手', avatar: '', role: '协调与汇总', active: true });
       if (!members.some((m) => m.id === coordinatorMemberId)) throw new Error('collaboration.coordinator_not_member');
       const id = ulid();
@@ -424,6 +457,21 @@ export class CollaborationChatHost {
   private updateMembers(command: Extract<CollaborationCommand, { action: 'members' }>): CollaborationSnapshot {
     const snapshot = this.repository.transaction(() => {
       const current = this.repository.read(command.conversationId)!;
+      if (command.expectedTopologyRevision !== undefined && command.expectedTopologyRevision !== (current.conversation.topologyRevision ?? 0)) throw new Error('collaboration.topology_conflict：成员已变化，请刷新后重试');
+      const pending = current.tasks.filter(task => current.attempts.some(attempt => attempt.id === task.currentAttemptId && BUSY_ATTEMPT.has(attempt.status)));
+      if (command.coordinatorMemberId && command.coordinatorMemberId !== current.conversation.coordinatorMemberId && pending.length) throw new Error('collaboration.coordinator_busy：当前工作流结束或停止后再移交协调权');
+      for (const removed of command.removeMemberIds ?? []) {
+        const affected = new Set(current.members.filter(member => member.id === removed || member.teamParticipantId === removed).map(member => member.id));
+        if (pending.some(task => affected.has(task.assigneeMemberId))) throw new Error('collaboration.member_busy：请先停止或完成该成员的任务再移出');
+      }
+      if (command.addTeamIds?.length && current.conversation.kind !== 'group') throw new Error('collaboration.team_requires_group');
+      for (const id of command.addTeamIds ?? []) {
+        if (current.members.some(member => member.id === `team:${id}` && member.active)) continue;
+        for (const member of this.teamMembers(id, current.conversation.workspaceId)) {
+          const index = current.members.findIndex(existing => existing.id === member.id);
+          if (index >= 0) current.members[index] = member; else current.members.push(member);
+        }
+      }
       for (const id of command.addAgentIds ?? []) {
         const member = this.agentMember(id, current.conversation.workspaceId);
         const existing = current.members.find((m) => m.id === member.id);
@@ -432,13 +480,17 @@ export class CollaborationChatHost {
       if (command.coordinatorMemberId) current.conversation.coordinatorMemberId = command.coordinatorMemberId;
       for (const id of command.removeMemberIds ?? []) {
         const member = current.members.find((m) => m.id === id);
-        if (member && member.kind !== 'user') member.active = false;
+        if (member && member.kind !== 'user') {
+          member.active = false;
+          for (const child of current.members.filter(item => item.teamParticipantId === member.id)) child.active = false;
+        }
       }
       for (const [id, role] of Object.entries(command.roles ?? {})) {
         const member = current.members.find((m) => m.id === id);
         if (member) member.role = role;
       }
-      if (!current.members.some((m) => m.id === current.conversation.coordinatorMemberId && m.active && m.kind !== 'user')) throw new Error('collaboration.coordinator_required');
+      if (!current.members.some((m) => m.id === current.conversation.coordinatorMemberId && m.active && m.kind !== 'user' && !m.teamParticipantId)) throw new Error('collaboration.coordinator_required');
+      current.conversation.topologyRevision = (current.conversation.topologyRevision ?? 0) + 1;
       current.revision++;
       this.repository.save(current);
       return current;

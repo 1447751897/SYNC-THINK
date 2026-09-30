@@ -8,7 +8,7 @@ import {
 import type { ComposeAttachment } from './compose-mention.js';
 import type { ComposerEditorPastedReference, ComposerEditorSkill } from './composer-editor-types.js';
 
-export type ComposerEditorInlineTokenKind = 'skill' | 'file' | 'folder' | 'pasted';
+export type ComposerEditorInlineTokenKind = 'skill' | 'file' | 'folder' | 'pasted' | 'agent';
 
 export interface ComposerEditorInlineToken {
   kind: ComposerEditorInlineTokenKind;
@@ -39,7 +39,7 @@ export interface ComposerEditorTokenConfig {
 }
 
 const INLINE_TOKEN_PATTERN =
-  /\[([^\]\n]+)\]\((newmax-skill|newmax-file|newmax-folder|newmax-pasted|newmax-pasted-text):([^)]+)\)/g;
+  /\[([^\]\n]+)\]\((newmax-agent|newmax-skill|newmax-file|newmax-folder|newmax-pasted|newmax-pasted-text):([^)]+)\)/g;
 
 function decodeTokenValue(value: string): string | null {
   try {
@@ -57,7 +57,7 @@ export function parseComposerEditorInlineTokens(value: string): ComposerEditorIn
     const decodedValue = decodeTokenValue(match[3] ?? '');
     if (!scheme || decodedValue === null) continue;
     const kind: ComposerEditorInlineTokenKind =
-      scheme === 'newmax-skill'
+      scheme === 'newmax-agent' ? 'agent' : scheme === 'newmax-skill'
         ? 'skill'
         : scheme === 'newmax-file'
           ? 'file'
@@ -66,7 +66,7 @@ export function parseComposerEditorInlineTokens(value: string): ComposerEditorIn
             : 'pasted';
     tokens.push({
       kind,
-      label: match[1] ?? decodedValue,
+      label: scheme === 'newmax-agent' ? decodeTokenValue(match[1] ?? '') ?? match[1] ?? decodedValue : match[1] ?? decodedValue,
       value: decodedValue,
       start: match.index,
       end: match.index + match[0].length,
@@ -113,7 +113,10 @@ class ComposerEditorTokenWidget extends WidgetType {
     });
 
     const callbacks = this.config.callbacksRef.current;
-    if (this.token.kind === 'skill') {
+    if (this.token.kind === 'agent') {
+      element.setAttribute('aria-label', `提及智能体 ${this.token.label}`);
+      element.dataset.memberId = this.token.value;
+    } else if (this.token.kind === 'skill') {
       const skill = this.config.selectedSkills.find((item) => item.name === this.token.value);
       element.setAttribute(
         'aria-label',
@@ -194,7 +197,7 @@ function removeTokenSideEffect(
   token: ComposerEditorInlineToken,
   config: ComposerEditorTokenConfig | null,
 ): void {
-  if (!config) return;
+  if (!config || token.kind === 'agent') return;
   const callbacks = config.callbacksRef.current;
   if (token.kind === 'skill') {
     const skill = config.selectedSkills.find((item) => item.name === token.value);

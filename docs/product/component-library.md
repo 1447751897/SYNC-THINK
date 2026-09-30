@@ -2,7 +2,7 @@
 
 ## 入口
 
-- 桌面应用：侧栏底部「组件库」。该页面按需加载，不在应用启动时挂载样例。
+- 开发者工具：组件库不再出现在桌面产品的侧栏或主舞台中。开发、设计与验收使用下面的独立入口；普通用户无需接触组件实现和主题调试工具。
 - 独立预览：在仓库根目录运行 `pnpm design:dev`，打开 `http://127.0.0.1:4318`。
 - 静态构建：`pnpm design:build`，输出到 `apps/desktop/dist/design-system/`。
 - 开发脚本为一次构建加本地静态服务，不是 HMR；修改源码后运行 `pnpm design:build` 并刷新即可。
@@ -63,7 +63,7 @@ pnpm design:build
 pnpm --filter @sync-think/desktop build:shell
 ```
 
-生产构建的目录数据采用 compact tuples，组件库主页面保留 lazy chunk。本次视觉展览升级保持已有 shell 预算不变。2026-09-28 测量：shell initial 2,229,381 bytes；shell total 3,394,356 bytes。独立预览模块约 7.48 MB（未压缩 JS，另含已存在的 vendor），不进入应用启动入口，仅在打开组件库的可见场景时加载。这部分体积单独报告，不混称为 shell 总体积。
+独立组件库的目录数据采用 compact tuples，组件库主页面仅由开发预览入口加载；桌面 ShellApp 已移除该舞台和 lazy import。本次视觉展览升级保持已有 shell 预算不变。2026-09-28 测量：shell initial 2,229,381 bytes；shell total 3,394,356 bytes。独立预览模块约 7.48 MB（未压缩 JS，另含已存在的 vendor），不进入应用启动入口，仅在打开组件库的可见场景时加载。这部分体积单独报告，不混称为 shell 总体积。
 
 仓库现有 `lint:tokens` 仍报告其他 shell 文件中的 58 处原有裸色/外部变量，本次没有扩大扫描器豁免或修改这些既有问题。
 

@@ -1,0 +1,154 @@
+/* Main chat redesign, independently implemented from BoardUI's public preview.
+ * All rules are desktop opt-in. Agent workspace and website embeds stay unchanged. */
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-topbar--chat { height: 52px; min-height: 52px; margin: 0; padding: 12px 16px; align-items: center; gap: 8px; z-index: 4; background: transparent; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-topbar--chat .shell-workspace-tabs__rail { display: none; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-topbar--chat .shell-workspace-tabs__scroller { align-items: center; gap: 8px; overflow: visible; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-topbar--chat [data-testid='topbar-workspace-menu'] { width: auto; max-width: 230px; height: 28px; gap: 6px; padding: 0 4px; font-size: 12px; font-weight: 400; color: var(--color-text-secondary); }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-chat-breadcrumb__project { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-chat-breadcrumb__conversation { display: flex; align-items: center; min-width: 0; gap: 10px; padding-right: 76px; font-size: 12px; color: var(--color-text-secondary); }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-chat-breadcrumb__conversation span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-topbar--chat .shell-workspace-workbench-toggles { gap: 2px; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-topbar--chat .shell-workspace-workbench-toggles button { width: 28px; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-conversation-tabs[data-compact-header='true'] { position: absolute; top: -40px; right: 80px; width: auto; height: 28px; min-height: 28px; padding: 0; gap: 2px; z-index: 5; overflow: visible; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-conversation-tabs[data-compact-header='true'] .shell-conversation-tabs__scroller { display: none; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-conversation-tabs[data-compact-header='true'] .shell-conversation-tabs__cluster { flex: 0 0 auto; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-conversation-tabs[data-compact-header='true'] .shell-conversation-tabs__actions { margin-left: 0; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-conversation-tabs[data-compact-header='true'] .shell-tab-add { width: 26px; min-width: 26px; }
+/* Search and the primary action stay neutral; blue belongs to selection/sending. */
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-sidebar--chat .shell-sidebar-brand { margin-bottom: 8px; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-sidebar--chat .sidebar-mode-switch { padding: 2px; margin-bottom: 10px; background: transparent; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-sidebar--chat .sidebar-mode-switch button { min-height: 28px; border-radius: 8px; background: transparent; box-shadow: none; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-sidebar--chat .sidebar-mode-switch button[aria-pressed='true'] { background: var(--color-hover); }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-sidebar--chat .shell-sidebar-actions { gap: 2px 4px; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-sidebar--chat .shell-sidebar-actions [data-testid='nav-search'] { order: -1; height: 36px; margin-bottom: 6px; border-radius: 999px; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-sidebar--chat .shell-sidebar-actions [data-testid='nav-new-chat'] { justify-content: flex-start; height: 34px; margin-bottom: 4px; background: transparent; color: var(--color-text-secondary); font-weight: 400; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-sidebar--chat .shell-sidebar-actions [data-testid='nav-new-chat'] > span:last-child { flex: 1 1 auto; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-sidebar-project-label { margin: 8px 7px 10px; font-size: 12px; font-weight: 400; color: var(--color-text-secondary); }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-sidebar-project { display: flex; align-items: center; gap: 8px; width: 100%; height: 38px; padding: 0 9px; border: 0; border-radius: 10px; background: transparent; color: var(--color-text-secondary); text-align: left; font-size: 13px; cursor: pointer; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-sidebar-project > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-sidebar-project:hover { background: var(--color-hover); color: var(--color-text); }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-sidebar-project-heading { height: 38px; padding-inline: 7px; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-sidebar-project-heading .shell-sidebar-project-title { font-size: 13px; font-weight: 400; letter-spacing: 0; color: var(--color-text-secondary); }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-sidebar-project-heading > button[aria-expanded] { gap: 8px; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-sidebar-recent > .shell-scrollbar > .shell-collapse > .shell-collapse__inner,
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-sidebar-recent > .shell-scrollbar > [data-testid^='sidebar-workspace-section-'] > .shell-collapse > .shell-collapse__inner { padding-left: 16px; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-sidebar-project-heading .st-conv-row__activity { position: static; flex-shrink: 0; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-sidebar--chat .st-conv-row { min-height: 32px; height: 32px; padding: 6px 7px 6px 18px; border-radius: 10px; font-weight: 400; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-sidebar--chat .st-conv-row::before { content: ''; position: absolute; left: 0; top: -9px; width: 13px; height: 25px; border-left: 1px solid var(--color-border-strong); border-bottom: 1px solid var(--color-border-strong); border-bottom-left-radius: 6px; opacity: .65; pointer-events: none; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-sidebar--chat .st-conv-row__time { border-radius: 4px; background: var(--color-hover); padding: 1px 3px; font-size: 10px; color: var(--color-text-secondary); }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-sidebar-theme { display: flex; gap: 2px; padding: 3px; width: fit-content; margin: auto 6px 0; border-radius: 999px; background: var(--color-hover); }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-sidebar-theme button { display: flex; align-items: center; justify-content: center; width: 30px; height: 30px; border: 0; border-radius: 50%; background: transparent; color: var(--color-text-secondary); cursor: pointer; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-sidebar-theme button[aria-pressed='true'] { background: var(--color-surface); color: var(--color-text); box-shadow: var(--wb-surface-shadow); }
+:root[data-shell-design='agent'] .shell-normal-workspace [data-testid='sidebar-settings-box'] { margin-top: 0; background: var(--color-hover); border-radius: 14px; }
+/* Empty chat keeps its real shortcuts, but the input stays anchored like a thread. */
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-chat-column--empty-newmax { justify-content: flex-start; padding: 0; overflow-y: auto; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-welcome--newmax { order: 0; margin-top: auto; margin-bottom: 20px; padding-block: 28px 0; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-welcome-title { font-size: clamp(24px, 2vw, 30px); font-weight: 500; letter-spacing: -.04em; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-empty-newmax-scenarios { order: 1; margin: 0 16px 16px; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-empty-newmax-tips { order: 2; margin: 0 auto auto; padding-inline: 16px; font-size: 12px; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-empty-newmax-composer-wrap { order: 3; width: 100%; margin-top: 32px; padding: 0 14px 12px; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-chat-column--empty-newmax .shell-chat-content--composer { max-width: 1040px; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-chat-content-wrap { padding-inline: 16px; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-chat-content { max-width: 1040px; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-chat-content--composer { max-width: 1040px; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-chat-message-scroller { padding-top: 16px; padding-bottom: 0; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-chat-message-scroller > .shell-chat-content { min-height: 100%; justify-content: flex-end; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-message-window-item { padding-bottom: 20px; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-user-bubble { max-width: min(84%, 580px); border-radius: 18px; padding: 12px 14px; font-size: 13px; line-height: 1.55; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-streaming-response[data-variant='bubble'] > .shell-response__content:not(:empty) { padding: 0; background: transparent; border-radius: 0; font-size: 13px; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-response__footer { padding-inline: 0; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-md-code { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 16px; }
+/* Compact input: every visible action uses the existing runtime implementation. */
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-newmax-composer-frame[data-presentation='pill'] { display: flex; flex-direction: column; width: 100%; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-newmax-composer-frame[data-presentation='pill'] > .shell-compose { display: grid; grid-template-columns: 34px minmax(0, 1fr) auto; align-items: end; gap: 6px; min-height: 52px; padding: 7px; border: 1px solid var(--color-border); border-radius: 26px; box-shadow: var(--wb-surface-shadow); }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-newmax-composer-frame__leading { grid-column: 1; grid-row: 1; display: flex; align-items: center; justify-content: center; height: 36px; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-newmax-composer-frame__leading > div { display: flex; align-items: center; justify-content: center; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-newmax-composer-frame[data-presentation='pill'] .shell-compose__editor-area { grid-column: 2; grid-row: 1; min-width: 0; min-height: 36px; padding: 0; align-self: center; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-newmax-composer-frame[data-presentation='pill'] .shell-composer-editor__surface { min-height: 36px; border-radius: 0; padding: 0; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-newmax-composer-frame[data-presentation='pill'] .cm-scroller { min-height: 36px; max-height: 180px; overflow-y: auto; font-size: 13px; line-height: 22px; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-newmax-composer-frame[data-presentation='pill'] .cm-content { min-height: 36px; padding: 7px 0; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-newmax-composer-frame[data-presentation='pill'] .shell-compose__bar { grid-column: 3; grid-row: 1; width: auto; height: 36px; min-height: 36px; padding: 0; align-items: center; background: transparent; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-newmax-composer-frame[data-presentation='pill'] .shell-compose__bar-right { gap: 6px; height: 36px; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-newmax-composer-frame[data-presentation='pill'] .shell-compose__bar-right .shell-compose__tool-wrap { max-width: 210px; min-width: 0; gap: 3px; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-newmax-composer-frame[data-presentation='pill'] .shell-compose__shortcut-plus { width: 32px; height: 32px; border-radius: 50%; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-composer-paired-actions { display: flex; align-items: center; gap: 6px; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-composer-paired-actions .shell-compose__voice { width: 34px; height: 34px; border: 1px solid var(--color-border); border-radius: 50%; background: var(--color-surface); }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-composer-paired-actions .shell-compose__send { width: 36px; height: 36px; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-composer-paired-actions .shell-compose__send:disabled { opacity: .55; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-newmax-composer-frame__status { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; min-width: 0; min-height: 32px; padding: 5px 5px 0; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-newmax-composer-frame__status .shell-composer-git { flex: 1 1 auto; min-width: 0; width: auto; height: 26px; margin: 0; padding: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; font-size: 11px; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-newmax-composer-frame__status .shell-composer-git button { height: 26px; padding-inline: 3px; font-size: 11px; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-newmax-composer-frame__status .shell-composer-git__branch { order: -1; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-ai-composer-status { display: flex; flex: 1 1 auto; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 4px 8px; min-width: 0; }
+:root[data-shell-design='agent'] .shell-normal-workspace :is(.shell-ai-composer-status__controls, .shell-ai-composer-status__identity) { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-ai-composer-status .shell-compose__tool { height: 25px; padding-inline: 6px; background: transparent; font-size: 11px; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-ai-composer-status .shell-compose__identity { max-width: 136px; padding: 0 4px; background: transparent; font-size: 11px; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-ai-composer-status .shell-compose__ctx { display: flex; align-items: center; gap: 3px; width: auto; height: 25px; padding: 2px 5px; border-radius: 999px; background: var(--color-hover); font-size: 11px; color: var(--color-text-secondary); }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-ai-composer-status .shell-compose__ctx svg { width: 15px; height: 15px; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-ai-composer-status .shell-compose__ctx .shell-context-percent { white-space: nowrap; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-newmax-composer-frame[data-presentation='pill'] .shell-compose__mode-keyword-hint { grid-column: 1 / -1; grid-row: 2; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-workbench--right { background: var(--color-surface); }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-workbench--right .shell-workbench__tabbar { height: 52px; min-height: 52px; padding: 10px 8px; background: transparent; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-workbench--right .shell-workbench-tab { background: transparent; box-shadow: none; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-workbench--right .shell-workbench-tab.is-active { color: var(--color-accent-text); background: var(--color-accent-soft); box-shadow: none; }
+/* The thread stays usable at narrow widths; tool menus remain above the input. */
+@media (max-width: 1000px) {
+  :root[data-shell-design='agent'] .shell-normal-workspace .shell-chat-breadcrumb__project { max-width: 130px; }
+  :root[data-shell-design='agent'] .shell-normal-workspace .shell-topbar--chat { padding-inline: 10px; }
+  :root[data-shell-design='agent'] .shell-normal-workspace .shell-newmax-composer-frame[data-presentation='pill'] > .shell-compose { grid-template-columns: 30px minmax(0, 1fr) auto; gap: 3px; padding: 6px; }
+  :root[data-shell-design='agent'] .shell-normal-workspace .shell-newmax-composer-frame[data-presentation='pill'] .shell-compose__bar-right .shell-compose__tool-wrap { max-width: 144px; }
+  :root[data-shell-design='agent'] .shell-normal-workspace .shell-chat-content-wrap { padding-inline: 10px; }
+  :root[data-shell-design='agent'] .shell-normal-workspace .shell-newmax-composer-frame__status .shell-composer-git { flex-wrap: wrap; height: auto; }
+}
+@media (max-width: 760px) {
+  :root[data-shell-design='agent'] .shell-normal-workspace .shell-chat-breadcrumb__conversation { padding-right: 32px; }
+  :root[data-shell-design='agent'] .shell-normal-workspace .shell-newmax-composer-frame[data-presentation='pill'] > .shell-compose { grid-template-columns: 30px minmax(0, 1fr); }
+  :root[data-shell-design='agent'] .shell-normal-workspace .shell-newmax-composer-frame[data-presentation='pill'] .shell-compose__bar { grid-column: 1 / -1; grid-row: 2; justify-content: flex-end; }
+  :root[data-shell-design='agent'] .shell-normal-workspace .shell-newmax-composer-frame[data-presentation='pill'] .shell-compose__bar-right .shell-compose__tool-wrap { max-width: 210px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  :root[data-shell-design='agent'] .shell-normal-workspace .shell-sidebar--chat :is(button, .st-conv-row) { transition: none; }
+}
+
+/* Explicit editor sizing overrides CodeMirror's tall-composer theme. */
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-newmax-composer-frame[data-presentation='pill'] .cm-editor { min-height: 36px; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-newmax-composer-frame[data-presentation='pill'] .shell-compose__model-btn { height: 32px; max-width: 180px; min-width: 0; padding: 0 4px; border-radius: 8px; background: transparent; font-size: 12px; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-newmax-composer-frame[data-presentation='pill'] .shell-compose__model-btn > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-composer-paired-actions .shell-compose__voice { order: 0; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-composer-paired-actions .shell-compose__send { order: 1; }
+:root[data-shell-design='agent'] .shell-normal-workspace :is(.shell-pane-frame, .shell-workspace-pane, .shell-pane-tree):has([data-compact-header='true']) { overflow: visible; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-sidebar--chat .st-conv-row__identity { display: contents; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-sidebar--chat .st-conv-row__identity > :not(.st-conv-row__activity) { display: none; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-sidebar--chat .st-conv-row__identity > .st-conv-row__activity { position: absolute; top: calc(50% - 3px); right: 5px; bottom: auto; margin: 0; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-sidebar--chat .st-conv-row { padding-right: 16px; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-sidebar-project > .st-conv-row__activity { position: static; flex-shrink: 0; margin-left: auto; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-sidebar--chat .shell-sidebar-actions [data-testid='nav-new-chat'] > span:last-child { text-align: left; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-sidebar--chat .shell-sidebar-actions [data-testid='nav-new-chat'] > .st-nav-icon { flex: 0 0 auto; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-ai-composer-status .shell-kernel-chip { height: 20px; padding: 0 5px; font-size: 10px; background: var(--color-hover); border-color: var(--color-border); color: var(--color-text-secondary); }
+@media (max-width: 1000px) {
+  :root[data-shell-design='agent'] .shell-normal-workspace .shell-newmax-composer-frame[data-presentation='pill'] .shell-compose__model-btn { max-width: 130px; }
+}
+
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-workbench__quick-views { display: flex; align-items: center; gap: 4px; height: 52px; min-height: 52px; padding: 10px 8px; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-workbench__quick-views button { display: flex; align-items: center; justify-content: center; gap: 5px; padding: 5px 9px; height: 30px; border: 0; border-radius: 999px; background: transparent; color: var(--color-text-secondary); font-size: 12px; cursor: pointer; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-workbench__quick-views button[aria-pressed='true'] { background: var(--color-accent-soft); color: var(--color-accent-text); }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-workbench__quick-views button:hover:not(:disabled) { background: var(--color-hover); color: var(--color-text); }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-workbench__quick-views button:disabled { opacity: .5; cursor: default; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-workbench__quick-spacer { flex: 1; min-width: 0; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-workbench__quick-views + .shell-workbench__tabbar { height: 38px; min-height: 38px; padding-top: 2px; padding-bottom: 4px; }
+
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-chat-column--empty-newmax > .shell-panel-load-state { order: 2; margin: 0 auto auto; min-height: 24px; font-size: 12px; }
+
+/* Tall-composer overlap must not obscure the compact input or its actions. */
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-chat-content--composer:has([data-presentation='pill']) { --composer-banner-overlap: 0px; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-chat-content--composer:has([data-presentation='pill']) .shell-composer-peek-surface { margin-bottom: 8px; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-chat-content--composer:has([data-presentation='pill']) .shell-composer-peek-surface.is-exiting { margin-bottom: 0; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-newmax-composer-frame[data-presentation='pill'] > .shell-newmax-composer-frame__mode { margin-bottom: 8px; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-newmax-composer-frame[data-presentation='pill'] > .shell-newmax-composer-frame__mode.is-exiting { margin-bottom: 0; }
+
+/* Respond to the actual chat column, not only the window width. */
+@container newmax-composer (max-width: 520px) {
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-newmax-composer-frame[data-presentation='pill'] > .shell-compose { grid-template-columns: 30px minmax(0, 1fr); }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-newmax-composer-frame[data-presentation='pill'] .shell-compose__bar { grid-column: 1 / -1; grid-row: 2; justify-content: flex-end; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-newmax-composer-frame[data-presentation='pill'] .shell-compose__bar-right .shell-compose__tool-wrap { max-width: 180px; }
+}

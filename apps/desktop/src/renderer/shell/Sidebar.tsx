@@ -1,3 +1,4 @@
+import { readAppearancePreferences, updateAppearancePreferences } from './preferences-store.js';
 import { useContextMenu } from './ContextMenu.js';
 // NewMax-style sidebar (shell constitution):
 // top actions · regular conversation groups · bottom settings + account.
@@ -15,6 +16,10 @@ import {
   ChevronRight,
   Copy,
   FolderInput,
+  Folder,
+  FolderOpen,
+  Sun,
+  Moon,
   FolderPlus,
   Globe,
   Link2,
@@ -22,7 +27,6 @@ import {
   MessageSquarePlus,
   MoreHorizontal,
   PanelLeftClose,
-  Palette,
   Pencil,
   Pin,
   Plus,
@@ -60,6 +64,7 @@ import {
   shouldRenderRecentConversationEmptyState,
   shouldShowSidebarWorkspaceListSkeleton,
 } from './sidebar-newmax-loading.js';
+import { readWorkspaceExpansion, writeWorkspaceExpansion } from './sidebar-workspace-expansion.js';
 import { resolvePendingUpdateVersion, useDesktopUpdateState } from './use-desktop-update-state.js';
 
 const AgentContactsSidebar = lazy(() => import('./AgentContactsSidebar.js'));
@@ -81,10 +86,13 @@ export interface SidebarProps {
   /** Per-conversation compose kernel overrides (model-track logo). */
   kernelOverrides?: Readonly<Record<string, string>>;
   groups: ConversationGroupsByTrack;
+  workspaceGroups?: Readonly<Record<string, ConversationGroupsByTrack>>;
   bootState?: 'loading' | 'ready' | 'error';
   bootError?: string;
   activeWorkspaceId?: string;
   workspaces?: readonly WorkspaceSummary[];
+  onSelectWorkspace?(workspaceId: string): void;
+  workspaceActivity?: ReadonlyMap<string, { running: boolean; unread: boolean }>;
   onEnterAgentWorkspace?(): void;
   onAgentChat?(agentId: string, workspaceId: string, newConversation?: boolean): void;
   onAgentsRefresh?(): Promise<unknown> | void;
@@ -97,7 +105,7 @@ export interface SidebarProps {
   onToggleTrack(track: ConversationTrack): void;
   onToggleSidebar(): void;
   onOpenConversation(id: string): void;
-  onNewConversation(track?: ConversationTrack): void;
+  onNewConversation(track?: ConversationTrack, workspaceId?: string): void;
   onTogglePin(id: string, pinned: boolean): void;
   onRename(id: string, currentTitle: string): void;
   onArchive(id: string): void;
@@ -105,11 +113,21 @@ export interface SidebarProps {
   onDelete(id: string): void;
   onDuplicate?(id: string): void;
   onCopyLink?(id: string): void;
-  onCreateGroup(track: ConversationTrack, name: string): void;
-  onRenameGroup(track: ConversationTrack, groupId: string, name: string): void;
-  onDeleteGroup(track: ConversationTrack, groupId: string): void;
-  onToggleGroupCollapsed(track: ConversationTrack, groupId: string): void;
-  onMoveToGroup(track: ConversationTrack, conversationId: string, groupId: string | null): void;
+  onCreateGroup(track: ConversationTrack, name: string, workspaceId?: string): void;
+  onRenameGroup(
+    track: ConversationTrack,
+    groupId: string,
+    name: string,
+    workspaceId?: string,
+  ): void;
+  onDeleteGroup(track: ConversationTrack, groupId: string, workspaceId?: string): void;
+  onToggleGroupCollapsed(track: ConversationTrack, groupId: string, workspaceId?: string): void;
+  onMoveToGroup(
+    track: ConversationTrack,
+    conversationId: string,
+    groupId: string | null,
+    workspaceId?: string,
+  ): void;
   onToggleMultiSelect(): void;
   onToggleSelected(id: string): void;
   onBulkArchive(): void;
@@ -119,12 +137,36 @@ export interface SidebarProps {
 }
 
 export function Sidebar(props: SidebarProps) {
-  const [sidebarMode, setSidebarMode] = useState(() => props.onEnterAgentWorkspace ? 'conversations' as const : readSidebarMode());
+  const [sidebarMode, setSidebarMode] = useState(() =>
+    props.onEnterAgentWorkspace ? ('conversations' as const) : readSidebarMode(),
+  );
   const [query, setQuery] = useState('');
-  const [archiveOpen, setArchiveOpen] = useState(false);
+  const [legacyArchiveOpen, setArchiveOpen] = useState(false);
   /** Collapsing 最近对话 hides the regular conversation groups. */
-  const [recentOpen, setRecentOpen] = useState(true);
+  const [legacyRecentOpen, setRecentOpen] = useState(true);
+  const [workspaceExpansion, setWorkspaceExpansion] = useState(() => {
+    const saved = readWorkspaceExpansion();
+    const id = props.activeWorkspaceId;
+    return id && saved[id] === undefined ? { ...saved, [id]: true } : saved;
+  });
+  const [workspaceArchives, setWorkspaceArchives] = useState<Readonly<Record<string, boolean>>>({});
+  useEffect(() => writeWorkspaceExpansion(workspaceExpansion), [workspaceExpansion]);
+  useEffect(() => {
+    const id = props.activeWorkspaceId;
+    if (id)
+      setWorkspaceExpansion((current) =>
+        current[id] === undefined ? { ...current, [id]: true } : current,
+      );
+  }, [props.activeWorkspaceId]);
   const [searchFocused, setSearchFocused] = useState(false);
+  const [darkMode, setDarkMode] = useState(
+    () => typeof document !== 'undefined' && document.documentElement.classList.contains('dark'),
+  );
+  useEffect(() => {
+    const syncTheme = () => setDarkMode(document.documentElement.classList.contains('dark'));
+    window.addEventListener('shell-preferences-applied', syncTheme);
+    return () => window.removeEventListener('shell-preferences-applied', syncTheme);
+  }, []);
   const dialog = useDialog();
   // 与「设置 → 关于」共用同一份更新快照：有可安装版本时把版本号挂到设置入口上，
   // 用户不进设置也能看见有新版本。bridge 缺失时这里是 null，不显示任何提示。
@@ -148,7 +190,7 @@ export function Sidebar(props: SidebarProps) {
     [props.agents, props.modelNames, props.modelOverrides, props.teams],
   );
 
-  const { active, archived } = useMemo(() => {
+  const { active } = useMemo(() => {
     const a: Conversation[] = [];
     const ar: Conversation[] = [];
     for (const c of props.conversations) {
@@ -174,36 +216,381 @@ export function Sidebar(props: SidebarProps) {
   );
 
   const filteredActive = useMemo(() => filterQ(active), [active, filterQ]);
-  const filteredArchived = useMemo(() => filterQ(archived), [archived, filterQ]);
-
-  const recentTree = useMemo(
-    () => buildTrackTree(filteredActive, props.groups.model),
-    [filteredActive, props.groups.model],
-  );
 
   const collapsed = props.collapsed === true;
   const targetWidth = collapsed ? 0 : props.width;
-  const workspaceId = props.activeWorkspaceId ?? null;
   const isLoadingConversations = props.bootState === 'loading';
-  const sidebarWorkspaceListsLoading =
-    query.trim().length === 0 &&
-    shouldShowSidebarWorkspaceListSkeleton({
-      activeWorkspaceId: workspaceId,
-      switchContentWorkspaceId: workspaceId,
-      switchProjectsWorkspaceId: workspaceId,
-      isLoadingConversations,
-      conversationCount: active.length,
-      projectCount: 0,
-      archivedLoaded: true,
-      isLoadingArchived: false,
-    });
+
+  const projectNavigation = Boolean(props.onSelectWorkspace && props.workspaces?.length);
+  const visibleWorkspaces = (props.workspaces ?? []).filter(
+    (workspace) => !workspace.hidden || workspace.workspaceId === props.activeWorkspaceId,
+  );
+
+  const renderWorkspaceSection = (workspace?: WorkspaceSummary) => {
+    const workspaceId = workspace?.workspaceId ?? props.activeWorkspaceId ?? null;
+    const isCurrent = !workspace || workspace.workspaceId === props.activeWorkspaceId;
+    const localGroups = workspace
+      ? (props.workspaceGroups?.[workspace.workspaceId] ??
+        (isCurrent ? props.groups : { model: [], agent: [], team: [] }))
+      : props.groups;
+    const sectionProps: SidebarProps = {
+      ...props,
+      groups: localGroups,
+      multiSelect: props.multiSelect && isCurrent,
+      onToggleMultiSelect: () => {
+        if (workspace && !isCurrent) props.onSelectWorkspace?.(workspace.workspaceId);
+        props.onToggleMultiSelect();
+      },
+      onNewConversation: (track) =>
+        workspace
+          ? props.onNewConversation(track, workspace.workspaceId)
+          : props.onNewConversation(track),
+      onCreateGroup: (track, name) =>
+        workspace
+          ? props.onCreateGroup(track, name, workspace.workspaceId)
+          : props.onCreateGroup(track, name),
+      onRenameGroup: (track, id, name) =>
+        workspace
+          ? props.onRenameGroup(track, id, name, workspace.workspaceId)
+          : props.onRenameGroup(track, id, name),
+      onDeleteGroup: (track, id) =>
+        workspace
+          ? props.onDeleteGroup(track, id, workspace.workspaceId)
+          : props.onDeleteGroup(track, id),
+      onToggleGroupCollapsed: (track, id) =>
+        workspace
+          ? props.onToggleGroupCollapsed(track, id, workspace.workspaceId)
+          : props.onToggleGroupCollapsed(track, id),
+      onMoveToGroup: (track, id, group) =>
+        workspace
+          ? props.onMoveToGroup(track, id, group, workspace.workspaceId)
+          : props.onMoveToGroup(track, id, group),
+    };
+    const localActive = workspace
+      ? filteredActive.filter((c) => c.workspaceId === workspace.workspaceId)
+      : filteredActive;
+    const archived = workspace
+      ? props.conversations.filter(
+          (c) => !isAgentConversation(c) && c.archivedAt && c.workspaceId === workspace.workspaceId,
+        )
+      : props.conversations.filter((c) => !isAgentConversation(c) && c.archivedAt);
+    const filteredArchived = filterQ(archived);
+    const recentTree = buildTrackTree(localActive, localGroups.model);
+    const recentOpen = workspace
+      ? query.trim()
+        ? localActive.length > 0 || filteredArchived.length > 0
+        : (workspaceExpansion[workspace.workspaceId] ?? isCurrent)
+      : legacyRecentOpen;
+    const archiveOpen = workspace
+      ? (workspaceArchives[workspace.workspaceId] ?? false)
+      : legacyArchiveOpen;
+    const setSectionOpen = (value: boolean | ((open: boolean) => boolean)) => {
+      if (!workspace) {
+        setRecentOpen(value);
+        return;
+      }
+      setWorkspaceExpansion((current) => ({
+        ...current,
+        [workspace.workspaceId]:
+          typeof value === 'function' ? value(current[workspace.workspaceId] ?? isCurrent) : value,
+      }));
+    };
+    const setSectionArchiveOpen = (value: boolean | ((open: boolean) => boolean)) => {
+      if (!workspace) {
+        setArchiveOpen(value);
+        return;
+      }
+      setWorkspaceArchives((current) => ({
+        ...current,
+        [workspace.workspaceId]:
+          typeof value === 'function' ? value(current[workspace.workspaceId] ?? false) : value,
+      }));
+    };
+    const sidebarWorkspaceListsLoading =
+      query.trim().length === 0 &&
+      shouldShowSidebarWorkspaceListSkeleton({
+        activeWorkspaceId: workspaceId,
+        switchContentWorkspaceId: workspaceId,
+        switchProjectsWorkspaceId: workspaceId,
+        isLoadingConversations,
+        conversationCount: localActive.length,
+        projectCount: 0,
+        archivedLoaded: true,
+        isLoadingArchived: false,
+      });
+    return (
+      <div
+        key={workspaceId ?? 'recent'}
+        data-testid={workspace ? `sidebar-workspace-section-${workspaceId}` : undefined}
+        data-workspace-active={isCurrent ? 'true' : undefined}
+      >
+        <div className="shell-sidebar-project-heading group flex h-8 items-center gap-1 rounded-(--radius-row) px-1.5 hover:bg-hover">
+          <button
+            type="button"
+            data-testid={isCurrent ? 'recent-section-toggle' : `sidebar-workspace-${workspaceId}`}
+            aria-label={
+              workspace ? `${recentOpen ? '收起' : '展开'}工作区 ${workspace.name}` : undefined
+            }
+            className="st-press-motion st-row-motion flex min-w-0 flex-1 cursor-pointer items-center gap-1 text-left"
+            onClick={() => setSectionOpen((v) => !v)}
+            aria-expanded={recentOpen}
+            aria-controls={workspace ? `sidebar-workspace-content-${workspaceId}` : undefined}
+            title={workspace?.folderPath}
+          >
+            {projectNavigation && workspace ? (
+              recentOpen ? (
+                <FolderOpen size={17} aria-hidden="true" />
+              ) : (
+                <Folder size={17} aria-hidden="true" />
+              )
+            ) : (
+              <ChevronRight
+                size={13}
+                className="st-chevron text-text-faint"
+                data-open={recentOpen}
+              />
+            )}
+            <span className="shell-sidebar-project-title flex-1 truncate text-[14px] font-semibold tracking-wide text-text-faint">
+              {projectNavigation && workspace ? workspace.name : '最近对话'}
+            </span>
+            {workspace && (
+              <RowActivityDot activity={props.workspaceActivity?.get(workspace.workspaceId)} />
+            )}
+          </button>
+          <button
+            type="button"
+            data-testid={isCurrent ? 'recent-new-group' : `recent-new-group-${workspaceId}`}
+            className="st-icon-motion invisible flex h-5 w-5 items-center justify-center rounded text-text-faint hover:bg-active hover:text-text group-hover:visible focus:visible"
+            title="新建分组"
+            onClick={async () => {
+              const name = await dialog.prompt({
+                title: '新建分组',
+                message: '为最近对话新建一个分组',
+                placeholder: '分组名称',
+                confirmText: '新建',
+              });
+              if (!name?.trim()) return;
+              sectionProps.onCreateGroup('model', name.trim());
+              setSectionOpen(true);
+            }}
+          >
+            <FolderPlus size={12} />
+          </button>
+          <button
+            type="button"
+            data-testid={
+              isCurrent ? 'recent-new-conversation' : `recent-new-conversation-${workspaceId}`
+            }
+            className="st-icon-motion invisible flex h-5 w-5 items-center justify-center rounded text-text-faint hover:bg-active hover:text-text group-hover:visible focus:visible"
+            title="新建对话"
+            onClick={() => {
+              sectionProps.onNewConversation('model');
+              setSectionOpen(true);
+            }}
+          >
+            <Plus size={13} />
+          </button>
+        </div>
+
+        <div
+          id={workspace ? `sidebar-workspace-content-${workspaceId}` : undefined}
+          aria-hidden={!recentOpen}
+          className={clsx('shell-collapse', recentOpen && 'shell-collapse--open')}
+        >
+          <div className="shell-collapse__inner">
+            {sidebarWorkspaceListsLoading ? (
+              <SidebarWorkspaceListSkeleton />
+            ) : (
+              <div>
+                {recentTree.groups.map(({ group, conversations: groupItems }) => (
+                  <GroupBlock
+                    key={group.id}
+                    track="model"
+                    group={group}
+                    conversations={groupItems}
+                    allGroups={sectionProps.groups.model ?? []}
+                    selectedConversationId={sectionProps.nav.selectedConversationId}
+                    multiSelect={sectionProps.multiSelect}
+                    selectedIds={sectionProps.selectedIds}
+                    resolveName={resolveName}
+                    onToggleCollapsed={() => sectionProps.onToggleGroupCollapsed('model', group.id)}
+                    onRenameGroup={async () => {
+                      const name = await dialog.prompt({
+                        title: '重命名分组',
+                        message: '为这个分组设置一个新名称',
+                        defaultValue: group.name,
+                        placeholder: '分组名称',
+                        confirmText: '保存',
+                      });
+                      if (!name?.trim() || name.trim() === group.name) return;
+                      sectionProps.onRenameGroup('model', group.id, name.trim());
+                    }}
+                    onDeleteGroup={async () => {
+                      if (
+                        !(await dialog.confirm({
+                          title: '删除分组',
+                          message: `删除分组「${group.name}」？组内对话会回到未分组，不会被删除。`,
+                          confirmText: '删除',
+                          danger: true,
+                        }))
+                      ) {
+                        return;
+                      }
+                      sectionProps.onDeleteGroup('model', group.id);
+                    }}
+                    onOpenConversation={sectionProps.onOpenConversation}
+                    onTogglePin={sectionProps.onTogglePin}
+                    onRename={sectionProps.onRename}
+                    onArchive={sectionProps.onArchive}
+                    onDelete={sectionProps.onDelete}
+                    onDuplicate={sectionProps.onDuplicate}
+                    onCopyLink={sectionProps.onCopyLink}
+                    onMoveToGroup={sectionProps.onMoveToGroup}
+                    onToggleSelected={sectionProps.onToggleSelected}
+                    onToggleMultiSelect={sectionProps.onToggleMultiSelect}
+                    conversationActivity={sectionProps.conversationActivity}
+                    agents={sectionProps.agents}
+                    teams={sectionProps.teams}
+                    kernelOverrides={sectionProps.kernelOverrides}
+                  />
+                ))}
+
+                {recentTree.ungrouped.length === 0 && recentTree.groups.length === 0 ? (
+                  <div className="flex flex-col items-center gap-1 px-2 py-2.5 text-center">
+                    <MessageSquare
+                      size={14}
+                      className="text-text-faint opacity-50"
+                      aria-hidden="true"
+                    />
+                    <div className="text-[11px] text-text-faint">
+                      {sectionProps.bootState === 'error'
+                        ? sectionProps.bootError || '连接失败'
+                        : query.trim()
+                          ? '无匹配'
+                          : shouldRenderRecentConversationEmptyState({
+                                conversationCount: 0,
+                                isSyncingCCHistory: false,
+                                isLoadingConversations,
+                                activeWorkspaceId: workspaceId,
+                                switchContentWorkspaceId: workspaceId,
+                                switchProjectsWorkspaceId: workspaceId,
+                              })
+                            ? '暂无对话'
+                            : ''}
+                    </div>
+                  </div>
+                ) : (
+                  recentTree.ungrouped.map((c) => (
+                    <ConversationRow
+                      key={c.id}
+                      conversation={c}
+                      name={resolveName(c)}
+                      mark={resolveConversationRowMark(
+                        c,
+                        sectionProps.agents,
+                        sectionProps.teams,
+                        sectionProps.kernelOverrides,
+                      )}
+                      active={sectionProps.nav.selectedConversationId === c.id}
+                      multiSelect={sectionProps.multiSelect}
+                      selected={sectionProps.selectedIds.has(c.id)}
+                      groups={sectionProps.groups.model ?? []}
+                      track="model"
+                      onOpen={() => sectionProps.onOpenConversation(c.id)}
+                      onTogglePin={() => sectionProps.onTogglePin(c.id, !c.pinnedAt)}
+                      onRename={() => sectionProps.onRename(c.id, c.title || resolveName(c))}
+                      onArchive={() => sectionProps.onArchive(c.id)}
+                      onDelete={() => sectionProps.onDelete(c.id)}
+                      onDuplicate={() => sectionProps.onDuplicate?.(c.id)}
+                      onCopyLink={() => sectionProps.onCopyLink?.(c.id)}
+                      onMoveToGroup={(groupId) =>
+                        sectionProps.onMoveToGroup('model', c.id, groupId)
+                      }
+                      onToggleSelected={() => sectionProps.onToggleSelected(c.id)}
+                      onStartMultiSelect={sectionProps.onToggleMultiSelect}
+                      activity={sectionProps.conversationActivity?.get(String(c.id))}
+                    />
+                  ))
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {recentOpen && (filteredArchived.length > 0 || archived.length > 0) && (
+          <div className="mt-2 border-t border-border pt-1.5">
+            <button
+              type="button"
+              data-testid={
+                isCurrent ? 'archive-section-toggle' : `archive-section-toggle-${workspaceId}`
+              }
+              className="st-press-motion st-row-motion group flex h-7 w-full cursor-pointer items-center gap-1 rounded-(--radius-row) px-1.5 text-left hover:bg-hover"
+              onClick={() => setSectionArchiveOpen((v) => !v)}
+            >
+              <ChevronRight
+                size={13}
+                className="st-chevron text-text-faint"
+                data-open={archiveOpen}
+              />
+              <Archive size={13} className="text-text-secondary" />
+              <span className="flex-1 text-[12px] text-text-secondary">归档</span>
+              <span className="text-[10.5px] text-text-faint">{filteredArchived.length}</span>
+            </button>
+            <div className={clsx('shell-collapse', archiveOpen && 'shell-collapse--open')}>
+              <div className="shell-collapse__inner">
+                <div className="ml-1">
+                  {filteredArchived.length === 0 ? (
+                    <div className="px-2 py-1 text-[11px] text-text-faint">
+                      {query.trim() ? '无匹配' : '暂无归档'}
+                    </div>
+                  ) : (
+                    filteredArchived.map((c) => (
+                      <ConversationRow
+                        key={c.id}
+                        conversation={c}
+                        name={resolveName(c)}
+                        mark={resolveConversationRowMark(
+                          c,
+                          sectionProps.agents,
+                          sectionProps.teams,
+                          sectionProps.kernelOverrides,
+                        )}
+                        active={sectionProps.nav.selectedConversationId === c.id}
+                        archived
+                        multiSelect={sectionProps.multiSelect}
+                        selected={sectionProps.selectedIds.has(c.id)}
+                        groups={sectionProps.groups[c.track] ?? []}
+                        track={c.track}
+                        onOpen={() => sectionProps.onOpenConversation(c.id)}
+                        onTogglePin={() => sectionProps.onTogglePin(c.id, !c.pinnedAt)}
+                        onRename={() => sectionProps.onRename(c.id, c.title || resolveName(c))}
+                        onArchive={() => sectionProps.onUnarchive?.(c.id)}
+                        onDelete={() => sectionProps.onDelete(c.id)}
+                        onDuplicate={() => sectionProps.onDuplicate?.(c.id)}
+                        onCopyLink={() => sectionProps.onCopyLink?.(c.id)}
+                        onMoveToGroup={(groupId) =>
+                          sectionProps.onMoveToGroup(c.track, c.id, groupId)
+                        }
+                        onToggleSelected={() => sectionProps.onToggleSelected(c.id)}
+                        onStartMultiSelect={sectionProps.onToggleMultiSelect}
+                      />
+                    ))
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  };
 
   return (
     <aside
       data-testid="shell-sidebar"
       data-collapsed={collapsed ? 'true' : 'false'}
       className={clsx(
-        'shell-board shell-sidebar-panel relative flex min-h-0 shrink-0 flex-col border border-border bg-sidebar',
+        'shell-board shell-sidebar-panel shell-sidebar--chat relative flex min-h-0 shrink-0 flex-col border border-border bg-sidebar',
         collapsed && 'shell-sidebar-panel--collapsed',
       )}
       style={{
@@ -224,9 +611,9 @@ export function Sidebar(props: SidebarProps) {
       <div className="shell-sidebar-panel__body gap-2 px-2 py-2">
         {/* Panel 1 — brand + primary nav. Rendered directly on the sidebar board
             (no card, no hover frame). */}
-        <div className="shrink-0 px-2 py-1.5">
+        <div className="shell-sidebar-navigation shrink-0 px-2 py-1.5">
           {/* Header */}
-          <div className="flex h-10 shrink-0 items-center gap-2 px-1">
+          <div className="shell-sidebar-brand flex h-10 shrink-0 items-center gap-2 px-1">
             <img
               src={syncThinkLogo}
               alt="Sync-Think"
@@ -263,7 +650,10 @@ export function Sidebar(props: SidebarProps) {
               aria-pressed={sidebarMode === 'agents'}
               onClick={() => {
                 if (props.onEnterAgentWorkspace) props.onEnterAgentWorkspace();
-                else { setSidebarMode('agents'); writeSidebarMode('agents'); }
+                else {
+                  setSidebarMode('agents');
+                  writeSidebarMode('agents');
+                }
               }}
             >
               <Bot size={13} />
@@ -272,7 +662,7 @@ export function Sidebar(props: SidebarProps) {
           </div>
           {/* Top actions */}
           {sidebarMode === 'conversations' && (
-            <div className="flex shrink-0 flex-col gap-0.5">
+            <div className="shell-sidebar-actions flex shrink-0 flex-col gap-0.5">
               <ActionRow
                 icon={<MessageSquarePlus size={15} />}
                 label="新建对话"
@@ -308,7 +698,7 @@ export function Sidebar(props: SidebarProps) {
               />
               <ActionRow
                 icon={<Bot size={15} />}
-                label={props.onEnterAgentWorkspace ? "管理智能体" : "智能体"}
+                label={props.onEnterAgentWorkspace ? '管理智能体' : '智能体'}
                 testId="nav-agents"
                 active={props.nav.stage === 'agents'}
                 onClick={() => props.onSelectStage('agents')}
@@ -483,246 +873,40 @@ export function Sidebar(props: SidebarProps) {
               </div>
             ) : null}
 
-            {/* Recent conversations, without a redundant model-track heading. */}
+            {/* Projects open their existing scoped conversation tree, preserving groups and archives. */}
             <div className="shell-scrollbar min-h-0 flex-1 overflow-y-auto">
-              <div className="group flex h-8 items-center gap-1 rounded-(--radius-row) px-1.5 hover:bg-hover">
-                <button
-                  type="button"
-                  data-testid="recent-section-toggle"
-                  className="st-press-motion st-row-motion flex min-w-0 flex-1 cursor-pointer items-center gap-1 text-left"
-                  onClick={() => setRecentOpen((v) => !v)}
-                  aria-expanded={recentOpen}
-                >
-                  <ChevronRight
-                    size={13}
-                    className="st-chevron text-text-faint"
-                    data-open={recentOpen}
-                  />
-                  <span className="flex-1 text-[14px] font-semibold tracking-wide text-text-faint">
-                    最近对话
-                  </span>
-                </button>
-                <button
-                  type="button"
-                  data-testid="recent-new-group"
-                  className="st-icon-motion invisible flex h-5 w-5 items-center justify-center rounded text-text-faint hover:bg-active hover:text-text group-hover:visible focus:visible"
-                  title="新建分组"
-                  onClick={async () => {
-                    const name = await dialog.prompt({
-                      title: '新建分组',
-                      message: '为最近对话新建一个分组',
-                      placeholder: '分组名称',
-                      confirmText: '新建',
-                    });
-                    if (!name?.trim()) return;
-                    props.onCreateGroup('model', name.trim());
-                    setRecentOpen(true);
-                  }}
-                >
-                  <FolderPlus size={12} />
-                </button>
-                <button
-                  type="button"
-                  data-testid="recent-new-conversation"
-                  className="st-icon-motion invisible flex h-5 w-5 items-center justify-center rounded text-text-faint hover:bg-active hover:text-text group-hover:visible focus:visible"
-                  title="新建对话"
-                  onClick={() => {
-                    props.onNewConversation('model');
-                    setRecentOpen(true);
-                  }}
-                >
-                  <Plus size={13} />
-                </button>
-              </div>
-
-              <div className={clsx('shell-collapse', recentOpen && 'shell-collapse--open')}>
-                <div className="shell-collapse__inner">
-                  {sidebarWorkspaceListsLoading ? (
-                    <SidebarWorkspaceListSkeleton />
-                  ) : (
-                    <div>
-                      {recentTree.groups.map(({ group, conversations: groupItems }) => (
-                        <GroupBlock
-                          key={group.id}
-                          track="model"
-                          group={group}
-                          conversations={groupItems}
-                          allGroups={props.groups.model ?? []}
-                          selectedConversationId={props.nav.selectedConversationId}
-                          multiSelect={props.multiSelect}
-                          selectedIds={props.selectedIds}
-                          resolveName={resolveName}
-                          onToggleCollapsed={() => props.onToggleGroupCollapsed('model', group.id)}
-                          onRenameGroup={async () => {
-                            const name = await dialog.prompt({
-                              title: '重命名分组',
-                              message: '为这个分组设置一个新名称',
-                              defaultValue: group.name,
-                              placeholder: '分组名称',
-                              confirmText: '保存',
-                            });
-                            if (!name?.trim() || name.trim() === group.name) return;
-                            props.onRenameGroup('model', group.id, name.trim());
-                          }}
-                          onDeleteGroup={async () => {
-                            if (
-                              !(await dialog.confirm({
-                                title: '删除分组',
-                                message: `删除分组「${group.name}」？组内对话会回到未分组，不会被删除。`,
-                                confirmText: '删除',
-                                danger: true,
-                              }))
-                            ) {
-                              return;
-                            }
-                            props.onDeleteGroup('model', group.id);
-                          }}
-                          onOpenConversation={props.onOpenConversation}
-                          onTogglePin={props.onTogglePin}
-                          onRename={props.onRename}
-                          onArchive={props.onArchive}
-                          onDelete={props.onDelete}
-                          onDuplicate={props.onDuplicate}
-                          onCopyLink={props.onCopyLink}
-                          onMoveToGroup={props.onMoveToGroup}
-                          onToggleSelected={props.onToggleSelected}
-                          onToggleMultiSelect={props.onToggleMultiSelect}
-                          conversationActivity={props.conversationActivity}
-                          agents={props.agents}
-                          teams={props.teams}
-                          kernelOverrides={props.kernelOverrides}
-                        />
-                      ))}
-
-                      {recentTree.ungrouped.length === 0 && recentTree.groups.length === 0 ? (
-                        <div className="flex flex-col items-center gap-1 px-2 py-2.5 text-center">
-                          <MessageSquare
-                            size={14}
-                            className="text-text-faint opacity-50"
-                            aria-hidden="true"
-                          />
-                          <div className="text-[11px] text-text-faint">
-                            {props.bootState === 'error'
-                              ? props.bootError || '连接失败'
-                              : query.trim()
-                                ? '无匹配'
-                                : shouldRenderRecentConversationEmptyState({
-                                      conversationCount: 0,
-                                      isSyncingCCHistory: false,
-                                      isLoadingConversations,
-                                      activeWorkspaceId: workspaceId,
-                                      switchContentWorkspaceId: workspaceId,
-                                      switchProjectsWorkspaceId: workspaceId,
-                                    })
-                                  ? '暂无对话'
-                                  : ''}
-                          </div>
-                        </div>
-                      ) : (
-                        recentTree.ungrouped.map((c) => (
-                          <ConversationRow
-                            key={c.id}
-                            conversation={c}
-                            name={resolveName(c)}
-                            mark={resolveConversationRowMark(
-                              c,
-                              props.agents,
-                              props.teams,
-                              props.kernelOverrides,
-                            )}
-                            active={props.nav.selectedConversationId === c.id}
-                            multiSelect={props.multiSelect}
-                            selected={props.selectedIds.has(c.id)}
-                            groups={props.groups.model ?? []}
-                            track="model"
-                            onOpen={() => props.onOpenConversation(c.id)}
-                            onTogglePin={() => props.onTogglePin(c.id, !c.pinnedAt)}
-                            onRename={() => props.onRename(c.id, c.title || resolveName(c))}
-                            onArchive={() => props.onArchive(c.id)}
-                            onDelete={() => props.onDelete(c.id)}
-                            onDuplicate={() => props.onDuplicate?.(c.id)}
-                            onCopyLink={() => props.onCopyLink?.(c.id)}
-                            onMoveToGroup={(groupId) =>
-                              props.onMoveToGroup('model', c.id, groupId)
-                            }
-                            onToggleSelected={() => props.onToggleSelected(c.id)}
-                            onStartMultiSelect={props.onToggleMultiSelect}
-                            activity={props.conversationActivity?.get(String(c.id))}
-                          />
-                        ))
-                      )}
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              {(filteredArchived.length > 0 || archived.length > 0) && (
-                <div className="mt-2 border-t border-border pt-1.5">
-                  <button
-                    type="button"
-                    data-testid="archive-section-toggle"
-                    className="st-press-motion st-row-motion group flex h-7 w-full cursor-pointer items-center gap-1 rounded-(--radius-row) px-1.5 text-left hover:bg-hover"
-                    onClick={() => setArchiveOpen((v) => !v)}
-                  >
-                    <ChevronRight
-                      size={13}
-                      className="st-chevron text-text-faint"
-                      data-open={archiveOpen}
-                    />
-                    <Archive size={13} className="text-text-secondary" />
-                    <span className="flex-1 text-[12px] text-text-secondary">归档</span>
-                    <span className="text-[10.5px] text-text-faint">{filteredArchived.length}</span>
-                  </button>
-                  <div className={clsx('shell-collapse', archiveOpen && 'shell-collapse--open')}>
-                    <div className="shell-collapse__inner">
-                      <div className="ml-1">
-                        {filteredArchived.length === 0 ? (
-                          <div className="px-2 py-1 text-[11px] text-text-faint">
-                            {query.trim() ? '无匹配' : '暂无归档'}
-                          </div>
-                        ) : (
-                          filteredArchived.map((c) => (
-                            <ConversationRow
-                              key={c.id}
-                              conversation={c}
-                              name={resolveName(c)}
-                              mark={resolveConversationRowMark(
-                                c,
-                                props.agents,
-                                props.teams,
-                                props.kernelOverrides,
-                              )}
-                              active={props.nav.selectedConversationId === c.id}
-                              archived
-                              multiSelect={props.multiSelect}
-                              selected={props.selectedIds.has(c.id)}
-                              groups={props.groups[c.track] ?? []}
-                              track={c.track}
-                              onOpen={() => props.onOpenConversation(c.id)}
-                              onTogglePin={() => props.onTogglePin(c.id, !c.pinnedAt)}
-                              onRename={() => props.onRename(c.id, c.title || resolveName(c))}
-                              onArchive={() => props.onUnarchive?.(c.id)}
-                              onDelete={() => props.onDelete(c.id)}
-                              onDuplicate={() => props.onDuplicate?.(c.id)}
-                              onCopyLink={() => props.onCopyLink?.(c.id)}
-                              onMoveToGroup={(groupId) =>
-                                props.onMoveToGroup(c.track, c.id, groupId)
-                              }
-                              onToggleSelected={() => props.onToggleSelected(c.id)}
-                              onStartMultiSelect={props.onToggleMultiSelect}
-                            />
-                          ))
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              )}
+              {projectNavigation ? <p className="shell-sidebar-project-label">工作区</p> : null}
+              {projectNavigation
+                ? visibleWorkspaces.map((workspace) => renderWorkspaceSection(workspace))
+                : renderWorkspaceSection()}
             </div>
           </div>
         )}
 
-        <ActionRow icon={<Palette size={15} />} label="组件库" testId="nav-design-system" active={props.nav.stage === 'design-system'} onClick={() => props.onSelectStage('design-system')} />
+        <div className="shell-sidebar-theme" role="group" aria-label="外观模式">
+          <button
+            type="button"
+            aria-label="浅色模式"
+            aria-pressed={!darkMode}
+            onClick={() => {
+              if (readAppearancePreferences().mode !== 'light')
+                updateAppearancePreferences({ mode: 'light' });
+            }}
+          >
+            <Sun size={16} />
+          </button>
+          <button
+            type="button"
+            aria-label="深色模式"
+            aria-pressed={darkMode}
+            onClick={() => {
+              if (readAppearancePreferences().mode !== 'dark')
+                updateAppearancePreferences({ mode: 'dark' });
+            }}
+          >
+            <Moon size={16} />
+          </button>
+        </div>
 
         {/* Panel 3 — account row. Renders directly on the board and only floats
           as a bright box on hover; clicking the box (or the gear) opens settings. */}
@@ -749,13 +933,15 @@ export function Sidebar(props: SidebarProps) {
             <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-active text-[11px] font-medium text-text">
               U
             </div>
-            <span className="min-w-0 flex-1 truncate text-[12px]">本地用户</span>
+            <span className="shell-sidebar-user-name min-w-0 flex-1 truncate text-[12px]">
+              本地用户
+            </span>
             {/* 有新版本时把目标版本号直接挂在设置入口上，和「设置 → 关于」里的按钮同源。 */}
             {pendingUpdateVersion ? (
               <span
                 data-testid="sidebar-update-badge"
                 title={`可更新到 v${pendingUpdateVersion}`}
-                className="shrink-0 rounded-full bg-accent/20 px-1.5 py-0.5 text-[10px] leading-none font-medium text-accent-text"
+                className="shell-sidebar-version shrink-0 rounded-full bg-accent/20 px-1.5 py-0.5 text-[10px] leading-none font-medium text-accent-text"
               >
                 v{pendingUpdateVersion}
               </span>
@@ -1087,7 +1273,7 @@ function ConversationRow(props: {
   const openContextMenu = useContextMenu();
   const { conversation: c } = props;
   const title = c.title || props.name;
-  const time = formatConversationRowTime(c.lastMessageAt, Date.now());
+  const time = formatConversationRowTime(c.lastMessageAt ?? c.updatedAt ?? c.createdAt, Date.now());
   /*
    * Agent and team rows are two lines: the identity name on top, the conversation
    * title underneath (standing in for the message summary we do not carry yet).
@@ -1106,32 +1292,96 @@ function ConversationRow(props: {
   const summary = group
     ? roster?.preview
       ? `${roster.previewSender ? `${roster.previewSender}：` : ''}${roster.preview}`
-      : roster ? `${roster.members.length} 位成员` : ''
-    : twoLine && rawTitle && rawTitle !== props.name ? rawTitle : '';
+      : roster
+        ? `${roster.members.length} 位成员`
+        : ''
+    : twoLine && rawTitle && rawTitle !== props.name
+      ? rawTitle
+      : '';
 
   return (
     <div
       data-testid={`conversation-${c.id}`}
       tabIndex={0}
-      onKeyDown={event => {
+      onKeyDown={(event) => {
         if (event.target !== event.currentTarget || !['Enter', ' '].includes(event.key)) return;
         event.preventDefault();
-        if (props.multiSelect) props.onToggleSelected(); else props.onOpen();
+        if (props.multiSelect) props.onToggleSelected();
+        else props.onOpen();
       }}
-      onContextMenu={event => openContextMenu(event, [
-        { id: 'rename', label: '重命名对话', icon: <Pencil size={14} />, run: props.onRename },
-        { id: 'duplicate', label: '复制对话', icon: <Copy size={14} />, disabled: !props.onDuplicate, run: props.onDuplicate },
-        { id: 'link', label: '复制对话链接', icon: <Link2 size={14} />, disabled: !props.onCopyLink, run: props.onCopyLink },
-        ...(!props.archived ? [{ id: 'pin', label: c.pinnedAt ? '取消置顶' : '置顶对话', icon: <Pin size={14} />, run: props.onTogglePin }] : []),
-        { id: 'group', label: '移动到分组', icon: <FolderInput size={14} />, disabled: !props.groups.length && !props.inGroupId,
-          children: [
-            ...props.groups.map(group => ({ id: group.id, label: group.name, icon: props.inGroupId === group.id ? <Check size={14} /> : undefined, run: () => props.onMoveToGroup(group.id) })),
-            ...(props.inGroupId ? [{ id: 'ungroup', label: '移出分组', separator: true, run: () => props.onMoveToGroup(null) }] : []),
-          ] },
-        { id: 'archive', label: props.archived ? '取消归档' : '归档对话', icon: props.archived ? <ArchiveRestore size={14} /> : <Archive size={14} />, run: props.onArchive },
-        { id: 'select', label: props.multiSelect ? (props.selected ? '取消选择' : '选择对话') : '多选', icon: <Check size={14} />, run: props.multiSelect ? props.onToggleSelected : props.onStartMultiSelect },
-        { id: 'delete', label: '删除对话', icon: <Trash2 size={14} />, separator: true, danger: true, run: props.onDelete },
-      ])}
+      onContextMenu={(event) =>
+        openContextMenu(event, [
+          { id: 'rename', label: '重命名对话', icon: <Pencil size={14} />, run: props.onRename },
+          {
+            id: 'duplicate',
+            label: '复制对话',
+            icon: <Copy size={14} />,
+            disabled: !props.onDuplicate,
+            run: props.onDuplicate,
+          },
+          {
+            id: 'link',
+            label: '复制对话链接',
+            icon: <Link2 size={14} />,
+            disabled: !props.onCopyLink,
+            run: props.onCopyLink,
+          },
+          ...(!props.archived
+            ? [
+                {
+                  id: 'pin',
+                  label: c.pinnedAt ? '取消置顶' : '置顶对话',
+                  icon: <Pin size={14} />,
+                  run: props.onTogglePin,
+                },
+              ]
+            : []),
+          {
+            id: 'group',
+            label: '移动到分组',
+            icon: <FolderInput size={14} />,
+            disabled: !props.groups.length && !props.inGroupId,
+            children: [
+              ...props.groups.map((group) => ({
+                id: group.id,
+                label: group.name,
+                icon: props.inGroupId === group.id ? <Check size={14} /> : undefined,
+                run: () => props.onMoveToGroup(group.id),
+              })),
+              ...(props.inGroupId
+                ? [
+                    {
+                      id: 'ungroup',
+                      label: '移出分组',
+                      separator: true,
+                      run: () => props.onMoveToGroup(null),
+                    },
+                  ]
+                : []),
+            ],
+          },
+          {
+            id: 'archive',
+            label: props.archived ? '取消归档' : '归档对话',
+            icon: props.archived ? <ArchiveRestore size={14} /> : <Archive size={14} />,
+            run: props.onArchive,
+          },
+          {
+            id: 'select',
+            label: props.multiSelect ? (props.selected ? '取消选择' : '选择对话') : '多选',
+            icon: <Check size={14} />,
+            run: props.multiSelect ? props.onToggleSelected : props.onStartMultiSelect,
+          },
+          {
+            id: 'delete',
+            label: '删除对话',
+            icon: <Trash2 size={14} />,
+            separator: true,
+            danger: true,
+            run: props.onDelete,
+          },
+        ])
+      }
       data-archived={props.archived ? '1' : '0'}
       className={clsx(
         'st-row-motion st-conv-row group relative flex cursor-pointer items-center gap-2 rounded-(--radius-row) py-2 pl-2 pr-1',
@@ -1166,9 +1416,11 @@ function ConversationRow(props: {
         />
         <span className="st-conv-row__body">
           <span className="flex min-w-0 items-center gap-2">
-            {/* NewMax-aligned: its conversation title uses `truncate text-xs font-medium`
-                (12px / 16px line-height), not the 14px / 20px this used to be. */}
-            <span className="flex-1 truncate text-[12px] font-medium leading-4">{heading}</span>
+            {/* The legacy 12/16 fallback stays below; the opt-in workbench uses
+                the agent-aligned 14/20 scale through this semantic title hook. */}
+            <span className="st-conv-row__title flex-1 truncate text-[12px] font-medium leading-4">
+              {heading}
+            </span>
             {title.startsWith('任务 ·') ? (
               <span className="shell-task-conv-badge" title="定时任务会话">
                 任务

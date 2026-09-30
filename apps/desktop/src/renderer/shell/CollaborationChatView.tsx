@@ -9,11 +9,17 @@ import { ArrowLeft, ArrowUp, AtSign, Check, ChevronRight, ListChecks, MoreHorizo
 import type { CollaborationAttempt, CollaborationAttemptStatus, CollaborationCommand, CollaborationMember, CollaborationSnapshot, CollaborationTask, Conversation, GlobalAgent } from '@sync-think/shared';
 import { AgentAvatarView } from './AgentAvatarView.js';
 import { MarkdownContent } from './MarkdownContent.js';
-import { detectMentionQuery, stripMentionToken } from './compose-mention.js';
+import { ComposerEditor, type ComposerEditorHandle } from './ComposerEditor.js';
+import { agentMentionToken, detectAgentMentionQuery, serializeAgentMentions } from './collaboration-mentions.js';
+import { CollaborationMessageText } from './CollaborationMessageText.js';
 import { useCollaborationChat } from './use-collaboration-chat.js';
 import { AvatarCluster } from './collaboration-identity.js';
 import { AgentEditorPanel, announceReply } from './collaboration-agent-editor.js';
 import './collaboration-chat.css';
+
+import type { Team } from '@sync-think/shared';
+import { CollaborationApprovals } from './CollaborationApprovals.js';
+import { useVisibleResults } from './use-visible-results.js';
 
 const CollaborationTaskTrace = lazy(() => import('./CollaborationTaskTrace.js'));
 const CollaborationArtifacts = lazy(() => import('./CollaborationTaskTrace.js').then(module => ({ default: module.CollaborationArtifacts })));
@@ -25,7 +31,7 @@ export const COLLABORATION_STATUS: Record<CollaborationAttemptStatus, string> = 
 const ACTIVE = new Set<CollaborationAttemptStatus>(['queued', 'running', 'waiting_input', 'stopping']);
 const WAIT_REASON: Record<string, string> = { dependency: '等待前置任务', dependency_failed: '前置任务未完成', resource_busy: '等待工作区资源', capacity: '等待执行名额', member_removed: '执行成员已移除', loop_limit: '已达到协作轮数上限' };
 import type { ModelOption } from './NewConversationDialog.js';
-type Props = { projectFolder?: string; conversation: Conversation; agents: readonly GlobalAgent[]; active?: boolean; onOpenConversation(id: string): void; onAgentsChanged?(agent?: GlobalAgent): void; models?: readonly ModelOption[]; onEditAgent?(id: string): void; workspace?: boolean; onOpenSidebar?(): void; onNewChat?(): void; onSnapshot?(snapshot: CollaborationSnapshot): void };
+type Props = { projectFolder?: string; conversation: Conversation; agents: readonly GlobalAgent[]; teams?: readonly Team[]; active?: boolean; onOpenConversation(id: string): void; onAgentsChanged?(agent?: GlobalAgent): void; models?: readonly ModelOption[]; onEditAgent?(id: string): void; workspace?: boolean; onOpenSidebar?(): void; onNewChat?(): void; onSnapshot?(snapshot: CollaborationSnapshot): void; onResultsViewed?(runIds: readonly string[]): void };
 
 function textOf(message: CollaborationSnapshot['messages'][number]) {
   return message.blocks.filter((block) => block.type === 'text' || block.type === 'error').map((block) => block.text ?? '').join('\n');
@@ -61,7 +67,7 @@ function readComposerDraft(key: string): ComposerDraft {
   } catch { return empty; }
 }
 
-export function CollaborationChatView({ projectFolder, conversation, agents, active = true, onOpenConversation, onAgentsChanged, models, onEditAgent, workspace = false, onOpenSidebar, onNewChat, onSnapshot }: Props) {
+export function CollaborationChatView({ projectFolder, conversation, agents, teams = [], active = true, onOpenConversation, onAgentsChanged, models, onEditAgent, workspace = false, onOpenSidebar, onNewChat, onSnapshot, onResultsViewed }: Props) {
   const layerActive = useKeepAliveActive();
   const { snapshot, error, command } = useCollaborationChat(String(conversation.id), active && layerActive);
   const draftKey = `sync-think.collaboration-draft.v1:${conversation.id}`;
@@ -74,8 +80,9 @@ export function CollaborationChatView({ projectFolder, conversation, agents, act
   const emptyCluster = useRef<HTMLDivElement>(null);
   const headerCluster = useRef<HTMLButtonElement>(null);
   const [flights, setFlights] = useState<AvatarFlight[]>([]);
-  const [recipients, setRecipients] = useState<string[]>(savedDraft.recipients);
-  const [mention, setMention] = useState<ReturnType<typeof detectMentionQuery>>(null);
+  const outbound = useMemo(() => serializeAgentMentions(draft), [draft]);
+  const recipients = outbound.recipientMemberIds;
+  const [mention, setMention] = useState<ReturnType<typeof detectAgentMentionQuery>>(null);
   const mentionListId = useId();
   const [mentionIndex, setMentionIndex] = useState(0);
   const [replyTo, setReplyTo] = useState<string | undefined>(savedDraft.replyTo);
@@ -97,30 +104,65 @@ export function CollaborationChatView({ projectFolder, conversation, agents, act
     const receipt = sendRequest.current;
     if (receipt && snapshot?.receipts['send:' + receipt.id]
       && receipt.key === JSON.stringify([draft, recipients, replyTo])) {
-      setDraft(''); setRecipients([]); setReplyTo(undefined); sendRequest.current = undefined;
+      setDraft(''); setReplyTo(undefined); sendRequest.current = undefined;
     }
   }, [snapshot?.receipts, draft, recipients, replyTo]);
   const retryRequests = useRef(new Map<string, string>());
   const messageRetryRequests = useRef(new Map<string, string>());
   const busySend = useRef(false);
-  const input = useRef<HTMLTextAreaElement>(null);
+  const input = useRef<ComposerEditorHandle>(null);
+  const pendingCaret = useRef<number>();
+  useEffect(() => {
+    if (pendingCaret.current === undefined) return;
+    input.current?.focus();
+    input.current?.setSelectionRange(pendingCaret.current, pendingCaret.current);
+    pendingCaret.current = undefined;
+  }, [draft]);
   const viewport = useRef<HTMLDivElement>(null);
   const follow = useRef(true);
-  const members = useMemo(() => (snapshot?.members ?? []).map(member => { const agent = agents.find(a => a.id === member.agentId); return agent ? { ...member, name: agent.name, avatar: agent.avatar } : member; }), [snapshot?.members, agents]);
+  const members = useMemo(() => (snapshot?.members ?? []).map(member => { const agent = member.kind === 'team' ? undefined : agents.find(a => a.id === member.agentId); return agent ? { ...member, name: agent.name, avatar: agent.avatar } : member; }), [snapshot?.members, agents]);
   const membersById = useMemo(() => new Map(members.map((member) => [member.id, member])), [members]);
   const currentAttempts = useMemo(() => new Map(snapshot?.attempts.map((attempt) => [attempt.id, attempt]) ?? []), [snapshot?.attempts]);
   const tasks = snapshot?.tasks ?? [];
   const activity = tasks.filter((task) => ACTIVE.has(currentAttempts.get(task.currentAttemptId)?.status ?? 'succeeded'));
   const failures = tasks.filter((task) => ['failed', 'interrupted'].includes(currentAttempts.get(task.currentAttemptId)?.status ?? ''));
   const chosenTask = tasks.find((task) => task.id === selectedTask);
-  const agentMembers = members.filter((member) => member.active && member.kind !== 'user');
-  const mentionOptions = mention ? members.filter(member => member.active && member.kind !== 'user' && member.name.toLocaleLowerCase().includes(mention.query.toLocaleLowerCase())) : [];
+  const agentMembers = members.filter((member) => member.active && member.kind !== 'user' && !member.teamParticipantId);
+  const mentionOptions = mention ? agentMembers.filter(member => member.active && member.kind !== 'user' && member.name.toLocaleLowerCase().includes(mention.query.toLocaleLowerCase())) : [];
   const highlightedMention = Math.min(mentionIndex, Math.max(0, mentionOptions.length - 1));
   const chooseMention = (member: CollaborationMember) => {
     if (!mention) return;
-    setRecipients(current => current.includes(member.id) ? current : [...current, member.id]);
-    setDraft(stripMentionToken(draft, mention).text); setMention(null); setMentionIndex(0); input.current?.focus();
+    const token = agentMentionToken(member.id, member.name);
+    const suffix = draft.slice(mention.caret);
+    const spacing = suffix ? '' : ' ';
+    pendingCaret.current = mention.atIndex + token.length + spacing.length;
+    setMention(null); setMentionIndex(0);
+    setDraft(draft.slice(0, mention.atIndex) + token + spacing + suffix);
   };
+  const openMentionPicker = () => {
+    const caret = input.current?.getSelection().start ?? draft.length;
+    setMention({ atIndex: caret, caret, query: '' }); setMentionIndex(0);
+    input.current?.focus();
+  };
+  // Migrate old detached recipients once, after member identities arrive.
+  const migratedRecipients = useRef(false);
+  useEffect(() => {
+    if (!snapshot || migratedRecipients.current) return;
+    migratedRecipients.current = true;
+    if (savedDraft.receipt && snapshot.receipts['send:' + savedDraft.receipt.id]
+      && savedDraft.receipt.key === JSON.stringify([savedDraft.text, savedDraft.recipients, savedDraft.replyTo])) {
+      setDraft(''); sendRequest.current = undefined; return;
+    }
+    if (!savedDraft.recipients.length) return;
+    setDraft(current => {
+      const existing = serializeAgentMentions(current).recipientMemberIds;
+      const prefix = savedDraft.recipients.filter(id => !existing.includes(id)).flatMap(id => {
+        const member = membersById.get(id);
+        return member ? [agentMentionToken(id, member.name)] : [];
+      }).join(' ');
+      return prefix ? `${prefix} ${current}` : current;
+    });
+  }, [snapshot, savedDraft, membersById]);
   const [feedback, toggleFeedback] = useFeedback();
   // Faces fly in once, when the first message turns an empty room into a conversation.
   const [arriving, setArriving] = useState(false);
@@ -151,26 +193,23 @@ export function CollaborationChatView({ projectFolder, conversation, agents, act
     if (follow.current && viewport.current) viewport.current.scrollTop = viewport.current.scrollHeight;
   }, [snapshot?.revision]);
 
-  useEffect(() => {
-    if (!workspace || !input.current) return;
-    input.current.style.height = '32px';
-    input.current.style.height = `${Math.min(200, input.current.scrollHeight)}px`;
-  }, [draft, workspace]);
+  useVisibleResults({ viewport, active: active && layerActive, ready: Boolean(snapshot),
+    runIds: snapshot?.attempts.filter(attempt => !ACTIVE.has(attempt.status) && attempt.runId).map(attempt => String(attempt.runId)) ?? [], onViewed: onResultsViewed });
 
   const send = async () => {
     if (!draft.trim() || busySend.current) return;
     if (!snapshot) return;
     const travel = workspace && snapshot.messages.length === 0 ? captureAvatarTravel(emptyCluster.current, headerCluster.current, agentMembers) : [];
-    const text = draft;
-    const key = JSON.stringify([text, recipients, replyTo]);
+    const { text, mentions } = outbound;
+    const key = JSON.stringify([draft, recipients, replyTo]);
     if (sendRequest.current?.key !== key) sendRequest.current = { key, id: crypto.randomUUID() };
     busySend.current = true;
     setSending(true);
     try {
-      await command({ action: 'send', conversationId: String(conversation.id), clientRequestId: sendRequest.current.id, text, recipientMemberIds: recipients, replyToMessageId: replyTo });
+      await command({ action: 'send', conversationId: String(conversation.id), clientRequestId: sendRequest.current.id, text, mentions, recipientMemberIds: recipients, replyToMessageId: replyTo });
       if (travel.length) setFlights(travel);
-      setDraft((current) => current === text ? '' : current);
-      setRecipients([]); setReplyTo(undefined); sendRequest.current = undefined;
+      setDraft((current) => current === draft ? '' : current);
+      setReplyTo(undefined); sendRequest.current = undefined;
       follow.current = true;
       input.current?.focus();
     } catch { /* Keep the draft and request id so a transport retry is idempotent. */ }
@@ -193,7 +232,7 @@ export function CollaborationChatView({ projectFolder, conversation, agents, act
     const result = await run({ action: 'direct', conversationId: String(conversation.id), clientRequestId: crypto.randomUUID(), memberIds: [user.id, member.id] }, member.id);
     if (result?.snapshot) onOpenConversation(result.snapshot.conversation.id);
   };
-  const toggleRecipient = (memberId: string) => setRecipients((current) => current.includes(memberId) ? current.filter((id) => id !== memberId) : [...current, memberId]);
+
 
   return <div className="collab-chat" data-testid="collaboration-chat">
     <div className="collab-chat__main">
@@ -201,7 +240,7 @@ export function CollaborationChatView({ projectFolder, conversation, agents, act
         <button className="aw-mobile-toggle aw-icon" aria-label="打开会话列表" onClick={onOpenSidebar}><PanelLeft size={18} /></button>
         <button ref={headerCluster} className="collab-chat__heading" aria-label={`成员 ${members.filter(member => member.active).length || ''}`} onClick={() => { if (snapshot?.conversation.kind === 'direct' && agentMembers[0]) editMember(agentMembers[0].id); else setPanel(value => value === 'members' ? null : 'members'); }}>
           {agentMembers.length > 1 ? <AvatarCluster members={agentMembers} size={16} max={3} /> : agentMembers[0] ? <Avatar name={agentMembers[0].name} avatar={agentMembers[0].avatar} size={22} /> : <Users size={16} />}
-          <span>{snapshot?.conversation.title ?? conversation.title}</span>
+          <span>{conversation.title || snapshot?.conversation.title}</span><small className="collab-chat__subtitle">协调员：{snapshot?.members.find(member => member.id === snapshot.conversation.coordinatorMemberId)?.name ?? '加载中'}</small>
         </button>
         <span className="collab-chat__header-spacer" />
         <Menu.Root><Menu.Trigger asChild><button className="aw-icon" aria-label="会话选项"><MoreHorizontal size={18} /></button></Menu.Trigger><Menu.Portal><Menu.Content className="aw-menu" align="end" sideOffset={6}>
@@ -215,9 +254,9 @@ export function CollaborationChatView({ projectFolder, conversation, agents, act
         </Menu.Content></Menu.Portal></Menu.Root>
       </header> : <>
       <header className="collab-chat__header">
-        {snapshot?.conversation.kind === 'group' && agentMembers.length > 0 && <AvatarCluster members={agentMembers} size={22} arriving={arriving} />}
-        <div className="collab-chat__title"><strong>{snapshot?.conversation.title ?? conversation.title}</strong><span className="collab-chat__subtitle">{snapshot?.conversation.kind === 'model' ? '模型对话 · 子智能体协作' : snapshot?.conversation.kind === 'direct' ? '智能体单聊' : '智能体群聊'}</span></div>
-        <button className="collab-pill" onClick={() => setPanel((value) => value === 'members' ? null : 'members')} aria-pressed={panel === 'members'}><Users size={15} />成员 {members.filter((member) => member.active).length || ''}</button>
+        {snapshot?.conversation.kind === 'group' && agentMembers.length > 0 && <AvatarCluster members={agentMembers} size={22} arriving={arriving} animate={activity.length > 0} />}
+        <div className="collab-chat__title"><strong>{conversation.title || snapshot?.conversation.title}</strong><span className="collab-chat__subtitle">{snapshot?.conversation.kind === 'model' ? '模型对话 · 子智能体协作' : snapshot?.conversation.kind === 'direct' ? '智能体单聊' : '智能体群聊'}</span></div>
+        <button className="collab-pill" onClick={() => setPanel((value) => value === 'members' ? null : 'members')} aria-pressed={panel === 'members'}><Users size={15} />成员 {members.filter((member) => member.active && !member.teamParticipantId).length || ''}</button>
       </header>
       </>}
       {(!workspace || activity.length > 0 || failures.length > 0 || snapshot?.conversation.parentConversationId) && <div className="collab-chat__summary">
@@ -225,8 +264,9 @@ export function CollaborationChatView({ projectFolder, conversation, agents, act
         {snapshot?.conversation.parentConversationId && <button className="collab-pill" onClick={() => onOpenConversation(snapshot.conversation.parentConversationId!)}><ArrowLeft size={13} />返回关联会话</button>}
       </div>}
       {error && <div className="collab-notice" role="alert">{error}<button className="collab-pill" onClick={() => void run({ action: 'get', conversationId: String(conversation.id) }, 'refresh')}>重新连接</button></div>}
+      <CollaborationApprovals snapshot={snapshot} active={active && layerActive} />
       <div className="collab-chat__messages" ref={viewport} onScroll={() => { const el = viewport.current; if (el) follow.current = el.scrollHeight - el.scrollTop - el.clientHeight < 70; }}>
-        {!snapshot ? <p className="collab-empty" role="status">正在加载会话…</p> : snapshot.messages.length === 0 ? snapshot.conversation.kind === 'group' && agentMembers.length > 0 ? <div ref={emptyCluster} className="collab-empty collab-empty--group" data-testid="collaboration-group-empty"><AvatarCluster members={agentMembers} size={workspace ? 64 : 48} max={3} /><strong>几个头脑，一场对话</strong><p>{agentMembers.map((member) => member.name).join('、')} 都在这里。发一条消息，协调员会先接手；@ 成员可以直接点名。</p></div> : <div className="collab-empty">{workspace && agentMembers[0] && <Avatar name={agentMembers[0].name} avatar={agentMembers[0].avatar} size={84} animate />}<strong>{workspace && agentMembers[0] ? `和${agentMembers[0].name}聊聊` : '从一条消息开始协作'}</strong><p>{snapshot.conversation.kind === 'model' ? '与模型对话，或点击「调用智能体」分配独立任务。' : snapshot.conversation.kind === 'group' ? '直接发消息由协调员处理；@ 成员可指定接收者，也可以创建并行任务。' : '消息与任务都保留在这里。任务执行时仍可继续聊天。'}</p></div> : null}
+        {!snapshot ? <p className="collab-empty" role="status">正在加载会话…</p> : snapshot.messages.length === 0 ? snapshot.conversation.kind === 'group' && agentMembers.length > 0 ? <div ref={emptyCluster} className="collab-empty collab-empty--group" data-testid="collaboration-group-empty"><AvatarCluster members={agentMembers} size={workspace ? 64 : 48} max={3} animate /><strong>几个头脑，一场对话</strong><p>{agentMembers.map((member) => member.name).join('、')} 都在这里。发一条消息，协调员会先接手；@ 成员可以直接点名。</p></div> : <div className="collab-empty">{workspace && agentMembers[0] && <Avatar name={agentMembers[0].name} avatar={agentMembers[0].avatar} size={84} animate />}<strong>{workspace && agentMembers[0] ? `和${agentMembers[0].name}聊聊` : '从一条消息开始协作'}</strong><p>{snapshot.conversation.kind === 'model' ? '与模型对话，或点击「调用智能体」分配独立任务。' : snapshot.conversation.kind === 'group' ? '直接发消息由协调员处理；@ 成员可指定接收者，也可以创建并行任务。' : '消息与任务都保留在这里。任务执行时仍可继续聊天。'}</p></div> : null}
         {workspace && snapshot?.messages.length ? <div className="collab-chat__date">{new Date(snapshot.messages[0].createdAt).toLocaleDateString([], { month: 'long', day: 'numeric' })}</div> : null}
         {snapshot?.messages.map((message) => {
           const sender = membersById.get(message.senderMemberId);
@@ -239,12 +279,12 @@ export function CollaborationChatView({ projectFolder, conversation, agents, act
             .flatMap(task => { const a = currentAttempts.get(task.currentAttemptId); return a?.status === 'succeeded' ? a.artifacts ?? [] : []; }) : [];
           const deliveries = snapshot.deliveries.filter((delivery) => delivery.messageId === message.id);
           const quoted = message.replyToMessageId ? snapshot.messages.find((item) => item.id === message.replyToMessageId) : undefined;
+          const text = textOf(message);
           return <article key={message.id} className={`collab-message ${sender?.kind === 'user' ? 'is-user' : ''} ${message.kind === 'system' ? 'is-system' : ''} ${initialMessages.current?.has(message.id) ? '' : 'is-new'}`} data-message-id={message.id}>
             <div className="collab-message__identity">{sender?.kind === 'agent' ? <button type="button" className="collab-message__who" aria-label={`编辑${sender.name}`} onClick={() => editMember(sender.id)}><Avatar name={sender.name} avatar={sender.avatar} size={workspace ? 20 : 26} /><strong>{sender.name}</strong></button> : <><Avatar name={sender?.name ?? '系统'} avatar={sender?.avatar} size={workspace ? 20 : 26} /><strong>{sender?.name ?? '系统'}</strong></>}<span>{sender?.role}</span>{message.kind === 'task_result' && <span className="collab-tag">任务结果</span>}<time>{new Date(message.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time></div>
             {quoted && <button className="collab-message__quote" onClick={() => viewport.current?.querySelector(`[data-message-id="${CSS.escape(quoted.id)}"]`)?.scrollIntoView({ block: 'center', behavior: 'smooth' })}>回复：{textOf(quoted).slice(0, 100)}</button>}
             {message.contextRefs?.map((reference) => <button className="collab-message__quote" key={`${reference.conversationId}:${reference.messageId}`} onClick={() => onOpenConversation(reference.conversationId)}>查看关联群聊消息</button>)}
-            {message.recipientMemberIds.length > 0 && <div className="collab-message__recipients">{message.recipientMemberIds.map((id) => <span key={id}>@{membersById.get(id)?.name ?? '已离开的成员'}</span>)}</div>}
-            {textOf(message) && <div className="collab-message__body"><MarkdownContent text={textOf(message)} projectFolder={projectFolder} conversationId={String(conversation.id)} /></div>}
+            {(text || message.mentions.length > 0) && <div className="collab-message__body"><CollaborationMessageText text={text} mentions={message.mentions} members={membersById} projectFolder={projectFolder} conversationId={String(conversation.id)} /></div>}
             {finalArtifacts.length > 0 && <Suspense fallback={<p className="collab-muted">读取产物…</p>}><CollaborationArtifacts artifacts={finalArtifacts} projectFolder={projectFolder} /></Suspense>}
             {workspace ? associated.length > 0 && <button className="aw-task-link" onClick={() => { setSelectedTask(associated.length === 1 ? associated[0].id : undefined); setPanel('tasks'); }}><ListChecks size={13} />{associated.length} 项协作任务<ChevronRight size={13} /></button> : associated.map((task) => <TaskCard key={task.id} task={task} attempt={currentAttempts.get(task.currentAttemptId)} member={membersById.get(task.assigneeMemberId)} onOpen={() => { setSelectedTask(task.id); setPanel('tasks'); }} />)}
             <div className={`collab-message__actions${deliveries.some(item => item.status === 'failed') ? ' has-error' : ''}`}>
@@ -288,19 +328,21 @@ export function CollaborationChatView({ projectFolder, conversation, agents, act
       </div>
       <form className="collab-composer" onSubmit={(event) => { event.preventDefault(); void send(); }}>
         {replyTo && <div className="collab-composer__reference">回复：{snapshot?.messages.find((item) => item.id === replyTo)?.blocks[0]?.text?.slice(0, 80)}<button type="button" className="collab-pill" aria-label="取消回复" onClick={() => setReplyTo(undefined)}><X size={12} /></button></div>}
-        {recipients.length > 0 && <div className="collab-composer__recipients">{recipients.map((id) => <button type="button" className="collab-pill is-selected" key={id} onClick={() => toggleRecipient(id)}>@{membersById.get(id)?.name}<X size={12} /></button>)}</div>}
-        {mention && <div id={mentionListId} className="collab-mention" role="listbox" aria-label="选择接收成员">{mentionOptions.map((member, index) => <button type="button" role="option" id={`${mentionListId}-${index}`} data-highlighted={index === highlightedMention ? 'true' : undefined} aria-selected={recipients.includes(member.id)} key={member.id} onClick={() => chooseMention(member)}><Avatar name={member.name} avatar={member.avatar} size={22} />{member.name}<span>{member.role}</span></button>)}</div>}
-        <textarea ref={input} aria-label="协作消息" aria-autocomplete="list" aria-controls={mention ? mentionListId : undefined} aria-activedescendant={mentionOptions.length ? `${mentionListId}-${highlightedMention}` : undefined} rows={1} placeholder={workspace ? '你好，今天想一起做些什么？' : snapshot?.conversation.kind === 'model' ? '继续与模型对话…' : '输入消息，@ 指定成员…'} value={draft} onChange={(event) => { setDraft(event.target.value); setMention(detectMentionQuery(event.target.value, event.target.selectionStart)); setMentionIndex(0); }} onKeyDown={(event) => { if (event.nativeEvent.isComposing) return; if (event.key === 'Escape') { setMention(null); return; } if (mention && mentionOptions.length) { if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); setMentionIndex((highlightedMention + (event.key === 'ArrowDown' ? 1 : mentionOptions.length - 1)) % mentionOptions.length); return; } if (event.key === 'Enter') { event.preventDefault(); chooseMention(mentionOptions[highlightedMention]); return; } } if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing && !mention) { event.preventDefault(); void send(); } }} />
+
+        {mention && <div id={mentionListId} className="collab-mention" role="listbox" aria-label="选择接收成员">{mentionOptions.map((member, index) => <button type="button" role="option" id={`${mentionListId}-${index}`} data-highlighted={index === highlightedMention ? 'true' : undefined} aria-selected={recipients.includes(member.id)} key={member.id} onMouseDown={event => event.preventDefault()} onClick={() => chooseMention(member)}><Avatar name={member.name} avatar={member.avatar} size={22} />{member.name}<span>{member.role}</span></button>)}</div>}
+        <ComposerEditor ref={input} ariaLabel="协作消息" inputTestId="collaboration-draft" ariaAutocomplete="list" ariaControls={mention ? mentionListId : undefined} ariaActiveDescendant={mentionOptions.length ? `${mentionListId}-${highlightedMention}` : undefined} className="collab-composer__editor" minHeight={32} maxHeight={200} placeholder={workspace ? '你好，今天想一起做些什么？' : snapshot?.conversation.kind === 'model' ? '继续与模型对话…' : '输入消息，@ 指定成员…'} value={draft}
+          onChange={(value, selection) => { setDraft(value); setMention(detectAgentMentionQuery(value, selection.start)); setMentionIndex(0); }}
+          onKeyDown={(event) => { if (event.nativeEvent.isComposing) return; if (event.key === 'Escape') { setMention(null); return; } if (mention && mentionOptions.length) { if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); setMentionIndex((highlightedMention + (event.key === 'ArrowDown' ? 1 : mentionOptions.length - 1)) % mentionOptions.length); return; } if (event.key === 'Enter') { event.preventDefault(); chooseMention(mentionOptions[highlightedMention]); return; } } if (event.key === 'Enter' && !event.shiftKey && (!mention || !mentionOptions.length)) { event.preventDefault(); void send(); } }} />
         <div className="collab-composer__toolbar">{workspace ? <Menu.Root><Menu.Trigger asChild><button type="button" className="collab-pill collab-composer__add" aria-label="添加到对话"><Plus size={20} /></button></Menu.Trigger><Menu.Portal><Menu.Content className="aw-menu" side="top" align="start" sideOffset={10}>
-          <Menu.Item onSelect={() => { setMention({ atIndex: draft.length, caret: draft.length, query: '' }); input.current?.focus(); }}><AtSign size={16} />指定接收成员</Menu.Item>
+          <Menu.Item onSelect={openMentionPicker}><AtSign size={16} />指定接收成员</Menu.Item>
           <Menu.Item disabled={!snapshot} onSelect={() => setTaskDialog(true)}><Plus size={16} />创建协作任务</Menu.Item>
           <Menu.Item onSelect={() => { setSelectedTask(undefined); setPanel('tasks'); }}><ListChecks size={16} />任务与执行历史</Menu.Item>
         </Menu.Content></Menu.Portal></Menu.Root> : <button type="button" className="collab-pill" disabled={!snapshot} onClick={() => setTaskDialog(true)}><Plus size={15} />{snapshot?.conversation.kind === 'model' ? '调用智能体' : '创建任务'}</button>}
-        <button type="button" className="collab-pill" onClick={() => { setMention({ atIndex: draft.length, caret: draft.length, query: '' }); input.current?.focus(); }}><AtSign size={15} />成员</button><span className="collab-composer__hint">{snapshot?.conversation.kind === 'group' && !recipients.length ? '发送给协调员' : '任务执行时可继续发送'}</span><button type="submit" className="collab-send" aria-label="发送消息" disabled={!draft.trim() || sending || !snapshot}><ArrowUp size={18} /></button></div>
+        <button type="button" className="collab-pill" onClick={openMentionPicker}><AtSign size={15} />成员</button><span className="collab-composer__hint">{snapshot?.conversation.kind === 'group' && !recipients.length ? '发送给协调员' : '任务执行时可继续发送'}</span><button type="submit" className="collab-send" aria-label="发送消息" disabled={!draft.trim() || sending || !snapshot}><ArrowUp size={18} /></button></div>
       </form>
     </div>
     {panel && snapshot && <aside className={`collab-panel${panel === 'tasks' ? ' collab-panel--tasks' : ''}`} aria-label={panel === 'tasks' ? '执行详情' : panel === 'agent' ? '智能体设置' : '会话成员'}><header><strong>{panel === 'agent' ? (workspace ? membersById.get(editing ?? '')?.name ?? '智能体设置' : '智能体设置') : panel === 'members' ? '会话成员' : chosenTask ? '任务详情' : '任务执行'}</strong><button className="collab-pill" onClick={() => setPanel(null)} aria-label="关闭详情"><X size={15} /></button></header>
-      {panel === 'agent' && editing && membersById.get(editing) ? <AgentEditorPanel models={models} workspace={workspace} member={membersById.get(editing)!} agent={agents.find((agent) => agent.id === membersById.get(editing)!.agentId)} onSaved={onAgentsChanged} /> : panel === 'members' ? <MembersPanel conversation={conversation} snapshot={snapshot} agents={agents} busy={Boolean(operation)} onCommand={(request) => void run(request, 'members')} onDirect={openDirect} onEdit={editMember} /> : chosenTask ? <TaskDetail snapshot={snapshot} projectFolder={projectFolder} onSelectTask={setSelectedTask} task={chosenTask} attempts={snapshot.attempts.filter((attempt) => attempt.taskId === chosenTask.id)} member={membersById.get(chosenTask.assigneeMemberId)} busy={operation === chosenTask.id} onBack={() => setSelectedTask(undefined)} onCancel={() => void run({ action: 'cancel', conversationId: String(conversation.id), taskId: chosenTask.id, includeChildren: true }, chosenTask.id)} onRetry={() => retry(chosenTask)} /> : <div className="collab-panel__body">{tasks.length === 0 ? <p className="collab-empty">这里会保留本会话的任务与执行历史。</p> : tasks.map((task) => <TaskCard key={task.id} task={task} attempt={currentAttempts.get(task.currentAttemptId)} member={membersById.get(task.assigneeMemberId)} onOpen={() => setSelectedTask(task.id)} />)}</div>}
+      {panel === 'agent' && editing && membersById.get(editing) ? <AgentEditorPanel models={models} workspace={workspace} member={membersById.get(editing)!} agent={agents.find((agent) => agent.id === membersById.get(editing)!.agentId)} onSaved={onAgentsChanged} /> : panel === 'members' ? <MembersPanel conversation={conversation} snapshot={snapshot} agents={agents} teams={teams} busy={Boolean(operation)} onCommand={(request) => void run(request, 'members')} onDirect={openDirect} onEdit={editMember} /> : chosenTask ? <TaskDetail snapshot={snapshot} projectFolder={projectFolder} onSelectTask={setSelectedTask} task={chosenTask} attempts={snapshot.attempts.filter((attempt) => attempt.taskId === chosenTask.id)} member={membersById.get(chosenTask.assigneeMemberId)} busy={operation === chosenTask.id} onBack={() => setSelectedTask(undefined)} onCancel={() => void run({ action: 'cancel', conversationId: String(conversation.id), taskId: chosenTask.id, includeChildren: true }, chosenTask.id)} onRetry={() => retry(chosenTask)} /> : <div className="collab-panel__body">{tasks.length === 0 ? <p className="collab-empty">这里会保留本会话的任务与执行历史。</p> : tasks.map((task) => <TaskCard key={task.id} task={task} attempt={currentAttempts.get(task.currentAttemptId)} member={membersById.get(task.assigneeMemberId)} onOpen={() => setSelectedTask(task.id)} />)}</div>}
     </aside>}
     {flights.length > 0 && <AvatarTravel flights={flights} onComplete={() => setFlights([])} />}
     {taskDialog && snapshot && <CreateTaskDialog snapshot={snapshot} onClose={() => setTaskDialog(false)} onCreate={async (request) => { const response = await run(request, 'dispatch'); if (response) { setTaskDialog(false); setPanel('tasks'); } }} />}
@@ -328,7 +370,10 @@ function TaskDetail({ snapshot, projectFolder, onSelectTask, task, attempts, mem
   </div>;
 }
 
-function MembersPanel({ conversation, snapshot, agents, busy, onCommand, onDirect, onEdit }: { conversation: Conversation; snapshot: CollaborationSnapshot; agents: readonly GlobalAgent[]; busy: boolean; onCommand(request: CollaborationCommand): void; onDirect(member: CollaborationMember): void; onEdit(memberId: string): void }) {
+function MembersPanel({ conversation, snapshot, agents, teams, busy, onCommand: sendCommand, onDirect, onEdit }: { conversation: Conversation; snapshot: CollaborationSnapshot; agents: readonly GlobalAgent[]; teams: readonly Team[]; busy: boolean; onCommand(request: CollaborationCommand): void; onDirect(member: CollaborationMember): void; onEdit(memberId: string): void }) {
+  const onCommand = (request: CollaborationCommand) => sendCommand(request.action === 'members' ? { ...request, expectedTopologyRevision: snapshot.conversation.topologyRevision ?? 0 } : request);
+  const running = snapshot.tasks.some(task => snapshot.attempts.some(attempt => attempt.id === task.currentAttemptId && ACTIVE.has(attempt.status)));
+  const availableTeams = teams.filter(team => !snapshot.members.some(member => member.active && member.teamSnapshot?.id === team.id));
   const [permission, setPermission] = useState(conversation.executionMode ?? 'ask');
   const [permissionBusy, setPermissionBusy] = useState(false);
   const [permissionError, setPermissionError] = useState('');
@@ -341,9 +386,10 @@ function MembersPanel({ conversation, snapshot, agents, busy, onCommand, onDirec
     catch (cause) { setPermissionError(String(cause)); }
     finally { setPermissionBusy(false); }
   };
-  const activeMembers = snapshot.members.filter((member) => member.active);
-  const available = agents.filter((agent) => !agent.archived && agent.enabled !== false && !activeMembers.some((member) => member.agentId === agent.id));
-  return <div className="collab-panel__body"><label className="collab-field">任务文件权限<select aria-label="任务文件权限" value={permission} disabled={busy || permissionBusy} onChange={e => void changePermission(e.target.value as 'ask' | 'workspace' | 'full-access')}><option value="ask">只读工作区 · 可交付文档</option><option value="workspace">允许工作区操作</option><option value="full-access">完全访问</option></select><small>文档交付不写工作区；修改文件需执行者「继承会话权限」。设置用于后续执行。</small></label>{permissionError && <p role="alert" className="collab-notice">{permissionError}</p>}<p className="collab-muted">成员角色只描述分工，工具权限仍受会话与智能体配置约束。</p>{activeMembers.map((member) => <div className="collab-member" key={member.id}><div className="collab-member__identity"><AgentAvatarView name={member.name} avatar={member.avatar} size={30} /><strong>{member.name}</strong>{member.id === snapshot.conversation.coordinatorMemberId && <span className="collab-tag">协调员</span>}</div>{member.kind !== 'user' && <><input aria-label={`${member.name}的角色`} defaultValue={member.role} key={`${member.id}:${member.role}`} onBlur={(event) => { if (event.target.value.trim() !== member.role) onCommand({ action: 'members', conversationId: snapshot.conversation.id, roles: { [member.id]: event.target.value.trim() } }); }} /><div className="collab-toolbar"><button className="collab-link" disabled={busy} onClick={() => onDirect(member)}>打开单聊</button>{member.kind === 'agent' && <button className="collab-link" onClick={() => onEdit(member.id)}>编辑</button>}{snapshot.conversation.kind === 'group' && member.id !== snapshot.conversation.coordinatorMemberId && <><button className="collab-link" disabled={busy} onClick={() => onCommand({ action: 'members', conversationId: snapshot.conversation.id, coordinatorMemberId: member.id })}>设为协调员</button><button className="collab-link" disabled={busy} onClick={() => onCommand({ action: 'members', conversationId: snapshot.conversation.id, removeMemberIds: [member.id] })}>移出群聊</button></>}</div></>}</div>)}
+  const activeMembers = snapshot.members.filter((member) => member.active && !member.teamParticipantId);
+  const available = agents.filter((agent) => !agent.archived && agent.enabled !== false && !activeMembers.some((member) => member.kind === 'agent' && member.agentId === agent.id));
+  return <div className="collab-panel__body"><label className="collab-field">任务文件权限<select aria-label="任务文件权限" value={permission} disabled={busy || permissionBusy} onChange={e => void changePermission(e.target.value as 'ask' | 'workspace' | 'full-access')}><option value="ask">只读工作区 · 可交付文档</option><option value="workspace">允许工作区操作</option><option value="full-access">完全访问</option></select><small>文档交付不写工作区；修改文件需执行者「继承会话权限」。设置用于后续执行。</small></label>{permissionError && <p role="alert" className="collab-notice">{permissionError}</p>}<p className="collab-muted">新增成员或小队默认参与下一轮，不改动正在执行的工作链。小队保留内部负责人和依赖；角色不授予额外工具权限。</p>{running && <p className="collab-notice">当前有任务，完成或停止后再移交协调权；移出成员前请处理其任务。</p>}{activeMembers.map((member) => <div className="collab-member" key={member.id}><div className="collab-member__identity"><AgentAvatarView name={member.name} avatar={member.avatar} size={30} /><strong>{member.name}</strong>{member.id === snapshot.conversation.coordinatorMemberId && <span className="collab-tag">协调员</span>}</div>{member.kind === 'team' && <details><summary>{member.role} · 内部工作链</summary><ol>{member.teamSnapshot?.members.map(config => <li key={config.agentId}>{agents.find(agent => agent.id === config.agentId)?.name ?? config.agentId} · {config.title || config.role}</li>)}</ol><small>加入版本：{member.teamSnapshot?.updatedAt}；小队定义更新需退出后重新添加。</small></details>}{member.kind !== 'user' && <><input aria-label={`${member.name}的角色`} defaultValue={member.role} key={`${member.id}:${member.role}`} onBlur={(event) => { if (event.target.value.trim() !== member.role) onCommand({ action: 'members', conversationId: snapshot.conversation.id, roles: { [member.id]: event.target.value.trim() } }); }} /><div className="collab-toolbar">{member.kind !== 'team' && <button className="collab-link" disabled={busy} onClick={() => onDirect(member)}>打开单聊</button>}{member.kind === 'agent' && <button className="collab-link" onClick={() => onEdit(member.id)}>编辑</button>}{snapshot.conversation.kind === 'group' && member.id !== snapshot.conversation.coordinatorMemberId && <><button className="collab-link" disabled={busy || running} onClick={() => onCommand({ action: 'members', conversationId: snapshot.conversation.id, coordinatorMemberId: member.id })}>设为协调员</button><button className="collab-link" disabled={busy} onClick={() => onCommand({ action: 'members', conversationId: snapshot.conversation.id, removeMemberIds: [member.id] })}>移出群聊</button></>}</div></>}</div>)}
+    {snapshot.conversation.kind === 'group' && availableTeams.length > 0 && <label className="collab-field">添加小队<select aria-label="添加小队" value="" disabled={busy} onChange={event => { if (event.target.value) onCommand({ action: 'members', conversationId: snapshot.conversation.id, addTeamIds: [event.target.value] }); }}><option value="">选择已有小队…</option>{availableTeams.map(team => <option key={team.id} value={team.id}>{team.name} · {team.members.length} 位成员</option>)}</select></label>}
     {snapshot.conversation.kind !== 'direct' && available.length > 0 && <label className="collab-field">添加智能体<select value="" disabled={busy} onChange={(event) => { if (event.target.value) onCommand({ action: 'members', conversationId: snapshot.conversation.id, addAgentIds: [event.target.value] }); }}><option value="">选择智能体…</option>{available.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}</select></label>}
     {snapshot.conversation.kind === 'group' && <label className="collab-toggle"><input type="checkbox" checked={snapshot.conversation.policy.allowPeerDirect} disabled={busy} onChange={(event) => onCommand({ action: 'policy', conversationId: snapshot.conversation.id, policy: { allowPeerDirect: event.target.checked } })} /><span>允许智能体之间发起单聊<small>默认关闭；开启后关联单聊保留在聊天列表中。</small></span></label>}
     <label className="collab-field">任务超时（秒）<input type="number" min={30} max={86400} key={snapshot.conversation.policy.taskTimeoutSeconds} defaultValue={snapshot.conversation.policy.taskTimeoutSeconds} onBlur={(event) => { const value = Number(event.target.value); if (Number.isInteger(value) && value >= 30 && value <= 86400 && value !== snapshot.conversation.policy.taskTimeoutSeconds) onCommand({ action: 'policy', conversationId: snapshot.conversation.id, policy: { taskTimeoutSeconds: value } }); }} /></label>

@@ -1,3 +1,4 @@
+import { AGENT_DEFINITION_TOOLS, managementToolAllowed, type AgentManagementIntent } from './agent-management-intent.js';
 import type { AgentWritePolicy, ConversationTrack } from '@sync-think/shared';
 import {
   capabilitiesForConversationTrack,
@@ -122,7 +123,11 @@ export function resolveCollaborationToolDenial(input: {
   track: ConversationTrack;
   toolName: string;
   settings?: CollaborationSettings;
+  agentManagementIntent?: AgentManagementIntent;
 }): CollaborationToolDenial | null {
+  if (input.agentManagementIntent !== undefined && AGENT_DEFINITION_TOOLS.has(input.toolName)) {
+    return managementToolAllowed(input.agentManagementIntent, input.toolName) ? null : { reason: 'track', error: '仅在用户明确要求创建或修改智能体时提供对应管理操作；任务执行中不自行创建助手。' };
+  }
   const settings = input.settings ?? DEFAULT_COLLABORATION_SETTINGS;
   const capabilities = capabilitiesForConversationTrack(input.track, settings);
   if (input.track !== 'model' && AGENT_LIBRARY_TOOLS.has(input.toolName)) {
@@ -180,6 +185,7 @@ export function isCollaborationToolAllowed(input: {
   track: ConversationTrack;
   toolName: string;
   settings?: CollaborationSettings;
+  agentManagementIntent?: AgentManagementIntent;
 }): boolean {
   return resolveCollaborationToolDenial(input) === null;
 }

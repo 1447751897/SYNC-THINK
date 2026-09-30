@@ -81,7 +81,6 @@ import {
   PERMISSION_MODE_COLLAPSED_TOOLBAR_LEVEL,
   PermissionTrigger,
   REASONING_LABELS,
-  SKILL_COLLAPSED_TOOLBAR_LEVEL,
   useComposerToolbarCollapse,
   type KernelInstallState,
   type PermissionMode,
@@ -149,7 +148,6 @@ import {
   type GoalSettingsValues,
 } from './GoalSettingsDialog.js';
 import { ComposerAddControl } from './ComposerAddMenu.js';
-import { TipsCarousel } from './TipsCarousel.js';
 import { HomeScenarios } from './HomeScenarios.js';
 import {
   parseComposerPlanActSetting,
@@ -301,6 +299,8 @@ import {
   type WorkspaceWorkbenchLayouts,
 } from './workspace-workbench.js';
 
+const TipsCarousel = lazyPanel<import('./TipsCarousel.js').TipsCarouselProps>(() => import('./TipsCarousel.js').then((module) => ({ default: module.TipsCarousel })), '使用提示', 'TipsCarousel');
+
 const WorkspaceWorkbench = lazyPanel(
   async () => ({ default: (await import('./WorkspaceWorkbench.js')).WorkspaceWorkbench }),
   '工作台',
@@ -350,11 +350,6 @@ const ActivityCenterPage = lazyPanel(
   async () => ({ default: (await import('./ActivityCenterPage.js')).ActivityCenterPage }),
   '收件箱',
   'ActivityCenterPage',
-);
-const DesignSystemPage = lazyPanel(
-  async () => ({ default: (await import('./DesignSystemPage.js')).DesignSystemPage }),
-  '组件库',
-  'DesignSystemPage',
 );
 const SettingsPage = lazyPanel(
   async () => ({ default: (await import('./SettingsPage.js')).SettingsPage }),
@@ -855,6 +850,16 @@ function ShellAppInner() {
     setSeedComposerRevision((revision) => revision + 1);
   }, []);
   const resizeRef = useRef<{ startX: number; startWidth: number } | null>(null);
+
+  const [sidebarGroupsRevision, setSidebarGroupsRevision] = useState(0);
+  const updateWorkspaceGroups = useCallback((workspaceId: string | undefined, update: (current: ConversationGroupsByTrack) => ConversationGroupsByTrack) => {
+    const id = workspaceId ?? activeWorkspaceIdRef.current;
+    if (!id) return;
+    const next = update(readConversationGroups(id));
+    writeConversationGroups(id, next);
+    if (id === activeWorkspaceIdRef.current) setGroups(next);
+    setSidebarGroupsRevision(value => value + 1);
+  }, []);
 
   const persistGroups = useCallback(
     (next: ConversationGroupsByTrack) => {
@@ -2150,6 +2155,12 @@ function ShellAppInner() {
 
   const openConversationById = useCallback(
     async (conversationId: string) => {
+      const draft = draftSessionRef.current;
+      if (draft?.id === conversationId) {
+        pendingOpenRef.current = null;
+        focusConversation(conversationId, draft.workspaceId);
+        return;
+      }
       pendingOpenRef.current = conversationId;
       let target = data.conversations.find((c) => c.id === conversationId);
       if (!target) {
@@ -2528,6 +2539,7 @@ function ShellAppInner() {
       sourceConversation?: Conversation | null,
       targetPaneId?: string,
       workbenchPlacement?: WorkbenchPlacement,
+      workspaceId = activeWorkspaceId,
     ) => {
       const current =
         sourceConversation === undefined
@@ -2535,7 +2547,7 @@ function ShellAppInner() {
           : (sourceConversation ?? undefined);
       const t = track ?? current?.track ?? 'model';
       if (t !== 'model') {
-        navigateAgentWorkspace({ workspaceId: activeWorkspaceId ?? PROJECTLESS_SCOPE, ...(t === 'team' ? { teamId: current?.targetRef ?? '' } : {}), fresh: true });
+        navigateAgentWorkspace({ workspaceId: workspaceId ?? PROJECTLESS_SCOPE, ...(t === 'team' ? { teamId: current?.targetRef ?? '' } : {}), fresh: true });
         return;
       }
       exitAgentWorkspace();
@@ -2551,7 +2563,7 @@ function ShellAppInner() {
         t,
         carriedTarget,
         workbenchPlacement ? undefined : targetPaneId,
-        undefined,
+        workspaceId,
         workbenchPlacement,
       );
       if (!draft) return;
@@ -2862,31 +2874,32 @@ function ShellAppInner() {
       await api.deleteConversation({
         conversationId: id as Parameters<typeof api.deleteConversation>[0]['conversationId'],
       });
-      if (activeWorkspaceId) {
-        commitPaneLayout(activeWorkspaceId, (current) => closeConversationInLayout(current, id));
+      const ownerWorkspaceId = data.conversations.find(c => c.id === id)?.workspaceId ?? activeWorkspaceId;
+      if (ownerWorkspaceId) {
+        commitPaneLayout(ownerWorkspaceId, (current) => closeConversationInLayout(current, id));
       } else {
         setNav((n) =>
           n.selectedConversationId === id ? { ...n, selectedConversationId: undefined } : n,
         );
       }
       // Drop from local groups.
-      persistGroups({
-        model: groups.model.map((g) => ({
+      updateWorkspaceGroups(ownerWorkspaceId, current => ({
+        model: current.model.map((g) => ({
           ...g,
           conversationIds: g.conversationIds.filter((cid) => cid !== id),
         })),
-        agent: groups.agent.map((g) => ({
+        agent: current.agent.map((g) => ({
           ...g,
           conversationIds: g.conversationIds.filter((cid) => cid !== id),
         })),
-        team: groups.team.map((g) => ({
+        team: current.team.map((g) => ({
           ...g,
           conversationIds: g.conversationIds.filter((cid) => cid !== id),
         })),
-      });
+      }));
       await refresh();
     },
-    [activeWorkspaceId, commitPaneLayout, dialog, groups, persistGroups, refresh],
+    [activeWorkspaceId, commitPaneLayout, data.conversations, dialog, updateWorkspaceGroups, refresh],
   );
 
   const handleDuplicate = useCallback(
@@ -2896,6 +2909,7 @@ function ShellAppInner() {
       const source = data.conversations.find((c) => c.id === id);
       if (!source) return;
       const workspaceId = source.workspaceId ?? activeWorkspaceId;
+      const initiatingWorkspaceId = activeWorkspaceIdRef.current;
       // Copy conversation config (track, target, workspace, execution permission,
       // bound model) and the title in a single create. Message history is NOT
       // copied: there is no Runtime command to list a conversation's messages,
@@ -2909,16 +2923,16 @@ function ShellAppInner() {
       });
       // Preserve group membership (front-end only; no Runtime call needed).
       const track = source.track;
-      const sourceGroup = groups[track].find((g) => g.conversationIds.includes(id));
+      const ownerGroups = readConversationGroups(workspaceId);
+      const sourceGroup = ownerGroups[track].find((g) => g.conversationIds.includes(id));
       if (sourceGroup && workspaceId) {
-        persistGroups(
-          moveConversationToGroup(groups, track, created.conversation.id, sourceGroup.id),
-        );
+        updateWorkspaceGroups(workspaceId, current => moveConversationToGroup(current, track, created.conversation.id, sourceGroup.id));
       }
       await refresh();
+      if (workspaceId && activeWorkspaceIdRef.current === initiatingWorkspaceId && workspaceId !== initiatingWorkspaceId) selectWorkspace(workspaceId);
       focusConversation(created.conversation.id, workspaceId, created.conversation);
     },
-    [activeWorkspaceId, data.conversations, focusConversation, groups, persistGroups, refresh],
+    [activeWorkspaceId, data.conversations, focusConversation, selectWorkspace, updateWorkspaceGroups, refresh],
   );
 
   const handleCopyLink = useCallback(
@@ -3056,6 +3070,16 @@ function ShellAppInner() {
     };
     return [draftConversation, ...conversations];
   }, [activeWorkspaceId, data.conversations, draftSession]);
+  const sidebarConversations = useMemo(() => [
+    ...visibleConversations,
+    ...data.conversations.filter(conversation => conversation.workspaceId !== activeWorkspaceId && !isAgentConversation(conversation)),
+  ], [activeWorkspaceId, data.conversations, visibleConversations]);
+  const sidebarWorkspaceGroups = useMemo(() => {
+    // Inactive branches read persisted groups; their writes invalidate this snapshot.
+    void sidebarGroupsRevision;
+    return Object.fromEntries(data.workspaces.map(workspace => [workspace.workspaceId, workspace.workspaceId === activeWorkspaceId ? groups : readConversationGroups(workspace.workspaceId)]));
+  }, [activeWorkspaceId, data.workspaces, groups, sidebarGroupsRevision]);
+
   const workbenchConversationMeta = useMemo(() => {
     const meta: Record<string, { title?: string; track?: ConversationTrack }> = {};
     for (const conversation of visibleConversations) {
@@ -3343,6 +3367,19 @@ function ShellAppInner() {
     () => buildConversationActivity(eventHistory, data.conversations, runActivityAuthority),
     [eventHistory, data.conversations, runActivityAuthority],
   );
+  const acknowledgeAgentResults = useCallback((id: string, runIds: readonly string[]) => {
+    if (!agentWorkspaceOpen || settingsOpen || !runIds.length) return;
+    const visible = new Set(runIds);
+    const sequence = eventHistory.reduce((latest, event) =>
+      ['run.completed', 'run.failed', 'run.cancelled', 'run.paused'].includes(event.type) && visible.has(String(event.runId ?? event.payload?.runId ?? ''))
+        ? Math.max(latest, event.sequence) : latest, -1);
+    if (sequence < 0) return;
+    setConversationLastSeen(current => {
+      const next = markConversationSeen(current, id, sequence);
+      if (next !== current) writeConversationLastSeen(next);
+      return next;
+    });
+  }, [agentWorkspaceOpen, settingsOpen, eventHistory]);
   /** 对话级 running/unread map（对话 tab 与侧栏用）。 */
   const conversationActivityView = useMemo(() => {
     const map = new Map<string, { running: boolean; unread: boolean }>();
@@ -3801,8 +3838,12 @@ function ShellAppInner() {
       onSelectStage: handleSelectStage,
       onToggleTrack: (track: ConversationTrack) => setNav((n) => toggleTrack(n, track)),
       onToggleSidebar: () => setNav((n) => setSidebarCollapsed(n, true)),
-      onOpenConversation: (id: string) => focusConversation(id),
-      onNewConversation: handleNewConversation,
+      onOpenConversation: (id: string) => void openConversationById(id),
+      onNewConversation: (track?: ConversationTrack, workspaceId?: string) => {
+        if (!workspaceId) { handleNewConversation(track); return; }
+        if (workspaceId !== activeWorkspaceIdRef.current) selectWorkspace(workspaceId);
+        handleNewConversation(track, null, undefined, undefined, workspaceId);
+      },
       onTogglePin: (id: string, pinned: boolean) => void handleTogglePin(id, pinned),
       onRename: (id: string, currentTitle: string) => void handleRename(id, currentTitle),
       onArchive: (id: string) => void handleArchive(id),
@@ -3810,20 +3851,20 @@ function ShellAppInner() {
       onDelete: (id: string) => void handleDelete(id),
       onDuplicate: (id: string) => void handleDuplicate(id),
       onCopyLink: (id: string) => void handleCopyLink(id),
-      onCreateGroup: (track: ConversationTrack, name: string) => {
-        persistGroups(createConversationGroup(groups, track, name));
+      onCreateGroup: (track: ConversationTrack, name: string, workspaceId?: string) => {
+        updateWorkspaceGroups(workspaceId, current => createConversationGroup(current, track, name));
       },
-      onRenameGroup: (track: ConversationTrack, groupId: string, name: string) => {
-        persistGroups(renameConversationGroup(groups, track, groupId, name));
+      onRenameGroup: (track: ConversationTrack, groupId: string, name: string, workspaceId?: string) => {
+        updateWorkspaceGroups(workspaceId, current => renameConversationGroup(current, track, groupId, name));
       },
-      onDeleteGroup: (track: ConversationTrack, groupId: string) => {
-        persistGroups(deleteConversationGroup(groups, track, groupId));
+      onDeleteGroup: (track: ConversationTrack, groupId: string, workspaceId?: string) => {
+        updateWorkspaceGroups(workspaceId, current => deleteConversationGroup(current, track, groupId));
       },
-      onToggleGroupCollapsed: (track: ConversationTrack, groupId: string) => {
-        persistGroups(toggleConversationGroupCollapsed(groups, track, groupId));
+      onToggleGroupCollapsed: (track: ConversationTrack, groupId: string, workspaceId?: string) => {
+        updateWorkspaceGroups(workspaceId, current => toggleConversationGroupCollapsed(current, track, groupId));
       },
-      onMoveToGroup: (track: ConversationTrack, conversationId: string, groupId: string | null) => {
-        persistGroups(moveConversationToGroup(groups, track, conversationId, groupId));
+      onMoveToGroup: (track: ConversationTrack, conversationId: string, groupId: string | null, workspaceId?: string) => {
+        updateWorkspaceGroups(workspaceId ?? data.conversations.find(c => c.id === conversationId)?.workspaceId, current => moveConversationToGroup(current, track, conversationId, groupId));
       },
       onToggleMultiSelect: () => {
         setMultiSelect((v) => !v);
@@ -3852,8 +3893,10 @@ function ShellAppInner() {
       },
     }),
     [
-      focusConversation,
-      groups,
+      openConversationById,
+      selectWorkspace,
+      updateWorkspaceGroups,
+      data.conversations,
       handleArchive,
       handleBulkArchive,
       handleBulkDelete,
@@ -3867,9 +3910,36 @@ function ShellAppInner() {
       handleTogglePin,
       handleUnarchive,
       nav.sidebarCollapsed,
-      persistGroups,
       sidebarWidth,
     ],
+  );
+
+  const headerConversation = visibleConversations.find((conversation) => conversation.id === nav.selectedConversationId);
+  const workspaceHeader = (
+    <TopBar
+            chatLayout={nav.stage === 'talk'}
+            chatTitle={headerConversation ? headerConversation.title || targetName(headerConversation, data.agents, data.teams, data.modelNames, modelOverrides) : '新对话'}
+            workspaces={data.workspaces}
+            activeWorkspaceId={activeWorkspaceId}
+            sidebarCollapsed={nav.sidebarCollapsed}
+            contextStage={nav.stage === 'talk' || nav.stage === 'settings' ? undefined : nav.stage}
+            onSelectWorkspace={selectWorkspace}
+            onOpenFolder={() => void handleOpenFolder()}
+            onCreateWorkspace={handleCreateWorkspace}
+            onUpdateWorkspace={handleUpdateWorkspace}
+            onReorderWorkspaces={handleReorderWorkspaces}
+            onSetWorkspaceHidden={handleSetWorkspaceHidden}
+            onDeleteWorkspace={handleDeleteWorkspace}
+            onToggleSidebar={() => setNav((n) => toggleSidebar(n))}
+            onPickFolder={handlePickFolder}
+            onOpenTerminal={() => handleOpenTerminalInPane(activePaneLayout?.focusedPaneId)}
+            canOpenTerminal={Boolean(activeProjectFolder)}
+            bottomWorkbenchOpen={activeWorkbenchLayout?.bottom.open ?? false}
+            rightWorkbenchOpen={activeWorkbenchLayout?.right.open ?? false}
+            onToggleBottomWorkbench={() => handleToggleWorkbench('bottom')}
+            onToggleRightWorkbench={() => handleToggleWorkbench('right')}
+            workspaceActivity={workspaceActivity}
+          />
   );
 
   return (
@@ -3882,18 +3952,21 @@ function ShellAppInner() {
           width={sidebarWidth || SIDEBAR_WIDTH_DEFAULT}
           collapsed={nav.sidebarCollapsed}
           settingsOpen={settingsOpen}
-          conversations={visibleConversations}
+          conversations={sidebarConversations}
           agents={data.agents}
           teams={data.teams}
           modelNames={data.modelNames}
           modelOverrides={modelOverrides}
           kernelOverrides={kernelOverrides}
           groups={groups}
+          workspaceGroups={sidebarWorkspaceGroups}
           bootState={bootState}
           bootError={bootError}
           activeWorkspaceId={activeWorkspaceId}
           workspaces={data.workspaces}
           onEnterAgentWorkspace={enterAgentWorkspace}
+          onSelectWorkspace={selectWorkspace}
+          workspaceActivity={workspaceActivity}
           onAgentChat={handleAgentChat}
           onAgentsRefresh={refresh}
           multiSelect={multiSelect}
@@ -3930,28 +4003,7 @@ function ShellAppInner() {
         >
           {/* Workspace tabs live inside the stage board (NewMax mid-stage),
               not as a full-window chrome bar above the pure sidebar. */}
-          <TopBar
-            workspaces={data.workspaces}
-            activeWorkspaceId={activeWorkspaceId}
-            sidebarCollapsed={nav.sidebarCollapsed}
-            contextStage={nav.stage === 'talk' || nav.stage === 'settings' ? undefined : nav.stage}
-            onSelectWorkspace={selectWorkspace}
-            onOpenFolder={() => void handleOpenFolder()}
-            onCreateWorkspace={handleCreateWorkspace}
-            onUpdateWorkspace={handleUpdateWorkspace}
-            onReorderWorkspaces={handleReorderWorkspaces}
-            onSetWorkspaceHidden={handleSetWorkspaceHidden}
-            onDeleteWorkspace={handleDeleteWorkspace}
-            onToggleSidebar={() => setNav((n) => toggleSidebar(n))}
-            onPickFolder={handlePickFolder}
-            onOpenTerminal={() => handleOpenTerminalInPane(activePaneLayout?.focusedPaneId)}
-            canOpenTerminal={Boolean(activeProjectFolder)}
-            bottomWorkbenchOpen={activeWorkbenchLayout?.bottom.open ?? false}
-            rightWorkbenchOpen={activeWorkbenchLayout?.right.open ?? false}
-            onToggleBottomWorkbench={() => handleToggleWorkbench('bottom')}
-            onToggleRightWorkbench={() => handleToggleWorkbench('right')}
-            workspaceActivity={workspaceActivity}
-          />
+          {nav.stage !== 'talk' ? workspaceHeader : null}
           <div className="shell-stage-stack">
             <KeepAliveLayer
               active={nav.stage === 'talk'}
@@ -3969,6 +4021,7 @@ function ShellAppInner() {
                     }
                     onPointerDownCapture={() => setWorkspaceChromeFocus('primary')}
                   >
+                    {nav.stage === 'talk' ? workspaceHeader : null}
                     {shouldRenderWallpaperReadingLayers ? <WallpaperReadingLayers /> : null}
                     {activePaneLayout && hasOpenPaneTabs ? (
                       <WorkspacePaneHost
@@ -4152,6 +4205,8 @@ function ShellAppInner() {
                               }}
                             >
                               <ConversationTabs
+                                hideConversationTabs
+                                compactHeader={Object.keys(activePaneLayout.panes).length === 1 && pane.tabs.every(tab => tab.type === 'conversation')}
                                 paneId={pane.id}
                                 focused={focused}
                                 showAddButton={workspaceChromeFocus === 'primary' && focused}
@@ -4508,6 +4563,7 @@ function ShellAppInner() {
                     activeWorkbenchLayout.right.tabs.length > 0) ? (
                     <WorkspaceWorkbench
                       placement="right"
+                      chatLayout
                       open={activeWorkbenchLayout.right.open}
                       focused={workspaceChromeFocus === 'right'}
                       scope={activeWorkbenchLayout.right}
@@ -4652,9 +4708,6 @@ function ShellAppInner() {
                 }}
               />
             </KeepAliveLayer>
-            <KeepAliveLayer active={nav.stage === 'design-system'} className="shell-stage-layer" testId="stage-design-system">
-              <DesignSystemPage />
-            </KeepAliveLayer>
             <KeepAliveLayer
               active={nav.stage === 'activity'}
               className="shell-stage-layer"
@@ -4692,6 +4745,7 @@ function ShellAppInner() {
           agents={data.agents}
           teams={data.teams}
           models={data.models}
+          onResultsViewed={acknowledgeAgentResults}
           navigation={agentNavigation?.workspaceId === (activeWorkspaceId ?? PROJECTLESS_SCOPE) ? agentNavigation : undefined}
           onNavigationHandled={() => setAgentNavigation(undefined)}
           loading={bootState === 'loading'}
@@ -4718,7 +4772,7 @@ function ShellAppInner() {
             onGoToAbilities={() => { onBack(); exitAgentWorkspace(); handleSelectStage('abilities'); }}
             skillCatalogRevision={skillCatalogRevision}
           />}
-          renderLegacyConversation={(conversation, onEditAgent, agents) => <ChatView agentWorkspace onEditAgent={onEditAgent}
+          renderLegacyConversation={(conversation, onEditAgent, agents, onResultsViewed) => <ChatView onResultsViewed={onResultsViewed} agentWorkspace onEditAgent={onEditAgent}
             key={conversation.id}
             conversation={runtimeConversation(conversation)}
             modelName={resolveTargetName(conversation)}
@@ -5001,7 +5055,7 @@ export function EmptyTalk(props: {
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [voiceInputActive, setVoiceInputActive] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const composeRef = useRef<HTMLDivElement>(null);
+  const composeRef = useRef<HTMLDivElement | null>(null);
   const slashListRef = useRef<HTMLDivElement>(null);
   const dismissedSlashTextRef = useRef<string | null>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
@@ -5781,6 +5835,159 @@ export function EmptyTalk(props: {
       />
     ) : undefined;
 
+  // Same runtime controls, split between the compact input and its status bar.
+  const pillAttachControl = (
+    <ComposerAddControl
+      variant="empty"
+      open={composerAddOpen}
+      inputRef={inputRef}
+      composerRef={composeRef}
+      value={props.draft}
+      onValueChange={props.onDraftChange}
+      onOpenChange={setComposerAddOpen}
+      onBeforeOpen={() => {
+        setSlash(null);
+        setSlashIndex(-1);
+        setMcpMenuOpen(false);
+        setPermissionMenuOpen(false);
+        setSkillMenuOpen(false);
+        setModelMenuOpen(false);
+      }}
+      workspaceFolder={props.workspaceFolder}
+      selectedFilePaths={attachments
+        .filter((attachment) => attachment.kind !== 'image')
+        .map((attachment) => attachment.path)}
+      networkEnabled={networkEnabled}
+      permissionMode={permissionMode}
+      showPermissionItems={composerToolbar.collapseLevel >= PERMISSION_MODE_COLLAPSED_TOOLBAR_LEVEL}
+      disabled={props.sending}
+      attachDisabled={
+        imageUploads.items.filter((attachment) => attachment.kind === 'image').length >= 8
+      }
+      onAttach={() => imageInputRef.current?.click()}
+      onPlan={() => toggleDraftMode('plan')}
+      onGoal={() => toggleDraftMode('goal')}
+      onNetworkChange={setNetworkEnabled}
+      onPermissionChange={setPermissionMode}
+      onFile={(file) =>
+        setAttachments((current) =>
+          current.some((attachment) => attachment.path === file.path)
+            ? removeAttachment(current, file.path)
+            : addAttachment(current, {
+                path: file.path,
+                name: file.name || fileNameFromPath(file.path),
+                kind: file.kind,
+              }),
+        )
+      }
+      triggerTestId="empty-compose-add-trigger"
+      menuTestId="empty-compose-add-menu"
+    />
+  );
+  const pillStatusControls = (
+    <>
+      {helpCommandPreview ? (
+        <ComposerActiveModePill
+          mode="help"
+          onClick={() => {
+            const next = props.draft.replace(/^\s*\/help(?:\s+|$)/i, '');
+            props.onDraftChange(next);
+            window.requestAnimationFrame(() => {
+              inputRef.current?.focus();
+              inputRef.current?.setSelectionRange(next.length, next.length);
+            });
+          }}
+        />
+      ) : null}
+      {planCommandPreview || interactionMode === 'plan' ? (
+        <ComposerActiveModePill mode="plan" onClick={() => toggleDraftMode('plan')} />
+      ) : null}
+      {goalCommandPreview ? (
+        <ComposerActiveModePill mode="goal" onClick={() => toggleDraftMode('goal')} />
+      ) : null}
+      <div
+        ref={composerToolbar.permissionRef}
+        className="shell-compose__tool-wrap"
+        data-testid="empty-compose-permission-control"
+      >
+        <PermissionTrigger
+          ref={permissionButtonRef}
+          value={permissionMode}
+          open={permissionMenuOpen}
+          onClick={() => {
+            setModelMenuOpen(false);
+            setPermissionMenuOpen((value) => !value);
+          }}
+        />
+        <PermissionMenu
+          open={permissionMenuOpen}
+          value={permissionMode}
+          anchorEl={permissionButtonRef.current}
+          onClose={() => setPermissionMenuOpen(false)}
+          onChange={setPermissionMode}
+        />
+      </div>
+      <div className="shell-compose__tool-wrap" data-testid="empty-compose-skill-control">
+        <TurnSkillControl
+          owner={skillOwner}
+          workspaceId={props.workspaceId}
+          open={skillMenuOpen}
+          selectedSkillVersionIds={selectedSkillVersionIds}
+          onOpenChange={(open) => {
+            if (open) {
+              setPermissionMenuOpen(false);
+              setModelMenuOpen(false);
+            }
+            setSkillMenuOpen(open);
+          }}
+          onChange={updateSelectedSkillVersionIds}
+        />
+      </div>
+    </>
+  );
+  const pillKernelStatus = (
+    <>
+      {kernelOverride !== 'native'
+        ? (() => {
+            const label = resolveKernelDisplayName(kernelOverride, activeKernel?.name);
+            const logo = resolveKernelBrandLogo(activeKernel ? activeKernel.icon : kernelOverride);
+            return (
+              <span
+                className={`shell-kernel-chip${logo ? ' shell-kernel-chip--logo' : ''}`}
+                data-testid="empty-compose-kernel-chip"
+                title={`内核：${label}`}
+              >
+                {logo ? <BrandLogoMark logo={logo} size={18} /> : label}
+              </span>
+            );
+          })()
+        : null}
+    </>
+  );
+  const pillIdentityStatus = (
+    <>
+      <ComposerIdentity
+        track={draftTrack}
+        label={identityLabel}
+        avatar={identityAvatar}
+        testId="empty-compose-identity"
+      />
+      <ContextRing
+        showUsageLabel
+        used={Math.round(props.draft.length / 4)}
+        limit={composerContextWindow}
+        modelContextWindow={composerConfiguredContextWindow}
+        contextWindowSource={composerContextWindowSource}
+        kernelId={kernelOverride === 'native' ? undefined : kernelOverride}
+        kernelLabel={
+          kernelOverride === 'native'
+            ? undefined
+            : resolveKernelDisplayName(kernelOverride, activeKernel?.name)
+        }
+      />
+    </>
+  );
+
   return (
     <div className="shell-chat-column shell-chat-column--empty-newmax flex min-h-0 flex-1 flex-col justify-center bg-chat">
       {props.hasWorkspace && props.models.length === 0 ? (
@@ -5801,6 +6008,7 @@ export function EmptyTalk(props: {
         >
           {greeting}
         </h1>
+        <p className="shell-welcome-description">描述你的想法，或选择一个场景开始。</p>
       </div>
 
       <div
@@ -5811,6 +6019,9 @@ export function EmptyTalk(props: {
         <div className="shell-chat-content shell-chat-content--composer mx-auto">
           <NewMaxComposerFrame
             variant="empty"
+            presentation="pill"
+            leadingAction={<div ref={composerToolbar.leftRef}>{pillAttachControl}</div>}
+            statusBar={<div className="shell-ai-composer-status"><div className="shell-ai-composer-status__controls">{pillStatusControls}</div><div className="shell-ai-composer-status__identity">{pillIdentityStatus}{pillKernelStatus}</div></div>}
             contextBar={
               props.workspaceFolder && props.onOpenGit ? (
                 <ComposerGitBar
@@ -5821,7 +6032,7 @@ export function EmptyTalk(props: {
               ) : null
             }
             modeBanner={emptyModeBanner}
-            innerRef={composeRef}
+            innerRef={(element) => { composeRef.current = element; composerToolbar.outerRef.current = element; }}
             className={`relative ${dragOver ? 'is-dragover' : ''}`}
             data-testid="empty-compose"
             data-layout="tall"
@@ -5883,7 +6094,7 @@ export function EmptyTalk(props: {
                 attachments={imageUploads.items}
                 selectedSkills={selectedSlashSkills}
                 disabled={!props.hasWorkspace || props.sending}
-                minHeight={72}
+                minHeight={36}
                 maxHeight={200}
                 chatFontSize={appearance.chatFontSize}
                 serifFontFamily={appearance.useSerifFont ? 'var(--font-serif)' : 'var(--font-sans)'}
@@ -5975,138 +6186,10 @@ export function EmptyTalk(props: {
               onChange={handleImageInputChange}
               tabIndex={-1}
             />
-            <div ref={composerToolbar.outerRef} className="shell-compose__bar">
-              <div ref={composerToolbar.leftRef} className="shell-compose__bar-left">
-                <ComposerAddControl
-                  variant="empty"
-                  open={composerAddOpen}
-                  inputRef={inputRef}
-                  composerRef={composeRef}
-                  value={props.draft}
-                  onValueChange={props.onDraftChange}
-                  onOpenChange={setComposerAddOpen}
-                  onBeforeOpen={() => {
-                    setSlash(null);
-                    setSlashIndex(-1);
-                    setMcpMenuOpen(false);
-                    setPermissionMenuOpen(false);
-                    setSkillMenuOpen(false);
-                    setModelMenuOpen(false);
-                  }}
-                  workspaceFolder={props.workspaceFolder}
-                  selectedFilePaths={attachments
-                    .filter((attachment) => attachment.kind !== 'image')
-                    .map((attachment) => attachment.path)}
-                  networkEnabled={networkEnabled}
-                  permissionMode={permissionMode}
-                  showPermissionItems={
-                    composerToolbar.collapseLevel >= PERMISSION_MODE_COLLAPSED_TOOLBAR_LEVEL
-                  }
-                  disabled={props.sending}
-                  attachDisabled={
-                    imageUploads.items.filter((attachment) => attachment.kind === 'image').length >= 8
-                  }
-                  onAttach={() => imageInputRef.current?.click()}
-                  onPlan={() => toggleDraftMode('plan')}
-                  onGoal={() => toggleDraftMode('goal')}
-                  onNetworkChange={setNetworkEnabled}
-                  onPermissionChange={setPermissionMode}
-                  onFile={(file) =>
-                    setAttachments((current) =>
-                      current.some((attachment) => attachment.path === file.path)
-                        ? removeAttachment(current, file.path)
-                        : addAttachment(current, {
-                            path: file.path,
-                            name: file.name || fileNameFromPath(file.path),
-                            kind: file.kind,
-                          }),
-                    )
-                  }
-                  triggerTestId="empty-compose-add-trigger"
-                  menuTestId="empty-compose-add-menu"
-                />
-                {helpCommandPreview ? (
-                  <ComposerActiveModePill
-                    mode="help"
-                    onClick={() => {
-                      const next = props.draft.replace(/^\s*\/help(?:\s+|$)/i, '');
-                      props.onDraftChange(next);
-                      window.requestAnimationFrame(() => {
-                        inputRef.current?.focus();
-                        inputRef.current?.setSelectionRange(next.length, next.length);
-                      });
-                    }}
-                  />
-                ) : null}
-                {planCommandPreview || interactionMode === 'plan' ? (
-                  <ComposerActiveModePill mode="plan" onClick={() => toggleDraftMode('plan')} />
-                ) : null}
-                {goalCommandPreview ? (
-                  <ComposerActiveModePill mode="goal" onClick={() => toggleDraftMode('goal')} />
-                ) : null}
-                <div
-                  ref={composerToolbar.permissionRef}
-                  className="shell-compose__tool-wrap"
-                  data-testid="empty-compose-permission-control"
-                  hidden={composerToolbar.collapseLevel >= PERMISSION_MODE_COLLAPSED_TOOLBAR_LEVEL}
-                >
-                  <PermissionTrigger
-                    ref={permissionButtonRef}
-                    value={permissionMode}
-                    open={permissionMenuOpen}
-                    onClick={() => {
-                      setModelMenuOpen(false);
-                      setPermissionMenuOpen((value) => !value);
-                    }}
-                  />
-                  <PermissionMenu
-                    open={permissionMenuOpen}
-                    value={permissionMode}
-                    anchorEl={permissionButtonRef.current}
-                    onClose={() => setPermissionMenuOpen(false)}
-                    onChange={setPermissionMode}
-                  />
-                </div>
-                <div
-                  className="shell-compose__tool-wrap"
-                  data-testid="empty-compose-skill-control"
-                  hidden={composerToolbar.collapseLevel >= SKILL_COLLAPSED_TOOLBAR_LEVEL}
-                >
-                  <TurnSkillControl
-                    owner={skillOwner}
-                    workspaceId={props.workspaceId}
-                    open={skillMenuOpen}
-                    selectedSkillVersionIds={selectedSkillVersionIds}
-                    onOpenChange={(open) => {
-                      if (open) {
-                        setPermissionMenuOpen(false);
-                        setModelMenuOpen(false);
-                      }
-                      setSkillMenuOpen(open);
-                    }}
-                    onChange={updateSelectedSkillVersionIds}
-                  />
-                </div>
-              </div>
+            <div  className="shell-compose__bar">
+
               <div ref={composerToolbar.rightRef} className="shell-compose__bar-right">
-                <ComposerIdentity
-                  track={draftTrack}
-                  label={identityLabel}
-                  avatar={identityAvatar}
-                  testId="empty-compose-identity"
-                />
-                <ContextRing
-                  used={Math.round(props.draft.length / 4)}
-                  limit={composerContextWindow}
-                  modelContextWindow={composerConfiguredContextWindow}
-                  contextWindowSource={composerContextWindowSource}
-                  kernelId={kernelOverride === 'native' ? undefined : kernelOverride}
-                  kernelLabel={
-                    kernelOverride === 'native'
-                      ? undefined
-                      : resolveKernelDisplayName(kernelOverride, activeKernel?.name)
-                  }
-                />
+
                 <div className="shell-compose__tool-wrap">
                   <ModelPickerMenu
                     open={modelMenuOpen}
@@ -6159,25 +6242,10 @@ export function EmptyTalk(props: {
                       setReasoningEffort(value);
                     }}
                   />
-                  {kernelOverride !== 'native'
-                    ? (() => {
-                        const label = resolveKernelDisplayName(kernelOverride, activeKernel?.name);
-                        const logo = resolveKernelBrandLogo(
-                          activeKernel ? activeKernel.icon : kernelOverride,
-                        );
-                        return (
-                          <span
-                            className={`shell-kernel-chip${logo ? ' shell-kernel-chip--logo' : ''}`}
-                            data-testid="empty-compose-kernel-chip"
-                            title={`内核：${label}`}
-                          >
-                            {logo ? <BrandLogoMark logo={logo} size={18} /> : label}
-                          </span>
-                        );
-                      })()
-                    : null}
+
                 </div>
                 <ComposerActionSlot
+                  presentation="paired"
                   testIdPrefix="empty-compose"
                   hasContent={Boolean(props.draft.trim() || imageUploads.items.length > 0)}
                   running={false}

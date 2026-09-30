@@ -9,7 +9,11 @@ import { DialogProvider } from './Dialog.js';
 import { writeAgentContactGroups } from './agent-contacts.js';
 import { projectlessWorkspace, PROJECTLESS_SCOPE } from './projectless-scope.js';
 vi.mock('./AgentAvatarView.js', () => ({
-  AgentAvatarView: ({ name }: { name: string }) => <span>{name.slice(0, 1)}</span>,
+  AgentAvatarView: ({ name, state, animate }: { name: string; state?: string; animate?: boolean }) => (
+    <span data-testid={`avatar-${name}`} data-state={state} data-animate={animate ? 'true' : 'false'}>
+      {name.slice(0, 1)}
+    </span>
+  ),
 }));
 const agent = {
   id: 'a',
@@ -51,7 +55,7 @@ const defaults = (): AgentContactsSidebarProps => ({
   agents: [agent, scoped],
   workspaces,
   workspaceId: 'ws-a',
-  conversations: [],
+  conversations: ['ws-a', 'ws-b', PROJECTLESS_SCOPE].flatMap(workspaceId => ['a', 'b'].map(targetRef => ({ id: `${workspaceId}-${targetRef}`, workspaceId, targetRef, track: 'agent', lastMessageAt: '2026-09-20', createdAt: '2026-09-20' } as Conversation))),
   onChat: vi.fn(),
   onOpenConversation: vi.fn(),
   onManage: vi.fn(),
@@ -102,9 +106,31 @@ describe('AgentContactsSidebar', () => {
     expect(screen.queryByLabelText('运行中')).toBeNull();
     const button = screen.getByRole('button', { name: '与 前端工程师 聊天' });
     expect(button.getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByTestId('avatar-前端工程师').getAttribute('data-state')).toBe('idle');
+    expect(screen.getByTestId('avatar-前端工程师').getAttribute('data-animate')).toBe('true');
+    expect(screen.queryByTestId('avatar-质量复审官')).toBeNull();
     fireEvent.click(button);
     expect(props.onChat).toHaveBeenCalledWith('a', 'ws-a');
-    await waitFor(() => expect(screen.getByText('点击激活到此工作区并聊天')).toBeTruthy());
+    expect(screen.queryByText('点击激活到此工作区并聊天')).toBeNull();
+  });
+
+  it('uses the working motion profile while the current agent conversation is running', async () => {
+    const props = defaults();
+    props.conversations = [
+      {
+        id: 'ca',
+        track: 'agent',
+        targetRef: 'a',
+        workspaceId: 'ws-a',
+        lastMessagePreview: '处理中',
+        createdAt: '2026-09-29',
+      },
+    ] as Conversation[];
+    props.conversationActivity = new Map([['ca', { running: true, unread: false }]]);
+    view(props);
+    await waitFor(() => expect(screen.getByLabelText('运行中')).toBeTruthy());
+    expect(screen.getByTestId('avatar-前端工程师').getAttribute('data-state')).toBe('working');
+    expect(screen.getByTestId('avatar-前端工程师').getAttribute('data-animate')).toBe('true');
   });
   it('activates an inactive contact in the current workspace and then opens chat', async () => {
     const props = defaults();
@@ -213,4 +239,10 @@ describe('projectless sidebar activation scope', () => {
     view({ ...defaults(), workspaces: [...workspaces, projectlessWorkspace] });
     expect((await screen.findByRole('alert')).textContent).toContain('真实工作区读取失败');
   });
+});
+
+it('omits newly created agents and empty conversations from chat contacts', () => {
+  view({ ...defaults(), conversations: [{ id: 'empty', workspaceId: 'ws-a', targetRef: 'a', track: 'agent', createdAt: '2026-09-29' } as Conversation] });
+  expect(screen.queryByRole('button', { name: '与 前端工程师 聊天' })).toBeNull();
+  expect(screen.queryByRole('button', { name: '激活并与 质量复审官 聊天' })).toBeNull();
 });

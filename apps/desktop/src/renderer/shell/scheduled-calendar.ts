@@ -12,7 +12,7 @@ export interface CalendarOccurrence {
   task: ScheduledTask;
   start: number;
   end?: number;
-  kind: 'planned' | 'window' | 'history' | 'paused' | 'overdue';
+  kind: 'planned' | 'window' | 'history' | 'paused' | 'overdue' | 'unrecorded';
   status?: ScheduledTaskHistoryEntry['status'];
 }
 
@@ -45,6 +45,27 @@ export function calendarDays(date: Date, view: CalendarView): Date[] {
             7,
         ) * 7;
   return Array.from({ length }, (_, index) => addCalendarDays(start, index));
+}
+
+/** Initial day/week focus only; callers preserve manual scroll on clock and data updates. */
+export function calendarScrollMinute(
+  events: readonly CalendarOccurrence[],
+  rangeStart: number,
+  rangeEnd: number,
+  now: number,
+): number {
+  const minutes = (at: number) => {
+    const date = new Date(at);
+    return date.getHours() * 60 + date.getMinutes();
+  };
+  if (now >= rangeStart && now < rangeEnd) return Math.max(0, minutes(now) - 60);
+  const first = events
+    .filter((event) => event.start >= rangeStart && event.start < rangeEnd)
+    .reduce<number | undefined>(
+      (earliest, event) => (earliest === undefined ? event.start : Math.min(earliest, event.start)),
+      undefined,
+    );
+  return first === undefined ? 8 * 60 : Math.max(0, minutes(first) - 60);
 }
 
 export function localDateTimeInput(date: Date): string {
@@ -102,25 +123,33 @@ export function calendarOccurrences(
         if (next >= now) push(next, 'planned');
         continue;
       }
-      const lower = Math.max(start, now);
-      let cursor = Number.isFinite(next)
-        ? next
-        : Date.parse(initialNextRunAt(task, new Date(lower - 1)) ?? '');
-      if (cursor < lower) {
-        if (task.rule.kind === 'every' && !task.rule.windowStart) {
-          const interval = Math.max(5, task.rule.intervalMinutes) * 60_000;
-          cursor += Math.ceil((lower - cursor) / interval) * interval;
-        } else
-          cursor = Date.parse(
-            computeNextRunAt(task, new Date(lower - 1).toISOString(), new Date(lower - 1)) ?? '',
-          );
+      // Keep past deterministic slots visible, but never fabricate run results.
+      // The current rule is a projection, not a historical schedule revision.
+      const created = Date.parse(task.createdAt);
+      const lower = Math.max(start, Number.isFinite(created) ? created : start);
+      let cursor: number;
+      if (task.rule.kind === 'every' && !task.rule.windowStart && Number.isFinite(next)) {
+        const interval = Math.max(5, task.rule.intervalMinutes) * 60_000;
+        cursor = next - Math.floor((next - lower) / interval) * interval;
+      } else {
+        cursor = Date.parse(initialNextRunAt(task, new Date(lower - 1)) ?? '');
       }
       let count = 0;
       while (Number.isFinite(cursor) && cursor < end && count < 1200 && events.length < 6000) {
-        if (cursor >= lower) push(cursor, 'planned');
         const after = Date.parse(
           computeNextRunAt(task, new Date(cursor).toISOString(), new Date(cursor)) ?? '',
         );
+        if (cursor >= lower) {
+          if (cursor >= now) push(cursor, 'planned');
+          else if (
+            cursor !== next &&
+            !recorded.some((entry) => {
+              const fired = Date.parse(entry.firedAt);
+              return fired >= cursor && fired < (Number.isFinite(after) ? after : cursor + 60_000);
+            })
+          )
+            push(cursor, 'unrecorded');
+        }
         if (after <= cursor) break;
         cursor = after;
         count++;

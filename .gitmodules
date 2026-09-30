@@ -1,0 +1,3 @@
+[submodule "tools/agentation"]
+	path = tools/agentation
+	url = https://github.com/benjitaylor/agentation.git

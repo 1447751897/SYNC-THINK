@@ -1,3 +1,4 @@
+import { applyWorkbenchAppearance, clearWorkbenchAppearance } from './theme/apply-workbench-appearance.js';
 import mistyForest from './assets/preferences/misty-forest-DEyvF5So.jpg';
 import mistyForestThumb from './assets/preferences/misty-forest-thumb-Cnl_xHtQ.jpg';
 import skylineBlue from './assets/preferences/skyline-blue-C6vjvOi0.jpg';
@@ -516,8 +517,10 @@ export function applyAppearancePreferences(preferences: AppearancePreferences): 
   );
   clearImageThemePresentation(root);
 
+  clearWorkbenchAppearance(root);
   clearDynamicColors(root);
   applyNewmaxSkin(root, preferences, dark);
+  applyWorkbenchAppearance(root, preferences);
 
   const preset = IMAGE_THEME_OPTIONS.find((item) => item.id === preferences.imageThemeId);
   const imageUrl =

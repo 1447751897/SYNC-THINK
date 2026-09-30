@@ -22,7 +22,7 @@ export function isCollaborationPolicy(value: unknown): value is Partial<Collabor
 
 export function isCollaborationTaskDraft(v: unknown): v is CollaborationTaskDraft {
   return object(v) && id(v.assigneeMemberId) && text(v.title) && text(v.instructions)
-    && optional(v.key, id) && optional(v.expectedOutput, (x) => typeof x === 'string' && x.length <= 100_000)
+    && optional(v.key, id) && optional(v.teamParticipantId, id) && optional(v.expectedOutput, (x) => typeof x === 'string' && x.length <= 100_000)
     && optional(v.deliverable, (x) => object(x) && ['document', 'file'].includes(String(x.kind))
       && text(x.title) && (x.kind === 'file' ? text(x.path) : x.path === undefined))
     && optional(v.dependsOnTaskIds, ids) && optional(v.contextRefs, ids)
@@ -41,7 +41,7 @@ export function parseCollaborationCommand(value: unknown): CollaborationCommand 
   if (value.action === 'create') {
     return id(value.clientRequestId) && optional(value.workspaceId, id) && text(value.title)
       && ['model', 'direct', 'group'].includes(String(value.kind)) && ids(value.agentIds)
-      && optional(value.coordinatorAgentId, id) && optional(value.modelId, id) && optional(value.teamId, id)
+      && optional(value.coordinatorAgentId, id) && optional(value.modelId, id) && optional(value.teamId, id) && optional(value.teamIds, ids)
       ? value as unknown as CollaborationCommand : undefined;
   }
   if (!id(value.conversationId)) return undefined;
@@ -52,6 +52,9 @@ export function parseCollaborationCommand(value: unknown): CollaborationCommand 
     case 'promote-team': valid = true; break;
     case 'send': valid = id(value.clientRequestId) && text(value.text)
       && optional(value.recipientMemberIds, ids) && optional(value.replyToMessageId, id)
+      && optional(value.mentions, (v) => Array.isArray(v) && v.length <= 128 && v.every(m => object(m)
+        && id(m.memberId) && text(m.label) && integer(m.start, 0, 100_000) && integer(m.end, 1, 100_000)
+        && Number(m.end) > Number(m.start)))
       && optional(value.expectsResponse, (v) => typeof v === 'boolean'); break;
     case 'start-workflow': valid = id(value.clientRequestId) && text(value.goal)
       && optional(value.originMessageId, id) && optional(value.parentTaskId, id); break;
@@ -62,7 +65,7 @@ export function parseCollaborationCommand(value: unknown): CollaborationCommand 
     case 'retry': valid = id(value.taskId) && id(value.clientRequestId); break;
     case 'retry-message': valid = id(value.messageId) && id(value.clientRequestId); break;
     case 'policy': valid = isCollaborationPolicy(value.policy); break;
-    case 'members': valid = optional(value.addAgentIds, ids) && optional(value.removeMemberIds, ids)
+    case 'members': valid = optional(value.addAgentIds, ids) && optional(value.addTeamIds, ids) && optional(value.expectedTopologyRevision, v => integer(v, 0, Number.MAX_SAFE_INTEGER)) && optional(value.removeMemberIds, ids)
       && optional(value.coordinatorMemberId, id)
       && optional(value.roles, (v) => object(v) && Object.keys(v).length <= 32
         && Object.entries(v).every(([k, role]) => id(k) && typeof role === 'string' && role.length <= 4000)); break;

@@ -52,6 +52,8 @@ export type WorkbenchNewResource =
 
 export interface WorkspaceWorkbenchProps {
   placement: WorkbenchPlacement;
+  /** Desktop main chat exposes the existing changes/browser engines as quick views. */
+  chatLayout?: boolean;
   scope: WorkbenchScope;
   /** When false the panel stays mounted at zero size so open/close can animate. */
   open?: boolean;
@@ -458,6 +460,24 @@ export function WorkspaceWorkbench(props: WorkspaceWorkbenchProps) {
         onKeyDown={resizeWithKeyboard}
       />
 
+      {props.chatLayout && props.placement === 'right' ? (
+        <div className="shell-workbench__quick-views" role="group" aria-label="工作面板视图">
+          <button type="button" aria-pressed={activeTab?.type === 'git' || activeTab?.type === 'review'} disabled={!props.canOpenTerminal} onClick={() => {
+            const tab = props.scope.tabs.find((item) => item.type === 'git') ?? props.scope.tabs.find((item) => item.type === 'review');
+            if (tab) props.onActivateTab(tab.id); else props.onNewResource('git');
+          }}><FileDiff size={15} />更改</button>
+          <button type="button" aria-pressed={activeTab?.type === 'browser'} onClick={() => {
+            const tab = activeTab?.type === 'browser' ? activeTab : props.scope.tabs.find((item) => item.type === 'browser');
+            if (tab) props.onActivateTab(tab.id); else props.onNewResource('browser');
+          }}><Globe size={15} />浏览器</button>
+          <span className="shell-workbench__quick-spacer" />
+          <button type="button" aria-label="在工作面板打开终端" disabled={!props.canOpenTerminal} onClick={() => {
+            const tab = activeTab?.type === 'terminal' ? activeTab : props.scope.tabs.find((item) => item.type === 'terminal');
+            if (tab) props.onActivateTab(tab.id); else props.onNewResource('terminal');
+          }}><SquareTerminal size={15} /></button>
+          <button type="button" aria-label="关闭工作面板" onClick={props.onClose}><X size={15} /></button>
+        </div>
+      ) : null}
       <div
         className="shell-workbench__tabbar"
         data-workspace-inspector-tabbar="true"

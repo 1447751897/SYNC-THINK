@@ -16,7 +16,6 @@ export type ShellStage =
   | 'abilities' // 能力
   | 'tasks' // 定时任务
   | 'activity' // 收件箱（Run 与外部事件）
-  | 'design-system' // 组件库与主题预览
   | 'settings';
 
 export interface ShellNavState {
@@ -56,7 +55,6 @@ export const STAGE_LABELS: Record<ShellStage, string> = {
   tasks: '定时任务',
   activity: '收件箱',
   settings: '设置',
-  'design-system': '组件库',
 };
 
 export function toggleTrack(state: ShellNavState, track: ConversationTrack): ShellNavState {

@@ -1,3 +1,4 @@
+import type { TeamMember, TeamStrategy } from './team-definition.js';
 import type { AgentId, ConversationId, ModelId, TaskId, TeamId, WorkspaceId } from './ids.js';
 import type { InteractionMode } from './chat-plan.js';
 
@@ -5,7 +6,7 @@ import type { InteractionMode } from './chat-plan.js';
 // Agents/teams are global, mutable assets. Permission is NOT configured here:
 // the conversation-level three-mode knob is the only permission surface.
 
-export type TeamStrategy = 'serial' | 'parallel';
+export type { Team, TeamMember, TeamStrategy } from './team-definition.js';
 export type TeamRunStatus = 'running' | 'completed' | 'failed' | 'cancelled';
 export type ConversationTrack = 'model' | 'agent' | 'team';
 export type AgentSource = 'builtin' | 'user';
@@ -42,26 +43,6 @@ export interface GlobalAgent {
   updatedAt: string;
 }
 
-export interface TeamMember {
-  agentId: AgentId;
-  memberOrder: number;
-  role: string;
-  title: string;
-  dependsOn: AgentId[];
-}
-
-export interface Team {
-  id: TeamId;
-  name: string;
-  avatar: string;
-  mission: string;
-  strategy: TeamStrategy;
-  coordinatorAgentId?: AgentId;
-  members: TeamMember[];
-  createdAt: string;
-  updatedAt: string;
-}
-
 /** Frozen team definition captured when a run starts. */
 export interface TeamRosterSnapshot {
   name: string;
@@ -84,7 +65,7 @@ export interface TeamRun {
 export interface Conversation {
   id: ConversationId;
   /** Present only for real multi-participant collaboration conversations. */
-  collaborationKind?: import('./collaboration-chat.js').CollaborationKind;
+  collaborationKind?: import('./conversation-kind.js').CollaborationKind;
   track: ConversationTrack;
   targetRef: string;
   workspaceId?: WorkspaceId;
@@ -102,6 +83,8 @@ export interface Conversation {
   /** Per-conversation context capacity; undefined inherits the selected model. */
   contextWindowOverride?: number;
   lastMessageAt?: string;
+  /** Actual stored chat presence; unlike taskId/recency, excludes empty prepared conversations. */
+  hasMessages?: boolean;
   /** Bounded display text from the latest user/assistant message, never tool/reasoning blocks. */
   lastMessagePreview?: string;
   /**
