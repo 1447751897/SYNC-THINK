@@ -40,13 +40,11 @@ describe('agent workspace contacts', () => {
         conv('group', { title: '创作小队 + 审查员', targetRef: 'a0', collaborationKind: 'group' }),
         conv('team', { track: 'team', targetRef: 'team-a', collaborationKind: 'group', title: '创作小队' }),
       ],
-      groupedAgentIds: new Set(['a0']),
-      teamIds: new Set(['team-a']),
       searchTerm: '',
       order: [],
       pinnedAgentIds: new Set(),
     });
-    expect(contacts.map((item) => item.id)).toEqual([agentContactId('a1'), groupContactId('group')]);
+    expect(contacts.map((item) => item.id)).toEqual([agentContactId('a1'), groupContactId('group'), groupContactId('team')]);
   });
 
   it('keeps pinned contacts above a custom drag order', () => {
@@ -56,8 +54,6 @@ describe('agent workspace contacts', () => {
         conv('older', { targetRef: 'a0', collaborationKind: 'direct' }),
         conv('group', { title: '群聊', collaborationKind: 'group', pinnedAt: '2026-09-29T00:00:00Z' }),
       ],
-      groupedAgentIds: new Set(),
-      teamIds: new Set(),
       searchTerm: '',
       order: [agentContactId('a0'), agentContactId('a1'), groupContactId('group')],
       pinnedAgentIds: new Set(['a1']),
@@ -83,8 +79,29 @@ describe('agent workspace contacts', () => {
 it('hides unchatted and empty draft contacts even when pinned', () => {
   const contacts = buildAgentWorkspaceContacts({
     agents: [agent('a0', '未聊'), agent('a1', '已聊'), agent('a2', '仅草稿')],
-    conversations: [conv('real', { targetRef: 'a1', lastMessageAt: '2026-09-29T00:00:00Z' }), conv('empty', { targetRef: 'a2', taskId: 'prepared-task' as Conversation['taskId'], hasMessages: false })],
-    groupedAgentIds: new Set(), teamIds: new Set(), searchTerm: '', order: [], pinnedAgentIds: new Set(['a0']),
+    conversations: [conv('real', { targetRef: 'a1', lastMessageAt: '2026-09-29T00:00:00Z' }), conv('empty', { targetRef: 'a2', taskId: 'prepared-task' as Conversation['taskId'], hasMessages: false })], searchTerm: '', order: [], pinnedAgentIds: new Set(['a0']),
   });
   expect(contacts.map(item => item.id)).toEqual([agentContactId('a1')]);
+});
+
+
+it('lists every room of the same team before its first message, including legacy team history', () => {
+  const contacts = buildAgentWorkspaceContacts({
+    agents: [agent('a0', '作者')], conversations: [
+      conv('book-a', { track: 'team', targetRef: 'team-a', title: '小说 A', collaborationKind: 'group', hasMessages: false, lastMessageAt: undefined }),
+      conv('book-b', { track: 'team', targetRef: 'team-a', title: '小说 B', collaborationKind: 'group', hasMessages: false, lastMessageAt: undefined }),
+      conv('legacy-team', { track: 'team', targetRef: 'team-a', collaborationKind: undefined }),
+      conv('draft:group', { track: 'team', collaborationKind: 'group' }),
+      conv('archived', { track: 'team', collaborationKind: 'group', archivedAt: 'now' }),
+    ], searchTerm: '', order: [], pinnedAgentIds: new Set(),
+  });
+  expect(contacts.map(contact => contact.id)).toEqual(['group:book-a', 'group:book-b', 'group:legacy-team']);
+});
+
+it("keeps a team member's private chat separate from their task rooms", () => {
+  const contacts = buildAgentWorkspaceContacts({
+    agents: [agent('a0', '作者')], conversations: [conv('private'), conv('book-a', { track: 'team', targetRef: 'team-a', collaborationKind: 'group' })],
+    searchTerm: '', order: [], pinnedAgentIds: new Set(),
+  });
+  expect(contacts.map(contact => contact.id)).toEqual(['agent:a0', 'group:book-a']);
 });

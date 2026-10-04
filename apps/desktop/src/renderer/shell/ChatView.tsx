@@ -1,4 +1,6 @@
+import './board-composer.css';
 import { AgentExecutionStatus } from './AgentExecutionStatus.js';
+import { HOST_SYSTEM_NAME, HostSystemAvatar } from './HostSystemAvatar.js';
 import { AgentWorkspaceAvatar } from './AgentWorkspaceAvatar.js';
 import { useKeepAliveActive } from './KeepAliveLayer.js';
 import { PROJECTLESS_SCOPE } from './projectless-scope.js';
@@ -62,6 +64,7 @@ import {
   FileText,
   Folder,
   Info,
+  ListTree,
   LoaderCircle,
   MessageSquare,
   Puzzle,
@@ -94,7 +97,6 @@ import type {
   ConversationGetContextStatusResponse,
   ConversationListRunTimelineResponse,
   ConversationListMessagesResponse,
-  BrowserHandoffSummary,
   CommentaryTimelineSegment,
   DesktopWaitingCommandSummary,
   PendingToolApprovalSummary,
@@ -119,6 +121,7 @@ import { loadSkillCatalog } from './skill-catalog-loader.js';
 import { resolveKernelBrandLogo, resolveKernelDisplayName } from './brand-icons.js';
 import { useAutoDisclosure } from './auto-disclosure.js';
 import { BrowserHandoffCard, BrowserHandoffQueryError } from './BrowserHandoffCard.js';
+import { useBrowserHandoffs } from './use-browser-handoffs.js';
 import { DesktopWaitingCard, DesktopWaitingQueryError } from './DesktopWaitingCard.js';
 import type { ModelOption } from './NewConversationDialog.js';
 import {
@@ -247,7 +250,7 @@ import {
   type PendingAsk,
 } from './AskQuestionCard.js';
 import { PlanApprovalCard } from './PlanApprovalCard.js';
-import { ToolApprovalCard, type PendingToolApproval } from './ToolApprovalCard.js';
+import { ToolApprovalCard, type PendingToolApproval } from './LazyToolApprovalCard.js';
 import { projectTodoFromEvents } from './todo-projection.js';
 import { DelegatedAgentToolRow, InlineProcessFlow } from './InlineProcessFlow.js';
 import { reconcileProcessItemOutcomes } from './process-item-outcome.js';
@@ -369,6 +372,7 @@ export type {
 } from './conversation-types.js';
 
 import { recentConversationPageCache } from './conversation-page-cache.js';
+import { recentConversationDisplayCache } from './conversation-display-cache.js';
 import {
   captureConversationScrollPosition,
   readConversationScrollPosition,
@@ -380,6 +384,7 @@ import {
 const MAX_MESSAGE_RELOAD_ATTEMPTS = 2;
 export function resetRecentConversationPageCacheForTests(): void {
   recentConversationPageCache.clear();
+  recentConversationDisplayCache.clear();
 }
 const readRecentConversationPage = (key: string) => recentConversationPageCache.read(key);
 const readUsableRecentConversationPage = (key: string) =>
@@ -388,6 +393,35 @@ const cacheRecentConversationPage = (
   key: string,
   page: import('./conversation-page-cache.js').CachedConversationPage,
 ) => recentConversationPageCache.write(key, page);
+
+function conversationDraftToChatMessage(
+  draft: ConversationStreamDraft | null,
+  fallbackSequence: number,
+): ChatMessage | null {
+  if (!draft) return null;
+  const projected = projectTransientAssistantDisplay(draft.text, draft.assistantTimeline);
+  const streamedAnswer = visibleStreamingAnswerText(projected);
+  const visibleAnswer = streamedAnswer.trim() ? streamedAnswer : undefined;
+  return {
+    id: `streaming-${draft.runId ?? fallbackSequence}`,
+    role: 'assistant',
+    text: visibleAnswer ?? '',
+    commentaryText: projected.commentaryText ?? draft.commentaryText,
+    commentarySegments: draft.assistantTimeline ? undefined : draft.commentarySegments,
+    reasoningText: projected.reasoningText ?? draft.reasoningText,
+    assistantTimeline: draft.assistantTimeline,
+    delegatedAgents: draft.delegatedAgents,
+    answerText: visibleAnswer,
+    processItems: projected.processItems,
+    timestamp: draft.timestamp,
+    streaming: !draft.terminal,
+    runId: draft.runId,
+    ...(draft.terminalState && draft.terminalState !== 'completed'
+      ? { terminalState: draft.terminalState }
+      : {}),
+    ...(draft.terminalError ? { terminalError: draft.terminalError } : {}),
+  };
+}
 
 function ConversationLoadingSkeleton() {
   return (
@@ -1198,6 +1232,12 @@ export function ChatView({
 }: ChatViewProps) {
   const layerActive = useKeepAliveActive();
   const active = surfaceActive && layerActive;
+  const historyScopeKey = JSON.stringify([conversation.id, conversation.taskId ?? null]);
+  const [displayScopeKey, setDisplayScopeKey] = useState(historyScopeKey);
+  const cachedDisplay = useMemo(
+    () => recentConversationDisplayCache.read(historyScopeKey),
+    [historyScopeKey],
+  );
   const boundWorkspace = conversation.workspaceId
     ? workspaces.find((workspace) => workspace.workspaceId === conversation.workspaceId)
     : undefined;
@@ -1246,7 +1286,8 @@ export function ChatView({
   // 挂起的模型问询（ask_user_question → 接管 composer 的问询卡片）。
   const [pendingAsk, setPendingAsk] = useState<PendingAsk | undefined>();
   /** Resolved thread for this conversation (from bound task). */
-  const [threadId, setThreadId] = useState<string | undefined>(undefined);
+  const [storedThreadId, setThreadId] = useState<string | undefined>(() => cachedDisplay?.threadId);
+  const threadId = displayScopeKey === historyScopeKey ? storedThreadId : cachedDisplay?.threadId;
   const lastAskEventSeqRef = useRef(0);
   const pendingAskLoadGenerationRef = useRef(0);
   const refreshPendingAsk = useCallback(() => {
@@ -1437,7 +1478,6 @@ export function ChatView({
     setPendingAsk(undefined);
     setConversationPlan(undefined);
     setGoalState(undefined);
-    setThreadId(undefined);
   }, [conversation.id]);
   const [goalSettingsOpen, setGoalSettingsOpen] = useState(false);
   const [goalSettingsSubmitting, setGoalSettingsSubmitting] = useState(false);
@@ -1571,7 +1611,6 @@ export function ChatView({
     }
   }, []);
   /** Paginated message store state. */
-  const historyScopeKey = JSON.stringify([conversation.id, conversation.taskId ?? null]);
   const historyScopeRef = useRef({ key: historyScopeKey });
   if (historyScopeRef.current.key !== historyScopeKey)
     historyScopeRef.current = { key: historyScopeKey };
@@ -1599,8 +1638,15 @@ export function ChatView({
     historyScopeKey,
   );
   const refreshNavigationDirectory = navigationDirectory.refresh;
-  const [runProcessById, setRunProcessById] = useState<Map<string, RunProcessView>>(
-    () => new Map(),
+  const [storedRunProcessById, setRunProcessById] = useState<Map<string, RunProcessView>>(
+    () => new Map(cachedDisplay?.runProcesses),
+  );
+  const runProcessById = useMemo(
+    () =>
+      displayScopeKey === historyScopeKey
+        ? storedRunProcessById
+        : new Map(cachedDisplay?.runProcesses),
+    [cachedDisplay, displayScopeKey, historyScopeKey, storedRunProcessById],
   );
   const {
     loader: runProcessLoader,
@@ -1609,7 +1655,9 @@ export function ChatView({
   } = useRunProcessHistoryLoader(String(conversation.id), (process) => {
     setRunProcessById((previous) => updateRunProcessMap(previous, process));
   });
-  const loadedMessagesConversationIdRef = useRef<string | undefined>(undefined);
+  const loadedMessagesConversationIdRef = useRef<string | undefined>(
+    initialCachedPage || cachedDisplay ? String(conversation.id) : undefined,
+  );
   /** 当前 durable 列表的条数（供「要不要补拉」判断读取最新值，不进依赖）。 */
   const loadedMessagesCountRef = useRef(0);
   const loadedMessagesScopeKeyRef = useRef(historyScopeKey);
@@ -1644,10 +1692,18 @@ export function ChatView({
   const [loadingMore, setLoadingMore] = useState(false);
   /** Whether the initial page load has completed (success or failure). */
   const [initialLoaded, setInitialLoaded] = useState(Boolean(initialCachedPage));
+  const [messageLoadFailure, setMessageLoadFailure] = useState<{
+    scopeKey: string;
+    text: string;
+  } | null>(null);
   const [durableTaskPlan, setDurableTaskPlan] = useState<{
     conversationId: string;
     state: NonNullable<ConversationListMessagesResponse['taskPlan']>;
-  }>();
+  } | undefined>(() =>
+    cachedDisplay?.taskPlan
+      ? { conversationId: String(conversation.id), state: cachedDisplay.taskPlan }
+      : undefined,
+  );
   /** Runtime-owned snapshot used by the ring and compact threshold. */
   const [contextStatus, setContextStatus] = useState<ConversationGetContextStatusResponse | null>(
     null,
@@ -1659,15 +1715,30 @@ export function ChatView({
   const [durableUsageSummary, setDurableUsageSummary] = useState<UsageSummaryResponse | null>(null);
   const usageSummaryLoadGenerationRef = useRef(0);
   /** Streaming message accumulated from the transient stream (durable delta is fallback only). */
-  const [streamingMessage, setStreamingMessage] = useState<ChatMessage | null>(null);
-  const transientDraftRef = useRef<ConversationStreamDraft | null>(null);
-  const transientFrameQueueRef = useRef<ConversationDisplayQueueItem[]>([]);
+  const [storedStreamingMessage, setStreamingMessage] = useState<ChatMessage | null>(
+    () =>
+      conversationDraftToChatMessage(
+        cachedDisplay?.draft ?? null,
+        cachedDisplay?.lastTransientSequence ?? 0,
+      ),
+  );
+  const streamingMessage =
+    displayScopeKey === historyScopeKey
+      ? storedStreamingMessage
+      : conversationDraftToChatMessage(
+          cachedDisplay?.draft ?? null,
+          cachedDisplay?.lastTransientSequence ?? 0,
+        );
+  const transientDraftRef = useRef<ConversationStreamDraft | null>(cachedDisplay?.draft ?? null);
+  const transientFrameQueueRef = useRef<ConversationDisplayQueueItem[]>([
+    ...(cachedDisplay?.pendingDisplayQueue ?? []),
+  ]);
   const transientFrameFlushRef = useRef<number | null>(null);
   const transientTerminalEffectsRef = useRef<(runId: string) => void>(() => undefined);
   /** Last durable event sequence consumed by the fallback streaming bridge. */
-  const lastConsumedEventSequenceRef = useRef(0);
+  const lastConsumedEventSequenceRef = useRef(cachedDisplay?.lastDurableSequence ?? 0);
   /** Thread-local transient cursor, preserved across Runtime reconnects within this ChatView. */
-  const lastTransientSequenceRef = useRef(0);
+  const lastTransientSequenceRef = useRef(cachedDisplay?.lastTransientSequence ?? 0);
   /** Live subscription availability: fallback durable deltas are consumed only when false. */
   const transientStreamHealthyRef = useRef(false);
   /** resetRequired pins this ChatView to durable fallback until it resubscribes cleanly. */
@@ -1675,44 +1746,15 @@ export function ChatView({
   /** Forces fallback replay after a reset/subscribe failure even if no new durable event arrived. */
   const [transientFallbackEpoch, setTransientFallbackEpoch] = useState(0);
   /** Guards against processing events with a stale threadId after switching chats. */
-  const threadConversationIdRef = useRef<string | undefined>(undefined);
+  const threadConversationIdRef = useRef<string | undefined>(
+    cachedDisplay?.threadId ? String(conversation.id) : undefined,
+  );
   /** Invalidates in-flight durable message reads after a refresh or conversation switch. */
   const messageLoadGenerationRef = useRef(0);
   const renderTransientDraft = useCallback(
     (draft: ConversationStreamDraft | null, fallbackSequence: number) => {
       transientDraftRef.current = draft;
-      const projected = draft
-        ? projectTransientAssistantDisplay(draft.text, draft.assistantTimeline)
-        : {
-            answerText: undefined as string | undefined,
-            pendingText: '',
-            processItems: undefined,
-          };
-      const streamedAnswer = visibleStreamingAnswerText(projected);
-      const visibleAnswer = streamedAnswer.trim() ? streamedAnswer : undefined;
-      setStreamingMessage(
-        draft
-          ? {
-              id: `streaming-${draft.runId ?? fallbackSequence}`,
-              role: 'assistant',
-              text: visibleAnswer ?? '',
-              commentaryText: projected.commentaryText ?? draft.commentaryText,
-              commentarySegments: draft.assistantTimeline ? undefined : draft.commentarySegments,
-              reasoningText: projected.reasoningText ?? draft.reasoningText,
-              assistantTimeline: draft.assistantTimeline,
-              delegatedAgents: draft.delegatedAgents,
-              answerText: visibleAnswer,
-              processItems: projected.processItems,
-              timestamp: draft.timestamp,
-              streaming: !draft.terminal,
-              runId: draft.runId,
-              ...(draft.terminalState && draft.terminalState !== 'completed'
-                ? { terminalState: draft.terminalState }
-                : {}),
-              ...(draft.terminalError ? { terminalError: draft.terminalError } : {}),
-            }
-          : null,
-      );
+      setStreamingMessage(conversationDraftToChatMessage(draft, fallbackSequence));
     },
     [],
   );
@@ -1803,6 +1845,25 @@ export function ChatView({
       transientFrameFlushRef.current = null;
     }
   }, []);
+  useLayoutEffect(() => {
+    if (displayScopeKey !== historyScopeKey) return;
+    recentConversationDisplayCache.write(historyScopeKey, {
+      threadId,
+      draft: transientDraftRef.current,
+      runProcesses: runProcessById,
+      lastTransientSequence: lastTransientSequenceRef.current,
+      lastDurableSequence: lastConsumedEventSequenceRef.current,
+      pendingDisplayQueue: transientFrameQueueRef.current,
+      taskPlan:
+        durableTaskPlan?.conversationId === String(conversation.id)
+          ? durableTaskPlan.state
+          : undefined,
+    });
+  });
+  useEffect(() => {
+    if (threadId && transientFrameQueueRef.current.length > 0)
+      scheduleTransientFrameFlush('immediate');
+  }, [historyScopeKey, scheduleTransientFrameFlush, threadId]);
   /** Active / slash-command query (null = menu closed). Mutually exclusive with @. */
   const [slash, setSlash] = useState<SlashQuery | null>(null);
   const [slashIndex, setSlashIndex] = useState(-1);
@@ -1879,10 +1940,34 @@ export function ChatView({
     loadingMoreRef.current = false;
     setRenderWindowTargetId(undefined);
     setInitialLoaded(Boolean(readUsableRecentConversationPage(historyScopeRef.current.key)));
-    setDurableTaskPlan(undefined);
-    loadedMessagesConversationIdRef.current = undefined;
+    setMessageLoadFailure(null);
+    setDurableTaskPlan(
+      cachedDisplay?.taskPlan
+        ? { conversationId: String(conversation.id), state: cachedDisplay.taskPlan }
+        : undefined,
+    );
+    setDisplayScopeKey(historyScopeKey);
+    setRunProcessById(new Map(cachedDisplay?.runProcesses));
+    runProcessLoader.suspend();
+    clearTransientDisplayQueue();
+    transientFrameQueueRef.current.push(...(cachedDisplay?.pendingDisplayQueue ?? []));
+    transientDraftRef.current = cachedDisplay?.draft ?? null;
+    setStreamingMessage(
+      conversationDraftToChatMessage(
+        transientDraftRef.current,
+        cachedDisplay?.lastTransientSequence ?? 0,
+      ),
+    );
+    lastConsumedEventSequenceRef.current = cachedDisplay?.lastDurableSequence ?? 0;
+    lastTransientSequenceRef.current = cachedDisplay?.lastTransientSequence ?? 0;
+    transientStreamHealthyRef.current = false;
+    transientFallbackOnlyRef.current = false;
+    threadConversationIdRef.current = cachedDisplay?.threadId ? String(conversation.id) : undefined;
+    setThreadId(cachedDisplay?.threadId);
+    loadedMessagesConversationIdRef.current =
+      cachedPage?.messages.length || cachedDisplay ? String(conversation.id) : undefined;
     messageLoadGenerationRef.current += 1;
-  }, [historyScopeKey]);
+  }, [cachedDisplay, clearTransientDisplayQueue, conversation.id, historyScopeKey, runProcessLoader]);
   /** Invalidates an async prepend anchor when the user keeps scrolling meanwhile. */
   const userScrollRevisionRef = useRef(0);
   /** Distinguishes native/user scroll direction, including scrollbar dragging. */
@@ -1962,11 +2047,6 @@ export function ChatView({
     setSendingRunId(undefined);
     setPendingUserMessages([]);
     setLocalErrors([]);
-    browserHandoffLoadGenerationRef.current += 1;
-    setBrowserHandoffs([]);
-    setBrowserHandoffStatus('idle');
-    setBrowserHandoffError(undefined);
-    setBusyBrowserHandoffId(undefined);
     desktopWaitingLoadGenerationRef.current += 1;
     setDesktopWaitingCommands([]);
     setDesktopWaitingStatus('idle');
@@ -1976,10 +2056,8 @@ export function ChatView({
     setLoadedMessages(cachedPage?.messages ?? []);
     historyRangesRef.current = cachedPage?.ranges ?? [];
     setHistoryRanges(historyRangesRef.current);
-    setDurableTaskPlan(undefined);
-    setRunProcessById(new Map());
-    runProcessLoader.suspend();
-    loadedMessagesConversationIdRef.current = undefined;
+    loadedMessagesConversationIdRef.current =
+      cachedPage?.messages.length || cachedDisplay ? String(conversation.id) : undefined;
     setHasMore(cachedPage?.hasMore ?? false);
     setNextCursor(cachedPage?.nextCursor);
     setLoadingMore(false);
@@ -1989,14 +2067,6 @@ export function ChatView({
     setContextStatus(null);
     usageSummaryLoadGenerationRef.current += 1;
     setDurableUsageSummary(null);
-    transientDraftRef.current = null;
-    clearTransientDisplayQueue();
-    setStreamingMessage(null);
-    lastConsumedEventSequenceRef.current = 0;
-    lastTransientSequenceRef.current = 0;
-    transientStreamHealthyRef.current = false;
-    transientFallbackOnlyRef.current = false;
-    threadConversationIdRef.current = undefined;
     messageLoadGenerationRef.current += 1;
     setComposerAddOpen(false);
     setSlash(null);
@@ -2192,13 +2262,13 @@ export function ChatView({
         setThreadId(nextThreadId);
       })
       .catch(() => {
-        if (!cancelled) setThreadId(undefined);
+        if (!cancelled && !cachedDisplay?.threadId) setThreadId(undefined);
       });
 
     return () => {
       cancelled = true;
     };
-  }, [conversation.id, conversation.taskId]);
+  }, [cachedDisplay, conversation.id, conversation.taskId]);
 
   const loadMessages = useCallback(
     async (
@@ -2212,7 +2282,13 @@ export function ChatView({
       const latest = cursor === undefined && !options?.aroundMessageId;
       const api = bridge();
       if (!api?.listConversationMessages) {
-        if (latest) setInitialLoaded(true);
+        if (latest && historyScopeRef.current.key === historyScopeKey) {
+          setMessageLoadFailure({
+            scopeKey: historyScopeKey,
+            text: '桌面与后台的连接尚未就绪，聊天记录未读取。请重试连接。',
+          });
+          setInitialLoaded(true);
+        }
         return false;
       }
       const conversationId = String(conversation.id);
@@ -2244,8 +2320,9 @@ export function ChatView({
         }
         loadedMessagesConversationIdRef.current = conversationId;
         messageReloadAttemptRef.current = 0;
-        if (latest && res.taskPlan) {
-          setDurableTaskPlan({ conversationId, state: res.taskPlan });
+        if (latest) setMessageLoadFailure(null);
+        if (latest) {
+          setDurableTaskPlan(res.taskPlan ? { conversationId, state: res.taskPlan } : undefined);
         }
         const converted = res.messages.map(messageToChat).filter(shouldDisplayChatMessage);
         if (options?.revealLoadedPage && converted[0]) {
@@ -2304,13 +2381,18 @@ export function ChatView({
         if (latest) refreshNavigationDirectory();
         return true;
       } catch (error) {
-        // NewMax conversations.get / getMessages failures only log; ChatView
-        // keeps any already-rendered page and does not invent a retry banner.
         console.error('[ChatView] Failed to load messages:', error);
-        // 但「静默」不等于「永久空白」：首屏这一次很可能只是 runtime 还没就绪
-        // （窗口比 runtime 先起来）。走有界退避，成功即清零；保活之后实例不再重挂，
-        // 没有这段补偿就会一直空着。
-        if (latest) scheduleMessageResyncRetry();
+        if (latest && current()) {
+          const permissionDenied = /EPERM|EACCES|permission-denied|后台通信管道/.test(String(error));
+          setMessageLoadFailure({
+            scopeKey: historyScopeKey,
+            text: permissionDenied
+              ? '系统权限阻止了桌面访问后台，聊天记录未读取。记录仍保留，请检查桌面与后台的运行权限后重试。'
+              : '暂时未能从后台读取聊天记录。这不代表对话为空，请检查后台连接后重试。',
+          });
+          if (!permissionDenied) scheduleMessageResyncRetry();
+        }
+        // Existing pages remain visible; a failed gap read never replaces history.
         return false;
       } finally {
         if (latest && messageLoadInFlightScopeRef.current === historyScopeKey) {
@@ -2486,13 +2568,6 @@ export function ChatView({
 
   // Lightweight streaming/activeRunId detection from eventHistory.
   // This only scans run lifecycle events (O(n) but no message text building).
-  const [browserHandoffs, setBrowserHandoffs] = useState<BrowserHandoffSummary[]>([]);
-  const [browserHandoffStatus, setBrowserHandoffStatus] = useState<
-    'idle' | 'loading' | 'ready' | 'error'
-  >('idle');
-  const [browserHandoffError, setBrowserHandoffError] = useState<string | undefined>();
-  const [busyBrowserHandoffId, setBusyBrowserHandoffId] = useState<string | undefined>();
-  const browserHandoffLoadGenerationRef = useRef(0);
   const [desktopWaitingCommands, setDesktopWaitingCommands] = useState<
     DesktopWaitingCommandSummary[]
   >([]);
@@ -2731,9 +2806,10 @@ export function ChatView({
       streamingMessage?.runId
         ? displayRunProcessById.get(String(streamingMessage.runId))
         : undefined,
+      streamingMessage?.runId ? runTerminalById.get(String(streamingMessage.runId)) : undefined,
     );
     const processSettled = Boolean(
-      streamingMessage?.streaming && !settledStreamingMessage?.streaming,
+      settledStreamingMessage?.terminalState || (streamingMessage?.streaming && !settledStreamingMessage?.streaming),
     );
     const attachRuntimeNotice = Boolean(
       !processSettled &&
@@ -2782,10 +2858,32 @@ export function ChatView({
     projected.activeRunId,
     projected.streaming,
     displayRunProcessById,
+    runTerminalById,
     runConnectionStatus,
     runtimeConnectionNotice,
     streamingMessage,
   ]);
+
+  // A cached live turn may finish while its component is unmounted. A fresh
+  // process/lifecycle terminal seals it even if the transient terminal was lost.
+  useEffect(() => {
+    const draft = transientDraftRef.current;
+    if (
+      !draft?.runId ||
+      draft.runId !== cachedDisplay?.draft?.runId ||
+      visibleStreamingMessage?.streaming !== false
+    ) return;
+    const settled = draft.terminal
+      ? draft
+      : {
+          ...draft,
+          terminal: true,
+          terminalState: visibleStreamingMessage.terminalState ?? ('completed' as const),
+          terminalError: visibleStreamingMessage.terminalError ?? draft.terminalError,
+        };
+    const reconciled = reconcileTransientConversationDraft(settled, durableAssistantRunIds);
+    if (reconciled !== draft) renderTransientDraft(reconciled, lastTransientSequenceRef.current);
+  }, [cachedDisplay, durableAssistantRunIds, renderTransientDraft, visibleStreamingMessage]);
 
   const standaloneRuntimeConnectionNotice =
     runtimeConnectionNotice && !streamingMessage && !projected.streaming && !runConnectionStatus
@@ -2901,82 +2999,23 @@ export function ChatView({
     [busyDesktopCommandId, refreshDesktopWaitingCommands],
   );
 
-  const refreshBrowserHandoffs = useCallback(
-    async (showLoading = true) => {
-      const api = bridge();
-      const workspaceId = conversation.workspaceId;
-      const taskId = conversation.taskId;
-      const runId = projected.activeRunId;
-      if (!api?.listWaitingBrowserHandoffs || !taskId || !threadId) {
-        browserHandoffLoadGenerationRef.current += 1;
-        setBrowserHandoffs([]);
-        setBrowserHandoffStatus('idle');
-        setBrowserHandoffError(undefined);
-        return;
-      }
-      const generation = (browserHandoffLoadGenerationRef.current += 1);
-      if (showLoading) setBrowserHandoffStatus('loading');
-      setBrowserHandoffError(undefined);
-      try {
-        const response = await api.listWaitingBrowserHandoffs({
-          workspaceId,
-          ...(runId ? { runId: runId as RunId } : {}),
-        });
-        if (browserHandoffLoadGenerationRef.current !== generation) return;
-        setBrowserHandoffs(
-          response.handoffs.filter(
-            (handoff) =>
-              (!workspaceId || handoff.workspaceId === workspaceId) &&
-              handoff.taskId === taskId &&
-              (!runId || handoff.runId === runId),
-          ),
-        );
-        setBrowserHandoffStatus('ready');
-      } catch {
-        if (browserHandoffLoadGenerationRef.current !== generation) return;
-        setBrowserHandoffStatus('error');
-      }
-    },
-    [conversation.taskId, conversation.workspaceId, projected.activeRunId, threadId],
-  );
-
-  useEffect(() => {
-    void refreshBrowserHandoffs();
-  }, [browserHandoffLifecycleRevision, refreshBrowserHandoffs, runtimeConnectionRevision]);
-
-  const decideBrowserHandoff = useCallback(
-    async (handoff: BrowserHandoffSummary, decision: 'continue' | 'cancel') => {
-      const api = bridge();
-      if (busyBrowserHandoffId || !api?.continueBrowserHandoff || !api.cancelBrowserHandoff) {
-        return;
-      }
-      setBusyBrowserHandoffId(handoff.handoffId);
-      setBrowserHandoffError(undefined);
-      try {
-        if (decision === 'continue') {
-          await api.continueBrowserHandoff({
-            handoffId: handoff.handoffId,
-            expectedRevision: handoff.revision,
-          });
-        } else {
-          await api.cancelBrowserHandoff({
-            handoffId: handoff.handoffId,
-            expectedRevision: handoff.revision,
-            leaseDisposition: handoff.onCancel === 'close-page' ? 'release' : 'preserve',
-          });
-        }
-        await refreshBrowserHandoffs(false);
-      } catch {
-        await refreshBrowserHandoffs(false);
-        setBrowserHandoffError(
-          '\u64cd\u4f5c\u672a\u751f\u6548\uff0c\u63a5\u7ba1\u72b6\u6001\u53ef\u80fd\u5df2\u5728\u5176\u4ed6\u7a97\u53e3\u6539\u53d8\u3002\u8bf7\u5237\u65b0\u72b6\u6001\u540e\u91cd\u8bd5\u3002',
-        );
-      } finally {
-        setBusyBrowserHandoffId(undefined);
-      }
-    },
-    [busyBrowserHandoffId, refreshBrowserHandoffs],
-  );
+  const {
+    handoffs: browserHandoffs,
+    status: browserHandoffStatus,
+    queryError: browserHandoffQueryError,
+    actionError: browserHandoffError,
+    busyId: busyBrowserHandoffId,
+    refresh: refreshBrowserHandoffs,
+    decide: decideBrowserHandoff,
+  } = useBrowserHandoffs({
+    identity: String(conversation.id),
+    enabled: layerActive && Boolean(conversation.taskId && threadId),
+    workspaceId: conversation.workspaceId,
+    taskId: conversation.taskId,
+    runId: projected.activeRunId as RunId | undefined,
+    refreshRevision: browserHandoffLifecycleRevision,
+    runtimeConnectionRevision,
+  });
 
   const mergeTransientAgentsIntoDurableParent = useCallback(
     (runId: string, projections: readonly DelegatedAgentProjection[]): boolean => {
@@ -3002,6 +3041,8 @@ export function ChatView({
       if (event.type === 'reset') {
         clearTransientDisplayQueue();
         const latestStreamSequence = event.latestStreamSequence;
+        // A reset may start a new Runtime stream epoch with a lower cursor.
+        lastTransientSequenceRef.current = latestStreamSequence;
         if (event.snapshot && event.snapshot.threadId === threadId) {
           transientFallbackOnlyRef.current = false;
           transientStreamHealthyRef.current = true;
@@ -3051,6 +3092,13 @@ export function ChatView({
         return;
       }
       const frame = event.frame;
+      if (
+        frame.threadId !== threadId ||
+        frame.streamSequence <= lastTransientSequenceRef.current ||
+        frameQueue.some(
+          (item) => item.source === 'transient' && item.frame.streamSequence === frame.streamSequence,
+        )
+      ) return;
       if (
         frame.delegatedAgent &&
         mergeTransientAgentsIntoDurableParent(String(frame.runId), [frame.delegatedAgent])
@@ -3115,7 +3163,7 @@ export function ChatView({
     setTransientFallbackEpoch((value) => value + 1);
   }, []);
   useConversationTransientSubscription({
-    scopeKey: String(conversation.id),
+    scopeKey: historyScopeKey,
     threadId,
     enabled: Boolean(threadId) && threadConversationIdRef.current === String(conversation.id),
     subscribe: openTransientSubscription,
@@ -3426,7 +3474,7 @@ export function ChatView({
   }, [conversation.id]);
 
   const handleToolApproval = useCallback(
-    async (approvalId: string, decision: 'approve' | 'deny', scope: ToolApprovalScope = 'once') => {
+    async (approvalId: string, decision: 'approve' | 'deny', scope: ToolApprovalScope = 'once', excludedSkillTools?: string[]) => {
       const api = bridge();
       if (!api?.decideToolApproval || approvalDecisionInFlightRef.current) return;
       const targetConversationId = String(conversation.id);
@@ -3440,6 +3488,7 @@ export function ChatView({
           approvalId,
           decision,
           scope: decision === 'deny' ? 'once' : scope,
+          ...(decision === 'approve' && excludedSkillTools?.length ? { excludedSkillTools } : {}),
         });
         if (activeConversationIdRef.current !== targetConversationId) return;
         if (response.approvalId !== approvalId || !['approve', 'deny'].includes(response.decision)) {
@@ -3866,6 +3915,15 @@ export function ChatView({
         .map(String),
     [projected.activeRunId, streamingMessage?.runId],
   );
+  const historyAvailableRunProcesses = useMemo(
+    () =>
+      new Map(
+        [...runProcessById].filter(
+          ([runId, process]) => !process.running || cachedDisplay?.runProcesses.get(runId) !== process,
+        ),
+      ),
+    [cachedDisplay, runProcessById],
+  );
   useRunProcessHistoryRequests({
     loader: runProcessLoader,
     conversationId: String(conversation.id),
@@ -3875,7 +3933,7 @@ export function ChatView({
     scrollerRef: messagesScrollRef,
     durableRunIds: durableProcessRunIds,
     activeRunIds: activeProcessRunIds,
-    available: runProcessById,
+    available: historyAvailableRunProcesses,
   });
 
   const liveTail = visibleStreamingMessage ?? messages.at(-1);
@@ -5516,7 +5574,8 @@ export function ChatView({
       setMcpMenuOpen(false);
       setInput(value);
       if (suppressPickerRefreshRef.current) return;
-      if (composerAddOpen) {
+      // File search may stay open, but a slash token must switch palettes.
+      if (composerAddOpen && !detectSlashQuery(value, caret)) {
         closeSlash();
         return;
       }
@@ -5528,11 +5587,12 @@ export function ChatView({
   const handleEditorSelectionChange = useCallback(
     (caret: number) => {
       if (suppressPickerRefreshRef.current) return;
-      if (composerAddOpen) return;
       // ComposerEditor publishes selection in the same native input event as
       // the new text. Read the DOM value first so picker detection never sees
       // the previous controlled-render snapshot.
-      updatePickersFromCaret(inputRef.current?.value ?? inputValueRef.current, caret);
+      const value = inputRef.current?.value ?? inputValueRef.current;
+      if (composerAddOpen && !detectSlashQuery(value, caret)) return;
+      updatePickersFromCaret(value, caret);
     },
     [composerAddOpen, updatePickersFromCaret],
   );
@@ -6055,7 +6115,7 @@ export function ChatView({
     if (conversation.track === 'team') {
       return conversationTeam?.name ?? '小队';
     }
-    return '模型';
+    return HOST_SYSTEM_NAME;
   }, [conversation.track, conversationAgent?.name, conversationTeam?.name]);
   const identityAvatar = conversationAgent ?? conversationTeam;
   const showTyping = reconciledSending || projected.streaming;
@@ -6126,6 +6186,7 @@ export function ChatView({
   const pillAttachControl = (
     <ComposerAddControl
       variant="conversation"
+      showReferenceTrigger={conversation.track !== 'model'}
       open={composerAddOpen}
       inputRef={inputRef}
       composerRef={composeRef}
@@ -6223,7 +6284,7 @@ export function ChatView({
         className="shell-compose__tool-wrap"
         data-testid="compose-permission-control"
         hidden={
-          agentWorkspace && composerToolbar.collapseLevel >= PERMISSION_MODE_COLLAPSED_TOOLBAR_LEVEL
+          composerToolbar.collapseLevel >= PERMISSION_MODE_COLLAPSED_TOOLBAR_LEVEL
         }
       >
         <PermissionTrigger
@@ -6244,7 +6305,7 @@ export function ChatView({
       <div
         className="shell-compose__tool-wrap"
         data-testid="compose-skill-control"
-        hidden={agentWorkspace && composerToolbar.collapseLevel >= SKILL_COLLAPSED_TOOLBAR_LEVEL}
+        hidden={composerToolbar.collapseLevel >= SKILL_COLLAPSED_TOOLBAR_LEVEL}
       >
         <TurnSkillControl
           owner={skillOwner}
@@ -6314,6 +6375,8 @@ export function ChatView({
             : contextStatus?.usageRatio
         }
         compactThreshold={contextStatus?.compactThreshold}
+        budget={kernelSelfManaged ? undefined : contextStatus?.budget}
+        measurement={kernelSelfManaged ? undefined : contextStatus?.measurement}
         compactedAt={contextStatus?.compactedAt}
         sections={contextStatus?.sections}
         kernelSelfManaged={kernelSelfManaged}
@@ -6448,7 +6511,31 @@ export function ChatView({
             }}
           >
             {messages.length === 0 && !showTyping ? (
-              !initialLoaded ? (
+              messageLoadFailure?.scopeKey === historyScopeKey ? (
+                <div className="flex h-full items-center justify-center px-6">
+                  <div
+                    role="alert"
+                    aria-label="聊天记录加载失败"
+                    className="max-w-md rounded-xl border border-border bg-surface p-5"
+                  >
+                    <p className="text-[14px] font-medium text-text">聊天记录暂未加载</p>
+                    <p className="mt-2 text-[13px] leading-relaxed text-text-secondary">
+                      {messageLoadFailure.text}
+                    </p>
+                    <button
+                      type="button"
+                      className="mt-4 rounded-md border border-border px-3 py-1.5 text-[13px] text-text hover:bg-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus-ring"
+                      onClick={() => {
+                        setMessageLoadFailure(null);
+                        setInitialLoaded(false);
+                        void loadMessages();
+                      }}
+                    >
+                      重试加载聊天记录
+                    </button>
+                  </div>
+                </div>
+              ) : !initialLoaded ? (
                 <ConversationLoadingSkeleton />
               ) : (
                 <div className="flex h-full items-center justify-center">
@@ -6702,17 +6789,19 @@ export function ChatView({
                 onCancel={() => void decideDesktopCommand(command, 'cancel')}
               />
             ))}
-            {browserHandoffStatus === 'error' && browserHandoffs.length === 0 ? (
+            {browserHandoffQueryError ? (
               <BrowserHandoffQueryError
-                busy={false}
+                error={browserHandoffQueryError}
+                busy={browserHandoffStatus === 'loading' || Boolean(busyBrowserHandoffId)}
                 onRetry={() => void refreshBrowserHandoffs()}
               />
             ) : null}
+            {browserHandoffError && browserHandoffs.length === 0 ? <p role="alert">{browserHandoffError}</p> : null}
             {browserHandoffs.map((handoff) => (
               <BrowserHandoffCard
                 key={handoff.handoffId}
                 handoff={handoff}
-                busy={busyBrowserHandoffId === handoff.handoffId}
+                busy={Boolean(busyBrowserHandoffId)}
                 error={
                   browserHandoffError && busyBrowserHandoffId === undefined
                     ? browserHandoffError
@@ -6762,9 +6851,6 @@ export function ChatView({
                 ) : null}
               </div>
             ) : null}
-            {interactionMode !== 'plan' ? (
-              <ComposerTaskPanel scopeKey={String(conversation.id)} todo={todoProjection} />
-            ) : null}
             <ExpiredToolApprovalNotice
               approvals={runtimeExpiredApprovals.filter(
                 (approval) => String(approval.threadId) === threadId,
@@ -6774,7 +6860,7 @@ export function ChatView({
               onRecover={(approval) => void handleRecoverApproval(approval)}
             />
             <ComposerApprovalStack
-              hasSurfaceBelow={Boolean(composerModeBanner)}
+              hasSurfaceBelow={Boolean(composerModeBanner) || (interactionMode !== 'plan' && Boolean(todoProjection?.items.some((item) => item.status !== 'completed')))}
               tool={
                 pendingApprovals[0]
                   ? {
@@ -6786,11 +6872,12 @@ export function ChatView({
                           submission={approvalSubmission?.approvalId === pendingApprovals[0].approvalId ? approvalSubmission : undefined}
                           error={approvalSubmissionError?.approvalId === pendingApprovals[0].approvalId ? approvalSubmissionError.message : undefined}
                           busy={decidingApprovalId === pendingApprovals[0].approvalId}
-                          onApprove={(scope) =>
+                          onApprove={(scope, excludedSkillTools) =>
                             void handleToolApproval(
                               pendingApprovals[0]!.approvalId,
                               'approve',
                               scope,
+                              excludedSkillTools,
                             )
                           }
                           onDeny={() =>
@@ -6820,11 +6907,12 @@ export function ChatView({
                   : undefined
               }
             />
+            {interactionMode !== 'plan' ? (
+              <ComposerTaskPanel scopeKey={String(conversation.id)} todo={todoProjection} />
+            ) : null}
             <NewMaxComposerFrame
               variant="conversation"
-              presentation={agentWorkspace ? 'default' : 'pill'}
-              leadingAction={!agentWorkspace ? <div ref={composerToolbar.leftRef}>{pillAttachControl}</div> : undefined}
-              statusBar={!agentWorkspace ? <div className="shell-ai-composer-status"><div className="shell-ai-composer-status__controls">{pillStatusControls}</div><div className="shell-ai-composer-status__identity">{pillIdentityStatus}{pillKernelStatus}</div></div> : undefined}
+              presentation="attachments"
               contextBar={
                 projectFolder && boundWorkspace?.folderPath && onOpenGit ? (
                   <ComposerGitBar
@@ -6838,7 +6926,7 @@ export function ChatView({
               modeBanner={composerModeBanner}
               className={`relative ${dragOver ? 'is-dragover' : ''}`}
               data-layout="tall"
-              innerRef={(element) => { composeRef.current = element; if (!agentWorkspace) composerToolbar.outerRef.current = element; }}
+              innerRef={composeRef}
               onDragEnter={handleDragEnter}
               onDragOver={handleDragOver}
               onDragLeave={handleDragLeave}
@@ -6996,17 +7084,17 @@ export function ChatView({
 
               {/* Bottom toolbar */}
               <div
-                ref={agentWorkspace ? composerToolbar.outerRef : undefined}
+                ref={composerToolbar.outerRef}
                 className="shell-compose__bar"
                 data-testid="compose-toolbar"
                 data-collapse-level={composerToolbar.collapseLevel}
               >
-                {agentWorkspace ? (<div ref={composerToolbar.leftRef} className="shell-compose__bar-left">
+                <div ref={composerToolbar.leftRef} className="shell-compose__bar-left">
                   {pillAttachControl}{pillStatusControls}
-                </div>) : null}
+                </div>
 
                 <div ref={composerToolbar.rightRef} className="shell-compose__bar-right">
-                  {agentWorkspace ? pillIdentityStatus : null}
+                  {pillIdentityStatus}
 
                   {/* Model conversations own their picker; agents use their saved settings. */}
                   {!followsAgentConfig && <div className="shell-compose__tool-wrap">
@@ -7084,11 +7172,11 @@ export function ChatView({
                         writeConversationReasoningEffort(String(conversation.id), value);
                       }}
                     />
-                    {agentWorkspace ? pillKernelStatus : null}
+                    {pillKernelStatus}
                   </div>}
 
                   <ComposerActionSlot
-                    presentation={agentWorkspace ? 'switch' : 'paired'}
+                    presentation="paired"
                     hasContent={!goalIsActive && Boolean(input.trim() || imageUploads.items.length > 0)}
                     running={canStop}
                     voiceActive={voiceInputActive}
@@ -7253,6 +7341,7 @@ function HarnessTerminalNotice({
   state: 'failed' | 'cancelled' | 'paused';
   error?: string;
 }) {
+  const timedOut = /timeout|timed?\s*out|请求超时/i.test(error ?? '');
   const errorSummary = error
     ?.split('\n')
     .find((line) => line.trim())
@@ -7273,10 +7362,10 @@ function HarnessTerminalNotice({
     // must be visible: the reason used to live only on a tool step that was
     // still running, so a pause between calls showed nothing at all.
     return (
-      <details className="shell-harness-terminal is-paused" data-testid="assistant-terminal-paused">
+      <details role="alert" className="shell-harness-terminal is-paused" data-testid="assistant-terminal-paused">
         <summary>
           <span className="shell-harness-terminal__dot" aria-hidden="true" />
-          <span className="shell-harness-terminal__title">已暂停</span>
+          <span className="shell-harness-terminal__title">{timedOut ? '模型请求超时，已暂停' : '已暂停'}</span>
           {errorSummary ? (
             <span
               className="shell-harness-terminal__summary"
@@ -7294,11 +7383,11 @@ function HarnessTerminalNotice({
   }
   const overloaded = isTransientModelOverload(error);
   return (
-    <details className="shell-harness-terminal is-failed" data-testid="assistant-terminal-failed">
+    <details role="alert" className="shell-harness-terminal is-failed" data-testid="assistant-terminal-failed">
       <summary>
         <span className="shell-harness-terminal__dot" aria-hidden="true" />
         <span className="shell-harness-terminal__title">
-          {overloaded ? '回答中断' : '运行失败'}
+          {timedOut ? '模型请求超时' : overloaded ? '回答中断' : '运行失败'}
         </span>
         {errorSummary ? (
           <span
@@ -7642,9 +7731,10 @@ function delegatedTaskViewFromProjection(
 }
 
 const DelegatedAgentToolList = memo(function DelegatedAgentToolList({
-  events,
+  events, projectFolder,
 }: {
   events: readonly DelegatedAgentToolEventView[];
+  projectFolder?: string;
 }) {
   const [expanded, setExpanded] = useState(false);
   const hiddenCount = events.length - DELEGATED_TOOL_VISIBLE_LIMIT;
@@ -7652,7 +7742,7 @@ const DelegatedAgentToolList = memo(function DelegatedAgentToolList({
   return (
     <div className="shell-delegated-agent__tools">
       {visible.map((event, index) => (
-        <DelegatedAgentToolRow key={`${event.toolName}-${index}`} event={event} />
+        <DelegatedAgentToolRow key={`${event.toolName}-${index}`} event={event} projectFolder={projectFolder} />
       ))}
       {hiddenCount > 0 ? (
         <button
@@ -7722,10 +7812,11 @@ function delegatedAgentUsageLabel(task: DelegatedAgentTaskView): string | undefi
  * 委派发生的那一刻（内联锚点），也能作为兜底列表的一项。
  */
 const DelegatedAgentTaskCard = memo(function DelegatedAgentTaskCard({
-  task,
+  task, projectFolder,
   onStopChild,
 }: {
   task: DelegatedAgentTaskView;
+  projectFolder?: string;
   onStopChild?: (childRunId: string) => void;
 }) {
   const usageLabel = delegatedAgentUsageLabel(task);
@@ -7762,7 +7853,7 @@ const DelegatedAgentTaskCard = memo(function DelegatedAgentTaskCard({
       </summary>
       <div className="shell-delegated-agent__details">
         {task.toolEvents.length > 0 ? (
-          <DelegatedAgentToolList events={task.toolEvents} />
+          <DelegatedAgentToolList events={task.toolEvents} projectFolder={projectFolder} />
         ) : (
           <span className="shell-delegated-agent__empty">本次任务没有调用工具</span>
         )}
@@ -7794,11 +7885,12 @@ const DelegatedAgentTaskCard = memo(function DelegatedAgentTaskCard({
  * 普通工具行渲染。
  */
 export const InlineDelegatedAgentTask = memo(function InlineDelegatedAgentTask({
-  item,
+  item, projectFolder,
   delegatedAgents,
   onStopChild,
 }: {
   item: InlineProcessItem;
+  projectFolder?: string;
   delegatedAgents?: readonly DelegatedAgentProjection[];
   onStopChild?: (childRunId: string) => void;
 }) {
@@ -7811,7 +7903,7 @@ export const InlineDelegatedAgentTask = memo(function InlineDelegatedAgentTask({
   // the panel's fallback list until the child finishes.
   if (parsed?.result) {
     const completedProjection = delegatedAgents?.find((candidate) => String(candidate.childRunId) === parsed.childRunId);
-    return <DelegatedAgentTaskCard task={completedProjection ? { ...parsed, statusObservation: completedProjection.statusObservation } : parsed} onStopChild={onStopChild} />;
+    return <DelegatedAgentTaskCard projectFolder={projectFolder} task={completedProjection ? { ...parsed, statusObservation: completedProjection.statusObservation } : parsed} onStopChild={onStopChild} />;
   }
   const live = delegatedAgents?.find((candidate) =>
     parsed
@@ -7820,16 +7912,17 @@ export const InlineDelegatedAgentTask = memo(function InlineDelegatedAgentTask({
   );
   const task = live ? delegatedTaskViewFromProjection(live) : parsed;
   if (!task) return null;
-  return <DelegatedAgentTaskCard task={task} onStopChild={onStopChild} />;
+  return <DelegatedAgentTaskCard projectFolder={projectFolder} task={task} onStopChild={onStopChild} />;
 });
 
 export const DelegatedAgentTasks = memo(function DelegatedAgentTasks({
-  items,
+  items, projectFolder,
   delegatedAgents,
   onStopChild,
   inlineChildRunIds,
 }: {
   items: readonly InlineProcessItem[];
+  projectFolder?: string;
   delegatedAgents?: readonly DelegatedAgentProjection[];
   onStopChild?: (childRunId: string) => void;
   /**
@@ -7887,7 +7980,7 @@ export const DelegatedAgentTasks = memo(function DelegatedAgentTasks({
               </span>
             </div>
           ) : null}
-          <DelegatedAgentTaskCard task={task} onStopChild={onStopChild} />
+          <DelegatedAgentTaskCard projectFolder={projectFolder} task={task} onStopChild={onStopChild} />
         </Fragment>
       ))}
     </div>
@@ -7968,6 +8061,7 @@ const MessageBubble = memo(function MessageBubble({
   const isUser = message.role === 'user';
   const isSystem = message.role === 'system';
   const systemTone: SystemMessageTone = resolveSystemMessageTone(message.tone, message.text);
+  const [executionDetailsOpen, setExecutionDetailsOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const [copying, setCopying] = useState(false);
   const [copyFailed, setCopyFailed] = useState(false);
@@ -8161,16 +8255,18 @@ const MessageBubble = memo(function MessageBubble({
     (item: InlineProcessItem) =>
       item.kind === 'tool' && isDelegationToolName(item.name) ? (
         <InlineDelegatedAgentTask
+          projectFolder={projectFolder}
           item={item}
           delegatedAgents={message.delegatedAgents}
           onStopChild={stopDelegatedChild}
         />
       ) : undefined,
-    [message.delegatedAgents, stopDelegatedChild],
+    [message.delegatedAgents, stopDelegatedChild, projectFolder],
   );
   const delegatedAgentTaskContent = useMemo(
     () => (
       <DelegatedAgentTasks
+        projectFolder={projectFolder}
         items={displayedProcessItems ?? []}
         delegatedAgents={message.delegatedAgents}
         inlineChildRunIds={inlineDelegatedChildRunIds}
@@ -8182,6 +8278,7 @@ const MessageBubble = memo(function MessageBubble({
       inlineDelegatedChildRunIds,
       message.delegatedAgents,
       stopDelegatedChild,
+      projectFolder,
     ],
   );
   /**
@@ -8233,9 +8330,9 @@ const MessageBubble = memo(function MessageBubble({
   const clockLabel = formatMessageClock(message.timestamp);
   const absoluteTime = formatMessageAbsoluteTime(message.timestamp);
   // Kernel badge for this turn: show the brand logo next to the model label so
-  // it is obvious which kernel produced each reply (native/unknown → none).
+  // it is obvious which kernel produced each reply (including the native Sync-Think kernel).
   const kernelLogo = useMemo(() => {
-    if (!kernelId || kernelId === 'native') return undefined;
+    if (!kernelId) return undefined;
     return resolveKernelBrandLogo(kernelId);
   }, [kernelId]);
   const kernelLabel = kernelId ? resolveKernelDisplayName(kernelId) : undefined;
@@ -8250,6 +8347,7 @@ const MessageBubble = memo(function MessageBubble({
     const tokens =
       processView.tokensIn !== undefined || processView.tokensOut !== undefined
         ? {
+            cacheReported: typeof processView.cachedTokensHit === 'number' || typeof processView.cachedTokensCreated === 'number',
             ...splitProviderUsageTokens({
               tokensIn: processView.tokensIn ?? 0,
               tokensOut: processView.tokensOut ?? 0,
@@ -8388,7 +8486,10 @@ const MessageBubble = memo(function MessageBubble({
             </div>
           ) : null}
           {visibleText ? (
-            <div data-message-surface="bubble" className="shell-user-bubble max-w-full rounded-2xl bg-[color-mix(in_srgb,var(--color-elevated)_88%,var(--color-text)_12%)] px-4 py-2.5 text-[13.5px] leading-relaxed text-text shadow-sm">
+            <div
+              data-message-surface="bubble"
+              className="shell-user-bubble max-w-full rounded-2xl bg-[color-mix(in_srgb,var(--color-elevated)_88%,var(--color-text)_12%)] px-4 py-2.5 text-[13.5px] leading-relaxed text-text shadow-sm"
+            >
               <MessageTextContent
                 text={visibleText}
                 parts={visibleText === message.text ? message.textParts : undefined}
@@ -8508,9 +8609,10 @@ const MessageBubble = memo(function MessageBubble({
   const avatarSource = identityAgent ?? fallbackAgent;
   // 名字与头像同源：优先消息/run 的智能体名；缺失时回退到当前绑定智能体
   // （头像已回退到它），避免"有头像没名字"的割裂。
-  const visibleAgentLabel =
+  const isHostSystem = conversationTrack === 'model';
+  const visibleAgentLabel = isHostSystem ? HOST_SYSTEM_NAME :
     message.globalAgentName?.trim() || runAgentIdentity?.name || avatarSource?.name;
-  const avatarName = avatarSource?.name ?? visibleAgentLabel ?? '助手';
+  const avatarName = isHostSystem ? HOST_SYSTEM_NAME : avatarSource?.name ?? visibleAgentLabel ?? '助手';
   const hasAnswerText = Boolean((message.answerText ?? message.text).trim());
   // Expression for the procedural avatar. Every signal below comes from this
   // conversation, which is exactly where these expressions can appear.
@@ -8526,7 +8628,7 @@ const MessageBubble = memo(function MessageBubble({
     streaming: Boolean(message.streaming),
     reasoning: reasoningInFlight,
     awaitingApproval: waitingForApproval,
-    failed: Boolean(processLoadFailure),
+    failed: Boolean(processLoadFailure || message.terminalState === 'failed'),
     justCompleted,
   });
   const timelineTiming = assistantTimelineProcessTiming(displayedTimeline, !message.streaming);
@@ -8545,7 +8647,7 @@ const MessageBubble = memo(function MessageBubble({
                 )
               : (displayedProcessItems ?? [])),
           ]}
-          steps={hasLoadedTimeline ? undefined : processView?.steps}
+          steps={processView?.steps}
           fileChanges={processView?.fileChanges}
           totalFailedTools={processView?.pages ? processView.errorCount : undefined}
           totalTools={agentPreferences.showToolUse ? processView?.pages?.steps.total : undefined}
@@ -8559,6 +8661,7 @@ const MessageBubble = memo(function MessageBubble({
           answerStarted={hasAnswerText}
           runId={message.runId ?? message.id}
           conversationId={conversationId}
+          projectFolder={projectFolder}
           startedAt={processView?.startedAt ?? timelineTiming.startedAt}
           completedAt={processView?.completedAt ?? timelineTiming.completedAt}
           durationMs={processView?.durationMs}
@@ -8603,20 +8706,28 @@ const MessageBubble = memo(function MessageBubble({
             ) : undefined
           }
         />);
+  const compactAgentChat = agentWorkspace && !isHostSystem;
+  const hasExecutionDetails = Boolean(message.runId || processView || message.reasoningText || displayedProcessItems?.length);
+  const executionDetailsId = `agent-execution-details-${message.id}`;
   const showFooter = (agentWorkspace || !message.streaming) && (hasAnswerText || Boolean(processView));
   return (
     <MessageContextActions.Provider value={contextActions}>
     <div className="shell-msg shell-msg--assistant group relative flex items-start gap-2.5" data-aw-waiting={agentWorkspace && message.streaming && !hasAnswerText ? 'true' : undefined} onContextMenu={handleMessageContext} tabIndex={0}>
-      <div className="shell-msg-avatar shrink-0 pt-0.5">
+      {!isHostSystem && <div className="shell-msg-avatar shrink-0 pt-0.5">
         <AgentAvatarView
           name={avatarName}
           avatar={avatarSource?.avatar}
           size={26}
           state={avatarState}
         />
-      </div>
-      <div className="min-w-0 flex-1 pt-0.5">
-        {visibleAgentLabel && !agentWorkspace ? (
+      </div>}
+      <div className={`min-w-0 flex-1 pt-0.5${isHostSystem ? ' shell-host-message-content' : ''}`}>
+        {isHostSystem ? (
+          <div className="shell-host-identity" role="group" aria-label="回复者：宿主系统">
+            <span className="shell-msg-avatar"><HostSystemAvatar size={26} state={avatarState} interactive /></span>
+            <span className="shell-host-name">{HOST_SYSTEM_NAME}</span>
+          </div>
+        ) : visibleAgentLabel && !agentWorkspace ? (
           <div className="mb-1 text-[11.5px] font-medium text-text-faint">{visibleAgentLabel}</div>
         ) : null}
         {message.runId && onRetryProcess ? (
@@ -8626,11 +8737,11 @@ const MessageBubble = memo(function MessageBubble({
             onRetry={onRetryProcess}
           />
         ) : null}
-        {agentWorkspace ? <AgentExecutionStatus name={avatarName} avatar={avatarSource?.avatar} running={Boolean(message.streaming)} waiting={waitingForApproval} failed={Boolean(processLoadFailure || message.terminalState === 'failed')} label={message.streaming && hasAnswerText ? '正在回复…' : undefined} hasDetails={Boolean(message.runId || processView || message.reasoningText || displayedProcessItems?.length)}>
+        {compactAgentChat ? !hasAnswerText && <AgentExecutionStatus name={avatarName} avatar={avatarSource?.avatar} running={Boolean(message.streaming)} waiting={waitingForApproval} failed={Boolean(processLoadFailure || message.terminalState === 'failed')} hasDetails={hasExecutionDetails}>
           {executionTrace}
         </AgentExecutionStatus> : executionTrace}
         <StreamingResponse
-          variant={conversationTrack === 'model' ? 'plain' : 'bubble'}
+          variant={isHostSystem ? 'plain' : 'bubble'}
           showContent={Boolean(message.answerText || (!message.processItems?.length && message.text)) || Boolean(showFileChanges && !agentWorkspace && !message.streaming && processView?.fileChanges.length)}
           status={responseStatus({
             streaming: message.streaming,
@@ -8642,10 +8753,29 @@ const MessageBubble = memo(function MessageBubble({
           onCopy={hasAnswerText ? () => void handleCopy() : undefined}
           onRetry={onRegenerate ? () => onRegenerate(message.id) : undefined}
           onContinue={onContinue ? () => onContinue(message.id) : undefined}
+          continueFailed={message.terminalState === 'failed' && /^(单轮模型输出达到长度上限|单轮输出被截断)/.test(message.terminalError ?? '')}
           busy={Boolean(regenerating)}
           feedback={feedback}
           onFeedbackChange={hasAnswerText ? setFeedback : undefined}
           sources={answerSources}
+          additionalActions={compactAgentChat && hasAnswerText && hasExecutionDetails ? (
+            <button
+              type="button"
+              className="shell-response__action aw-execution-action"
+              aria-label={avatarName + ' · 查看执行详情'}
+              title="查看执行详情"
+              aria-expanded={executionDetailsOpen}
+              aria-controls={executionDetailsId}
+              onClick={() => setExecutionDetailsOpen(value => !value)}
+            >
+              <ListTree size={14} aria-hidden="true" />
+            </button>
+          ) : undefined}
+          details={compactAgentChat && hasAnswerText && hasExecutionDetails && executionDetailsOpen ? (
+            <div id={executionDetailsId} className="aw-execution__details" role="region" aria-label="执行详情">
+              {executionTrace}
+            </div>
+          ) : undefined}
           onOpenFile={onOpenChange}
           onOpenUrl={onOpenWebUrl}
           notice={
@@ -8656,7 +8786,7 @@ const MessageBubble = memo(function MessageBubble({
           metadata={
             showFooter ? (
               <div className="shell-msg-meta shell-msg-meta--assistant">
-                {agentWorkspace && <button className="aw-response-identity" onClick={() => avatarSource?.id && onEditAgent?.(avatarSource.id)} disabled={!avatarSource?.id || !onEditAgent}><AgentWorkspaceAvatar name={avatarName} avatar={avatarSource?.avatar} size={18} animate state={avatarState} /><span>{avatarName}</span></button>}
+                {agentWorkspace && !isHostSystem && <button className="aw-response-identity" onClick={() => avatarSource?.id && onEditAgent?.(avatarSource.id)} disabled={!avatarSource?.id || !onEditAgent}><AgentWorkspaceAvatar name={avatarName} avatar={avatarSource?.avatar} size={18} animate state={avatarState} /><span>{avatarName}</span></button>}
                 {metricsLabel && metricsDetail ? (
                   <MetaHover
                     className="shell-msg-meta__metrics"
@@ -8670,7 +8800,7 @@ const MessageBubble = memo(function MessageBubble({
                             <span className="shell-usage-tip__token-detail">
                               {[
                                 metricsDetail.tokens.inputTokens > 0
-                                  ? `↑ ${formatCompactCount(metricsDetail.tokens.inputTokens)}`
+                                  ? `未缓存 ↑ ${formatCompactCount(metricsDetail.tokens.inputTokens)}`
                                   : undefined,
                                 metricsDetail.tokens.outputTokens > 0
                                   ? `↓ ${formatCompactCount(metricsDetail.tokens.outputTokens)}`
@@ -8687,6 +8817,21 @@ const MessageBubble = memo(function MessageBubble({
                             </span>
                           ) : null}
                         </div>
+                        {metricsDetail.tokens ? (
+                          <div className="shell-usage-tip__account" data-testid="reply-input-accounting">
+                            <div className="shell-meta-tip__row">
+                              <span>输入合计（含缓存）</span>
+                              <strong>{formatCompactCount(metricsDetail.tokens.totalInputTokens)}</strong>
+                            </div>
+                            {metricsDetail.tokens.cacheReported && metricsDetail.tokens.totalInputTokens > 0 ? (
+                              <div className="shell-meta-tip__row">
+                                <span>缓存读取率</span>
+                                <strong>{(100 * metricsDetail.tokens.cacheReadTokens / metricsDetail.tokens.totalInputTokens).toFixed(1)}%</strong>
+                              </div>
+                            ) : null}
+                            <div className="shell-meta-tip__subtitle">本轮模型请求累计，非当前上下文占用</div>
+                          </div>
+                        ) : null}
                         {providerUsageIdentity ? (
                           <ProviderAccountUsageSection identity={providerUsageIdentity} />
                         ) : null}

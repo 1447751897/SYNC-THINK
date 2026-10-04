@@ -1,6 +1,7 @@
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import { CalendarDays, Check, ChevronLeft, ChevronRight, Clock3 } from 'lucide-react';
 import { useRef, useState } from 'react';
+import { useTaskSheetPortalContainer } from './TaskSheet.js';
 
 /** Strict wall-clock values shared by the picker and task-editor validation. */
 export function isTaskTime(value: string): boolean {
@@ -21,6 +22,7 @@ export function TaskTemporalPicker({
   label?: string;
   disabled?: boolean;
 }) {
+  const portalContainer = useTaskSheetPortalContainer();
   const [month, setMonth] = useState(() => new Date());
   const [open, setOpen] = useState(false);
   const pad = (n: number) => String(n).padStart(2, '0');
@@ -52,7 +54,7 @@ export function TaskTemporalPicker({
           {type === 'date' ? <CalendarDays size={16} /> : <Clock3 size={16} />}
         </button>
       </DropdownMenu.Trigger>
-      <DropdownMenu.Portal>
+      <DropdownMenu.Portal container={portalContainer}>
         <DropdownMenu.Content
           className="task-temporal"
           data-kind={type}

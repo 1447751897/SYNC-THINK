@@ -1,3 +1,4 @@
+import { COLLABORATION_EXECUTION_VERSION } from '@sync-think/shared';
 /** Offline QA fixture only. This file is reachable from qa-entry, never shell-entry. */
 import { lazy, useEffect, useState } from 'react';
 import type { CollaborationCommand, CollaborationSnapshot, Conversation, GlobalAgent, Team } from '@sync-think/shared';
@@ -51,6 +52,30 @@ function fixtureStore() {
     ['marketing', '我会先确认读者最在意的结果，再围绕它组织内容。每个区域只讲一个重点，让人能迅速判断这是否与自己有关。\n\n最后检查行动按钮前的信息是否足够：我会得到什么、下一步是什么、是否还有未解答的疑问。'],
     ['product', '我会把首次访问、加载、空内容和失败这些状态一起梳理，而不只设计最理想的一屏。\n\n先做一条完整、容易理解的路径，再逐步补上细节。这样每一次点击都有明确反馈，也更容易验证设计是否真的有帮助。'],
   ]) group.messages.push(message(group, sender, text));
+  // Offline reproduction of short bubbles, inline @ handoffs and delivery errors.
+  if (new URLSearchParams(location.search).has('message-actions')) {
+    group.conversation.title = '消息悬浮操作验收';
+    group.conversation.room = { version: 1, state: 'discussion', goal: '', goalRevision: 0, sourceSequence: 0, checkpoint: { version: 1, savedAt: date, pendingTaskIds: [], completedTaskIds: [], artifactIds: [], note: '' } };
+    const texts = [
+      ['designer', '哇哈哈'],
+      ['product', '@页面设计师 用户让你在本群发个「哇哈哈」，就行。'],
+      ['user', '哇哈哈'],
+      ['marketing', '这是一条用于检查重试操作栏的失败消息。'],
+    ];
+    group.messages = texts.map(([sender, text], index) => ({ ...message(group, sender, text), id: `hover-message-${index}`, sequence: index + 1 }));
+    group.messages[0].recipientMemberIds = ['product'];
+    group.messages[1].recipientMemberIds = ['designer'];
+    group.messages[1].mentions = [{ memberId: 'designer', label: '@页面设计师', start: 0, end: 6 }];
+    for (const index of [0, 1]) {
+      const reply = group.messages[index];
+      const taskId = `hover-task-${index}`;
+      const attemptId = `hover-attempt-${index}`;
+      reply.taskId = taskId;
+      group.tasks.push({ id: taskId, rootTaskId: taskId, originMessageId: reply.id, assigneeMemberId: reply.senderMemberId, title: '聊天回复', instructions: '发个哇哈哈', expectedOutput: '', purpose: 'discussion', kind: 'reply', dependsOnTaskIds: [], contextRefs: [], resourceClaims: [], returnTo: { conversationId: group.conversation.id, replyToMessageId: reply.id }, timeoutSeconds: 120, currentAttemptId: attemptId, createdAt: date });
+      group.attempts.push({ id: attemptId, taskId, number: 1, status: 'succeeded', output: texts[index][1], contextSequence: 0, resourceClaims: [], tools: [], checklist: [], updatedAt: date });
+    }
+    group.deliveries.push({ id: 'hover-failed-delivery', messageId: 'hover-message-3', recipientMemberId: 'designer', status: 'failed' });
+  }
   const snapshots = new Map<string, CollaborationSnapshot>([[group.conversation.id, group]]);
   for (const a of agents) { const s = makeSnapshot(`direct-${a.id}`, [a], 'direct', a.name); s.messages.push(message(s, a.id, a.description)); snapshots.set(s.conversation.id, s); }
   const legacy = { ...conversationOf(makeSnapshot('legacy-designer', [agents[0]], 'direct', '你装了哪些技能')), collaborationKind: undefined, hasMessages: true, taskId: 'legacy-task', updatedAt: '2026-09-28T12:00:00.000Z', lastMessagePreview: '这是旧会话记录，保留原消息和发送接口。' } as Conversation;
@@ -67,6 +92,7 @@ function fixtureStore() {
   const messagePages = new Map<string, typeof legacyMessages>([[legacy.id, legacyMessages]]);
   const threadFor = (id: string) => id === legacy.id ? 'legacy-thread' : 'qa-thread:' + id;
   const runtime = {
+    listWaitingBrowserHandoffs: async () => ({ handoffs: [] }),
     subscribeConversationTransientStream: (_payload: unknown, listener: (event: ConversationTransientSubscriptionEvent) => void) => { transient.add(listener); return { ready: Promise.resolve({ subscriptionId: 'qa-live' }), unsubscribe: async () => { transient.delete(listener); } }; },
     createConversation: async (payload: Partial<Conversation>) => { const conversation = { ...legacy, ...payload, id: ('qa-team-' + teamConversations.length) as Conversation['id'], taskId: 'legacy-task' as Conversation['taskId'], collaborationKind: undefined }; teamConversations.push(conversation); notify(); return { conversation }; },
     createTeam: async (payload: Partial<Team>) => { const team = { ...teams[0], ...payload, id: ('qa-team-' + teams.length) as Team['id'] }; teams = [...teams, team]; notify(); return { team }; },
@@ -107,7 +133,7 @@ function fixtureStore() {
         const selected = (team?.members.map(m => m.agentId) ?? request.agentIds).flatMap(id => agents.find(a => a.id === id) ?? []);
         const s = makeSnapshot(`created-${request.clientRequestId}`, selected, request.kind === 'direct' ? 'direct' : 'group', request.title);
         if (team) { teamTargets.set(s.conversation.id, team.id); s.conversation.coordinatorMemberId = team.coordinatorAgentId ?? selected[0]?.id; }
-        snapshots.set(s.conversation.id, s); notify(); return { snapshot: s, executionVersion: 3 };
+        snapshots.set(s.conversation.id, s); notify(); return { snapshot: s, executionVersion: COLLABORATION_EXECUTION_VERSION };
       }
       const snapshot = snapshots.get('conversationId' in request ? request.conversationId : '')!;
       if (!snapshot) throw new Error('QA 会话不存在');
@@ -119,7 +145,7 @@ function fixtureStore() {
           blocks: message.blocks.filter(block => block.type === 'text').map(block => ({ type: 'text', text: block.text ?? '' })),
         })));
         promoted.set(conversation.id, conversation); notify();
-        return { promotedConversation: conversation, snapshot, executionVersion: 3 };
+        return { promotedConversation: conversation, snapshot, executionVersion: COLLABORATION_EXECUTION_VERSION };
       }
       if (request.action === 'send') {
         snapshot.messages = [...snapshot.messages, { ...message(snapshot, 'user', request.text), recipientMemberIds: request.recipientMemberIds ?? [], mentions: request.mentions ?? [] }];
@@ -134,7 +160,7 @@ function fixtureStore() {
         const doneTimer = setTimeout(() => { snapshot.messages = [...snapshot.messages, message(snapshot, member.id, text)]; snapshot.attempts = snapshot.attempts.map(a => a.id === taskId ? { ...a, status: 'succeeded', output: text } : a); emit(snapshot); timers.delete(doneTimer); }, 6400);
         timers.add(workTimer); timers.add(streamTimer); timers.add(doneTimer);
       }
-      return { snapshot: { ...snapshot }, executionVersion: 3 };
+      return { snapshot: { ...snapshot }, executionVersion: COLLABORATION_EXECUTION_VERSION };
     },
   };
   const pinnedAt = new Map<string, string>();
@@ -144,6 +170,7 @@ function fixtureStore() {
 }
 
 export default function AgentWorkspaceFixture() {
+  const embeddedShell = new URLSearchParams(location.search).get('shell-context') === 'embedded';
   const [store] = useState(() => {
     const value = fixtureStore();
     Object.defineProperty(window, 'syncThink', { configurable: true, value: { runtime: value.runtime } });
@@ -154,7 +181,7 @@ export default function AgentWorkspaceFixture() {
   const workspaces = [{ workspaceId: 'fixture-workspace', name: '产品设计', createdAt: date, updatedAt: date }, { workspaceId: '__projectless__', name: '不绑定工作区', createdAt: date, updatedAt: date }] as WorkspaceSummary[];
   const [workspaceId, setWorkspaceId] = useState('fixture-workspace');
   const [notice, setNotice] = useState('');
-  return <DialogProvider><div data-testid="agent-workspace-fixture" data-phase3-ready="true" style={{ width: '100%', height: '100dvh', display: 'flex' }}>
+  return <DialogProvider><div className={embeddedShell ? 'shell-normal-workspace' : undefined} data-testid="agent-workspace-fixture" data-phase3-ready="true" style={{ width: '100%', height: '100dvh', display: 'flex' }}>
     <AgentWorkspace key={workspaceId} workspaceId={workspaceId} workspaces={workspaces} agents={store.agents()} teams={store.teams()} models={fixtureModels} renderAgentLibrary={(onBack, onStartConversation, initialAgentId) => <AgentLibrary initialAgentId={initialAgentId} agents={store.agents()} models={fixtureModels} teams={store.teams()} onRefresh={() => refresh(v => v + 1)} onBack={onBack} onStartConversation={onStartConversation} />} renderLegacyConversation={(conversation, onEditAgent, agents) => <LegacyChat agentWorkspace onEditAgent={onEditAgent} conversation={conversation} agents={agents} teams={store.teams()} models={fixtureModels} workspaces={[{ ...workspaces[0], folderPath: 'D:/fixture' }]} modelName="离线验收模型" eventHistory={fixtureEvents} onTitleUpdated={() => refresh(v => v + 1)} />} conversations={store.conversations()} onExit={() => setNotice('工作区切换已触发；此页只运行离线智能体 UI。')} onSelectWorkspace={setWorkspaceId} onRefresh={() => refresh(v => v + 1)} onSettings={() => setNotice('设置入口已触发；正式桌面连接完整设置。')} onManageAgents={() => setNotice('管理入口已触发；正式桌面连接智能体库。')} onTogglePin={(id, pinned) => { store.togglePin(id, pinned); setNotice(pinned ? '已置顶' : '已取消置顶'); }} onRename={() => setNotice('重命名入口已触发')} onArchive={() => setNotice('归档入口已触发')} onUnarchive={() => setNotice('移出归档入口已触发')} />
     {notice && <div role="status" style={{ position: 'fixed', left: '50%', bottom: 20, padding: 12, background: 'var(--color-panel)', border: '1px solid var(--color-border)', borderRadius: 12, zIndex: 130 }} onClick={() => setNotice('')}>{notice}</div>}
   </div></DialogProvider>;

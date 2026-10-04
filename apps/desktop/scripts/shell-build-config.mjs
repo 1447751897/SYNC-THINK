@@ -88,7 +88,15 @@ export const SHELL_BUDGET = Object.freeze({ initialJsBytes: 2_240_000, // 2026-0
   // 2026-09-29: BoardUI-parity avatar motion (idle gaze/hops, stronger working
   // motion, animated active roster/group clusters) measures 3,495,980 bytes.
   // Add 5 KB to total only; the initial-load ceiling remains unchanged.
-  totalJsBytes: 3_500_000 });
+  // 2026-10-04: current shared-workspace production JS measures 3,550,424 bytes.
+  // Browser/file/review/terminal panels now load on demand, preserving the
+  // unchanged 2,240,000-byte initial-load ceiling. Keep a bounded ~20 KB total margin.
+  // 2026-10-05: current shared-workspace baseline plus image-process/history
+  // fixes measures 3,595,079 total bytes. Retain the initial-load ceiling and
+  // a bounded 30 KB total adjustment; the production gate remains enforced.
+  totalJsBytes: 3_600_000 });
+
+export const SHELL_ASSET_LOADERS = Object.freeze({ '.tsx': 'tsx', '.ts': 'ts', '.png': 'file', '.svg': 'dataurl', '.brand.svg': 'file', '.jpg': 'file' });
 
 export function shellBuildOptions(args, desktopRoot) {
   let mode = 'production';

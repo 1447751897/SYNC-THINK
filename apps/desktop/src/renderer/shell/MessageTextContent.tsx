@@ -75,7 +75,7 @@ export function MessageTextContent({
       {render(assembled ?? props.text, assembled === undefined)}
       {error ? (
         <p className="shell-deferred-content__notice" role="alert">
-          <span>读取失败，预览仍保留。</span>
+          <span>完整内容读取失败，当前仅保留截短预览；HTML 将在读取成功后显示。</span>
           <button type="button" disabled={busy} onClick={() => setRetryTick((value) => value + 1)}>
             重试读取
           </button>

@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>群聊试验场 · SYNC-THINK</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="navigation">
+        <a class="brand" href="/" aria-label="SYNC-THINK 群聊试验场"
+          ><span class="brand-mark">S</span><span>SYNC-THINK<small>群聊试验场</small></span></a
+        >
+        <div class="nav-caption">独立 DEMO</div>
+        <button class="nav-item selected" data-kind="game">
+          <span class="nav-symbol">◎</span><span>谁是卧底<small>你也参与的回合游戏</small></span>
+        </button>
+        <button class="nav-item" data-kind="work">
+          <span class="nav-symbol">↗</span><span>任务协作<small>目标、交接与产物</small></span>
+        </button>
+        <div class="nav-divider"></div>
+        <button class="nav-secondary" id="description-button">本群描述 <span>↗</span></button>
+        <button class="nav-secondary" id="context-button">查看我的上下文 <span>↗</span></button>
+        <div class="navigation-bottom">
+          <span class="local-dot"></span
+          ><span>本地规则模拟<small>不调用模型 · 不影响原应用</small></span>
+        </div>
+      </aside>
+      <main class="room">
+        <header class="room-header">
+          <div>
+            <div class="eyebrow">GROUP PLAYGROUND</div>
+            <h1 id="room-title">谁是卧底</h1>
+            <p id="room-subtitle">一位主持人，五位玩家。公开交流，私密词卡。</p>
+          </div>
+          <div class="header-actions">
+            <span class="demo-label">模拟智能体</span
+            ><button class="button quiet" id="restart-button" hidden>重新开始</button>
+          </div>
+        </header>
+        <div class="seat-strip" id="seat-strip" aria-label="当前参与者"></div>
+        <section class="start-screen" id="start-screen">
+          <div class="start-copy">
+            <div class="eyebrow">先体验，再决定</div>
+            <h2>他们会接着聊，<br />你也在这场对话里。</h2>
+            <p id="start-intro">
+              主持人会私密发词、依次点名。你只看自己的词，听每个人描述，再投出你的判断。
+            </p>
+          </div>
+          <form id="start-form" class="start-form">
+            <fieldset id="role-field">
+              <legend>这局你来做什么？</legend>
+              <div class="role-options">
+                <label
+                  ><input type="radio" name="role" value="player" checked /><span
+                    >参与游戏<small>只看到自己的词卡</small></span
+                  ></label
+                ><label
+                  ><input type="radio" name="role" value="host" /><span
+                    >观察主持视角<small>可看分配，不参赛</small></span
+                  ></label
+                >
+              </div>
+            </fieldset>
+            <label class="goal-field" id="goal-field" hidden
+              >本轮总目标<textarea id="goal-input" rows="3">
+设计一个能交接、能私聊、能从中断接续的群聊方案。</textarea>
+            </label>
+            <p class="form-note" id="form-note">
+              5 位玩家 · 1 名卧底 · 无白板。主持视角必须开新局，不能在参赛中途偷看。
+            </p>
+            <button type="submit" class="button primary start-button" id="start-button">
+              开始一局
+            </button>
+          </form>
+          <div class="demo-disclosure">
+            这是一份交互原型。智能体按本地规则生成描述和判断，不是真实模型；用于体验权限、回合和协作流程。
+          </div>
+        </section>
+        <section
+          class="chat-log"
+          id="chat-log"
+          aria-label="公开群消息"
+          aria-live="polite"
+          hidden
+        ></section>
+        <div class="composer-area" id="composer-area" hidden>
+          <div class="turn-banner" id="turn-banner"></div>
+          <form id="composer-form" class="composer">
+            <textarea
+              id="message-input"
+              rows="2"
+              aria-label="群消息"
+              placeholder="输入公开消息，@ 指定成员…"
+            ></textarea>
+            <div class="composer-bottom">
+              <div id="mention-shortcuts" class="mention-shortcuts"></div>
+              <button type="submit" id="send-button" class="button primary">发送消息</button>
+            </div>
+          </form>
+          <div class="composer-caption">
+            公开消息对全群可见；@ 只决定谁处理。Enter 发送，Shift + Enter 换行。
+          </div>
+        </div>
+      </main>
+      <aside class="inspector" id="inspector">
+        <div class="inspector-heading">
+          <span>协作状态</span><span class="status-indicator" id="room-status">准备开局</span>
+        </div>
+        <section class="inspector-section" id="progress-section">
+          <div class="section-label">主持人负责推进</div>
+          <h2>先发词，再点名。</h2>
+          <p>每个存活玩家每轮描述一次。观点不算选票，正式投票单独提交。</p>
+          <div class="flow-preview">
+            <span>描述</span><i>→</i><span>讨论</span><i>→</i><span>投票</span>
+          </div>
+        </section>
+        <section class="inspector-section" id="private-section">
+          <div class="section-label">私人信息</div>
+          <div class="private-preview">
+            开局后，你的词卡会出现在这里。<small>其他玩家的词不会返回到你的玩家页面。</small>
+          </div>
+        </section>
+        <section class="inspector-section" id="vote-section" hidden></section>
+        <section class="inspector-section control-section" id="control-section" hidden>
+          <div class="section-label">试试异常接续</div>
+          <div class="control-buttons">
+            <button class="button quiet" id="interrupt-button">模拟成员中断</button
+            ><button class="button quiet" id="pause-button">暂停</button>
+          </div>
+          <p>中断交给协调员处理；你主动暂停，自动续跑也会停止。</p>
+        </section>
+        <section class="inspector-section" id="record-section" hidden></section>
+        <div class="inspector-footer">当前主界面是公开群聊。<br />私密内容按当前身份隔离。</div>
+      </aside>
+    </div>
+    <dialog id="description-dialog">
+      <form method="dialog" class="dialog-header">
+        <div>
+          <div class="eyebrow">GROUP RULES</div>
+          <h2>本群描述</h2>
+        </div>
+        <button class="icon-button" aria-label="关闭">×</button>
+      </form>
+      <p>
+        描述属于这个群，不修改小队模板或智能体身份。Demo
+        的具体玩法由固定规则执行，文字编辑不自动编译为新玩法。
+      </p>
+      <textarea id="description-input" rows="7" aria-label="本群描述"></textarea>
+      <div class="dialog-footer">
+        <span>修改用于下次开局 / 新任务。</span
+        ><button class="button primary" id="save-description">保存下次使用</button>
+      </div>
+    </dialog>
+    <dialog id="context-dialog">
+      <form method="dialog" class="dialog-header">
+        <div>
+          <div class="eyebrow">YOUR CONTEXT</div>
+          <h2>当前身份收到什么</h2>
+        </div>
+        <button class="icon-button" aria-label="关闭">×</button>
+      </form>
+      <p id="context-caption">这里是服务端按你的身份返回的数据，不是把完整分配表藏在界面里。</p>
+      <pre id="context-content"></pre>
+    </dialog>
+    <div id="toast" role="status" class="toast" hidden></div>
+    <script type="module" src="/app.mjs"></script>
+  </body>
+</html>

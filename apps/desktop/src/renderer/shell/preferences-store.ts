@@ -20,12 +20,23 @@ export type ImageThemeVariant = 'mono' | 'neutral' | 'soft' | 'rich';
 export type ColorThemeId =
   'random' | 'default' | 'azure' | 'professional' | 'claude' | 'luxury' | 'custom';
 
+export interface CustomImageTheme {
+  id: string;
+  name: string;
+  dataUrl: string;
+  background: string;
+  accent: string;
+  focalPoint: { x: number; y: number };
+}
+
 export interface AppearancePreferences {
   version: 1;
   mode: ThemeMode;
   colorTheme: ColorThemeId;
   imageThemeId: string | null;
   imageEffect: ImageThemeEffect;
+  imageOverlayOpacity: number;
+  customImageThemes: CustomImageTheme[];
   customImageDataUrl: string | null;
   customImageName: string;
   customImageBackground: string;
@@ -211,6 +222,8 @@ const DEFAULT_APPEARANCE: AppearancePreferences = {
   colorTheme: 'default',
   imageThemeId: null,
   imageEffect: 'blur',
+  imageOverlayOpacity: 50,
+  customImageThemes: [],
   customImageDataUrl: null,
   customImageName: '我的图片',
   customImageBackground: '',
@@ -273,6 +286,36 @@ function validHex(value: unknown, fallback: string): string {
     : fallback;
 }
 
+function normalizeCustomImageTheme(value: unknown): CustomImageTheme | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  if (
+    typeof record.id !== 'string' || !/^custom-upload(?:-[a-z0-9-]+)?$/i.test(record.id) ||
+    typeof record.dataUrl !== 'string' || !record.dataUrl.startsWith('data:image/')
+  ) return null;
+  const focalPoint = record.focalPoint as { x?: unknown; y?: unknown } | undefined;
+  return {
+    id: record.id,
+    name: typeof record.name === 'string' && record.name.trim() ? record.name.trim().slice(0, 48) : '我的图片',
+    dataUrl: record.dataUrl,
+    background: validHex(record.background, '#ffffff'),
+    accent: validHex(record.accent, defaultCustomPrimary()),
+    focalPoint: { x: boundedNumber(focalPoint?.x, 0, 100, 50), y: boundedNumber(focalPoint?.y, 0, 100, 50) },
+  };
+}
+
+export function selectedCustomImageTheme(preferences: AppearancePreferences): CustomImageTheme | null {
+  const selected = preferences.customImageThemes?.find(image => image.id === preferences.imageThemeId);
+  if (selected) return selected;
+  // Compatibility with callers and records produced before the image library.
+  if (preferences.imageThemeId !== CUSTOM_IMAGE_THEME_ID || !preferences.customImageDataUrl) return null;
+  return {
+    id: CUSTOM_IMAGE_THEME_ID, name: preferences.customImageName, dataUrl: preferences.customImageDataUrl,
+    background: preferences.customImageBackground, accent: preferences.customImageAccent,
+    focalPoint: preferences.customImageFocalPoint,
+  };
+}
+
 export function readAppearancePreferences(storage?: Storage): AppearancePreferences {
   const target = storageOrDefault(storage);
   let raw: unknown;
@@ -326,6 +369,18 @@ export function readAppearancePreferences(storage?: Storage): AppearancePreferen
         ),
       ]
     : [];
+  const rawImages = Array.isArray(record.customImageThemes) ? record.customImageThemes : [{
+    id: CUSTOM_IMAGE_THEME_ID, name: record.customImageName, dataUrl: record.customImageDataUrl,
+    background: record.customImageBackground, accent: record.customImageAccent,
+    focalPoint: record.customImageFocalPoint,
+  }];
+  const seenImageIds = new Set<string>();
+  const customImageThemes = rawImages.flatMap(value => {
+    const image = normalizeCustomImageTheme(value);
+    if (!image || seenImageIds.has(image.id)) return [];
+    seenImageIds.add(image.id);
+    return [image];
+  });
   return {
     version: 1,
     mode,
@@ -333,10 +388,13 @@ export function readAppearancePreferences(storage?: Storage): AppearancePreferen
       ? (record.colorTheme as ColorThemeId)
       : DEFAULT_APPEARANCE.colorTheme,
     imageThemeId,
+    customImageThemes,
+    imageOverlayOpacity: boundedNumber(record.imageOverlayOpacity, 0, 100, 50),
     imageEffect: IMAGE_EFFECTS.has(record.imageEffect as ImageThemeEffect)
       ? (record.imageEffect as ImageThemeEffect)
       : DEFAULT_APPEARANCE.imageEffect,
     customImageDataUrl:
+      !Array.isArray(record.customImageThemes) &&
       typeof record.customImageDataUrl === 'string' &&
       record.customImageDataUrl.startsWith('data:image/')
         ? record.customImageDataUrl
@@ -380,15 +438,21 @@ export function readAppearancePreferences(storage?: Storage): AppearancePreferen
 export function writeAppearancePreferences(
   preferences: AppearancePreferences,
   storage?: Storage,
-): void {
+): boolean {
   const target = storageOrDefault(storage);
+  if (!target) return false;
   try {
-    target?.setItem(APPEARANCE_PREFERENCE_KEY, JSON.stringify(preferences));
-    target?.setItem(LEGACY_THEME_KEY, preferences.mode);
+    // Library entries own image bytes; retain legacy fields only for unmigrated callers.
+    const saved = preferences.customImageThemes?.length
+      ? { ...preferences, customImageDataUrl: null }
+      : preferences;
+    target.setItem(APPEARANCE_PREFERENCE_KEY, JSON.stringify(saved));
   } catch {
-    // Uploaded images are compressed before storage, but a full quota still
-    // must not make changing the rest of the appearance fail.
+    // setItem is atomic: a failed new upload must leave the old library intact.
+    return false;
   }
+  try { target.setItem(LEGACY_THEME_KEY, preferences.mode); } catch { /* The versioned preference already saved. */ }
+  return true;
 }
 
 function hexChannels(hex: string): [number, number, number] {
@@ -487,6 +551,8 @@ const IMAGE_THEME_VARIABLES = [
   '--shell-message-reading-blur',
   '--shell-message-reading-scrim',
   '--shell-chat-composer-surface',
+  '--shell-wallpaper-transition-surface',
+  '--shell-wallpaper-empty-scrim',
 ] as const;
 
 function clearDynamicColors(root: HTMLElement): void {
@@ -503,7 +569,10 @@ export function isDarkTheme(mode: ThemeMode): boolean {
   return typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches;
 }
 
-export function applyAppearancePreferences(preferences: AppearancePreferences): void {
+export function applyAppearancePreferences(
+  preferences: AppearancePreferences,
+  options: { persist?: boolean } = {},
+): void {
   if (typeof document === 'undefined') return;
   const root = document.documentElement;
   const dark = isDarkTheme(preferences.mode);
@@ -523,41 +592,31 @@ export function applyAppearancePreferences(preferences: AppearancePreferences): 
   applyWorkbenchAppearance(root, preferences);
 
   const preset = IMAGE_THEME_OPTIONS.find((item) => item.id === preferences.imageThemeId);
-  const imageUrl =
-    preferences.imageThemeId === CUSTOM_IMAGE_THEME_ID
-      ? preferences.customImageDataUrl
-      : preset?.imageUrl;
+  const customImage = selectedCustomImageTheme(preferences);
+  const imageUrl = customImage?.dataUrl ?? preset?.imageUrl;
   if (imageUrl) {
     root.dataset.imageTheme = 'active';
     root.style.setProperty('--shell-wallpaper-image', `url("${imageUrl.replaceAll('"', '\\"')}")`);
     root.style.setProperty(
       '--shell-wallpaper-position',
-      preferences.imageThemeId === CUSTOM_IMAGE_THEME_ID
-        ? `${preferences.customImageFocalPoint.x}% ${preferences.customImageFocalPoint.y}%`
-        : 'center',
+      customImage ? `${customImage.focalPoint.x}% ${customImage.focalPoint.y}%` : 'center',
     );
-    root.style.setProperty(
-      '--shell-wallpaper-overlay',
-      preferences.imageEffect === 'overlay'
-        ? dark
-          ? 'linear-gradient(rgba(0,0,0,0.56), rgba(0,0,0,0.56))'
-          : 'linear-gradient(color-mix(in srgb, var(--color-overlay) 50%, transparent), color-mix(in srgb, var(--color-overlay) 50%, transparent))'
-        : dark
-          ? 'linear-gradient(rgba(0,0,0,0.58), rgba(0,0,0,0.58))'
-          : 'linear-gradient(transparent, transparent)',
-    );
-    root.style.setProperty(
-      '--shell-message-reading-blur',
-      preferences.imageEffect === 'overlay' ? '0px' : '18px',
-    );
-    root.style.setProperty(
-      '--shell-message-reading-scrim',
-      dark
-        ? 'transparent'
-        : preferences.imageEffect === 'overlay'
-          ? 'color-mix(in srgb, var(--color-overlay) 40%, transparent)'
-          : 'linear-gradient(to bottom, color-mix(in srgb, var(--color-overlay) 72%, transparent), color-mix(in srgb, var(--color-overlay) 50%, transparent))',
-    );
+    // 50 preserves the previous appearance; zero removes all wallpaper color
+    // washes. Composer/card surfaces remain independent for readable controls.
+    const strength = boundedNumber(preferences.imageOverlayOpacity, 0, 100, 50) / 50;
+    const percent = (base: number) => Number(Math.min(100, base * strength).toFixed(2));
+    const wash = (color: string, base: number) => `color-mix(in srgb, ${color} ${percent(base)}%, transparent)`;
+    const overlayPercent = percent(dark ? (preferences.imageEffect === 'overlay' ? 56 : 58) : (preferences.imageEffect === 'overlay' ? 50 : 0));
+    const overlayColor = dark ? `rgba(0,0,0,${overlayPercent / 100})` : wash('var(--color-overlay)', 50);
+    root.style.setProperty('--shell-wallpaper-overlay', overlayPercent === 0
+      ? 'linear-gradient(transparent, transparent)'
+      : `linear-gradient(${overlayColor}, ${overlayColor})`);
+    root.style.setProperty('--shell-message-reading-blur', preferences.imageEffect === 'overlay' ? '0px' : '18px');
+    root.style.setProperty('--shell-message-reading-scrim', dark || strength === 0 ? 'transparent'
+      : preferences.imageEffect === 'overlay' ? wash('var(--color-overlay)', 40)
+      : `linear-gradient(to bottom, ${wash('var(--color-overlay)', 72)}, ${wash('var(--color-overlay)', 50)})`);
+    root.style.setProperty('--shell-wallpaper-transition-surface', wash('var(--color-tab-strip)', 100));
+    root.style.setProperty('--shell-wallpaper-empty-scrim', wash('var(--color-overlay)', 18));
     root.style.setProperty(
       '--shell-chat-composer-surface',
       dark ? 'rgba(18,18,18,0.72)' : 'color-mix(in srgb, var(--color-overlay) 86%, transparent)',
@@ -568,7 +627,7 @@ export function applyAppearancePreferences(preferences: AppearancePreferences): 
     root.style.removeProperty('--shell-wallpaper-position');
   }
 
-  writeAppearancePreferences(preferences);
+  if (options.persist !== false) writeAppearancePreferences(preferences);
   void window.syncThink?.runtime?.setTheme?.(preferences.mode);
   window.dispatchEvent(
     new CustomEvent('shell-preferences-applied', { detail: { preferences, dark } }),
@@ -579,7 +638,6 @@ export function updateAppearancePreferences(
   update: Partial<AppearancePreferences>,
 ): AppearancePreferences {
   const next = { ...readAppearancePreferences(), ...update, version: 1 as const };
-  writeAppearancePreferences(next);
   applyAppearancePreferences(next);
   return next;
 }

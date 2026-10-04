@@ -25,6 +25,8 @@ export interface BrowserPaneTab {
   type: 'browser';
   browserId: string;
   url: string;
+  /** Stable conversation/thread, never the per-turn run id. */
+  ownerId?: string;
 }
 
 /** Legacy workbench tab shape. Pane layouts no longer include this resource. */

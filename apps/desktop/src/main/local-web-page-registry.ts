@@ -2,7 +2,12 @@ import { randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
 
-export const LOCAL_WEB_PAGE_SCHEME = 'newmax-local-web';
+import {
+  LOCAL_WEB_PAGE_SCHEME,
+  LOCAL_WEB_PAGE_SCHEMES,
+  isLocalWebPageUrl,
+} from '../local-web-page-contract.js';
+export { LOCAL_WEB_PAGE_SCHEME } from '../local-web-page-contract.js';
 
 const HTML_FILE_EXTENSIONS = new Set(['.html', '.htm']);
 const CONTENT_TYPES: Record<string, string> = {
@@ -127,7 +132,7 @@ export class LocalWebPageRegistry {
     try {
       await this.ready;
       const url = new URL(request.url);
-      if (url.protocol !== `${LOCAL_WEB_PAGE_SCHEME}:`) return notFound();
+      if (!isLocalWebPageUrl(request.url)) return notFound();
       const entry = this.byToken.get(url.hostname);
       if (!entry) return notFound();
 
@@ -257,5 +262,7 @@ export function registerLocalWebPageProtocol(
   target: LocalWebPageProtocolSession,
   registry: LocalWebPageRegistry,
 ): void {
-  target.protocol.handle(LOCAL_WEB_PAGE_SCHEME, (request) => registry.handle(request));
+  for (const scheme of LOCAL_WEB_PAGE_SCHEMES) {
+    target.protocol.handle(scheme, (request) => registry.handle(request));
+  }
 }

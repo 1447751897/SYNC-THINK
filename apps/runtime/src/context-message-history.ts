@@ -1,12 +1,11 @@
 ﻿import type { ProviderMessage } from '@sync-think/adapters';
 import type { DelegatedRunRecord, Message } from '@sync-think/shared';
+import type { ConversationCompactBoundary } from './conversation-compact-boundary-cache.js';
+import type { CompactHistoryMessage } from './chat-tools.js';
 import { formatDelegatedRunContext } from './delegation-context.js';
 import { legacyDelegatedRunRecords } from './delegation-message-projection.js';
 
-export interface CompactContextBoundary {
-  summaryText: string;
-  compactedAt: string;
-}
+export type CompactContextBoundary = ConversationCompactBoundary;
 
 export interface CurrentContextImage {
   name: string;
@@ -161,14 +160,7 @@ function currentUserContent(
 export function buildProviderMessagesFromDurableMessages(
   input: BuildProviderMessagesInput,
 ): { messages: ProviderMessage[]; compactSummary?: string; compactedAt?: string } {
-  const compactedAtMs = input.compact ? Date.parse(input.compact.compactedAt) : Number.NaN;
-  const durable = [...input.messages]
-    .sort((a, b) => a.sequence - b.sequence)
-    .filter((message) => {
-      if (!Number.isFinite(compactedAtMs)) return true;
-      const createdAtMs = Date.parse(message.createdAt);
-      return Number.isFinite(createdAtMs) && createdAtMs > compactedAtMs;
-    });
+  const durable = visibleDurableContextMessages(input.messages, input.compact);
   const messages: ProviderMessage[] = [];
   for (const message of durable) {
     // UI-only compact notices are never sent back to the model.
@@ -222,4 +214,40 @@ export function buildProviderMessagesFromDurableMessages(
       ? { compactSummary: input.compact.summaryText.trim(), compactedAt: input.compact.compactedAt }
       : {}),
   };
+}
+
+
+/** Apply a durable prefix replacement, independent of clock skew or checkpoint event sequence. */
+export function visibleDurableContextMessages(messages: readonly Message[], compact?: CompactContextBoundary): Message[] {
+  const ordered = [...messages].sort((a, b) => a.sequence - b.sequence);
+  const through = compact?.coveredThroughMessageSequence;
+  if (through !== undefined && Number.isSafeInteger(through) && through >= 0) {
+    return ordered.filter(message => message.sequence > through);
+  }
+  const at = compact ? Date.parse(compact.compactedAt) : Number.NaN;
+  if (!Number.isFinite(at)) return ordered;
+  // Old events stored keepRecent but only a timestamp. Recover that raw tail from
+  // durable history rather than silently discarding it again on the next request.
+  const old = ordered.filter(message => Date.parse(message.createdAt) <= at &&
+    !(message.role === 'system' && /^上下文已(?:自动)?压缩/.test(textFromMessage(message))));
+  const keep = Math.max(0, Math.floor(compact?.keepRecent ?? 0));
+  const retained = new Set(old.slice(Math.max(0, old.length - keep)).map(message => message.id));
+  return ordered.filter(message => retained.has(message.id) || Date.parse(message.createdAt) > at);
+}
+
+/** Canonical message units used by compaction selection and its persisted boundary. */
+export function collectDurableCompactHistory(messages: readonly Message[], compact?: CompactContextBoundary): CompactHistoryMessage[] {
+  const result: CompactHistoryMessage[] = compact?.summaryText.trim()
+    ? [{ role: 'system', content: compact.summaryText, sequence: -1, checkpoint: true }] : [];
+  for (const message of visibleDurableContextMessages(messages, compact)) {
+    if (message.role === 'system' && /^上下文已(?:自动)?压缩/.test(textFromMessage(message))) continue;
+    const provider = buildProviderMessagesFromDurableMessages({ messages: [message], currentUserText: '' });
+    const texts = provider.messages.map(item => typeof item.content === 'string' ? item.content :
+      item.content.map(part => part.type === 'image' ? '[历史图片]' : (part.text ?? '')).join('\n'));
+    const images = message.blocks.filter(block => block.type === 'image').map(block =>
+      '[图片引用：' + String((block.payload as { storageRef?: string } | undefined)?.storageRef ?? '历史附件') + ']');
+    const content = [...texts, ...images].filter(Boolean).join('\n');
+    if (content.trim()) result.push({ role: message.role, content, sequence: message.sequence, messageId: message.id });
+  }
+  return result;
 }

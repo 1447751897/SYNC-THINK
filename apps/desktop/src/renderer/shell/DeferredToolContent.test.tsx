@@ -92,3 +92,14 @@ describe('NewMax-style assembled tool content', () => {
     expect(rendered.container.querySelectorAll('*').length).toBeLessThan(70);
   });
 });
+
+
+it('keeps assembled parameter content labeled as parameters rather than output', async () => {
+  vi.mocked(deferredContentReader.read).mockResolvedValue(chunk('{"columns":["事项"],"rows":[["已核对"]]}', 0));
+  render(<ConversationContentScope.Provider value="parameter-conversation">
+    <DeferredToolContent deferred={deferred} preview="参数预览" label="参数" />
+  </ConversationContentScope.Provider>);
+  await waitFor(() => expect(screen.getByTestId('deferred-tool-content').getAttribute('data-mode')).toBe('content'));
+  expect(screen.getByText('参数')).toBeTruthy();
+  expect(screen.queryByText('输出')).toBeNull();
+});

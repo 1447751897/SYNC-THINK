@@ -19,6 +19,7 @@ import * as C_AgentActivity from '../../AgentActivity.js';
 import * as C_AgentContactsSidebar from '../../AgentContactsSidebar.js';
 import * as C_AgentLibrary from '../../AgentLibrary.js';
 import * as C_AgentLimitsCard from '../../agent-limits-card.js';
+import { WebSearch } from '../../WebSearch.js';
 import * as C_AnswerSources from '../../AnswerSources.js';
 import * as C_AskQuestionCard from '../../AskQuestionCard.js';
 import * as C_BotAvatarCanvas from '../../BotAvatarCanvas.js';
@@ -30,6 +31,7 @@ import * as C_BrowserStage from '../../BrowserStage.js';
 import * as C_BrowserTaskDashboard from '../../BrowserTaskDashboard.js';
 import * as C_BrowserTaskInfo from '../../BrowserTaskInfo.js';
 import * as C_BrowserWorkflowPanel from '../../BrowserWorkflowPanel.js';
+import { GroupBrowserSettings } from '../../GroupBrowserAutomation.js';
 import * as C_ChatView from '../../ChatView.js';
 import * as C_ChromeExtensionBridgeCard from '../../ChromeExtensionBridgeCard.js';
 import * as C_CitationContext from '../../CitationContext.js';
@@ -105,11 +107,17 @@ import * as C_Sidebar from '../../Sidebar.js';
 import * as C_StreamingResponse from '../../StreamingResponse.js';
 import * as C_TaskCalendar from '../../TaskCalendar.js';
 import * as C_TaskPanel from '../../TaskPanel.js';
+import {
+  AutomationBindings,
+  type AutomationBinding,
+  type AutomationResources,
+} from '../../AutomationBindings.js';
 import * as C_TaskScopePicker from '../../TaskScopePicker.js';
 import * as C_TaskSheet from '../../TaskSheet.js';
 import * as C_TaskStatusPanel from '../../TaskStatusPanel.js';
 import * as C_TaskTemporalPicker from '../../TaskTemporalPicker.js';
 import * as C_TeamLibrary from '../../TeamLibrary.js';
+import GroupChatFolders from '../../GroupChatFolders.js';
 import * as C_TerminalPane from '../../TerminalPane.js';
 import * as C_TipsCarousel from '../../TipsCarousel.js';
 import * as C_Toast from '../../Toast.js';
@@ -352,12 +360,27 @@ export function Showcase({ name, variant = 'default' }: { name: string; variant?
     ToolApprovalCard: () => <LiveSpecimens only="ToolApprovalCard" />,
     ComposerEditor: composer,
     'compose-toolbar': composer,
+    WebSearch: () => <div className={variant==='reference'?'shell-web-search-reference':undefined} style={variant==='reference'?{width:486,maxWidth:'100%'}:undefined}><WebSearch heading="Ran 3 searches" steps={[
+      {id:'query',label:'Searching for what teams actually pay for in a component library',meta:'5 results',sources:[
+        {title:'Tailwind UI vs building your own: a cost breakdown',domain:'www.reddit.com',href:'https://www.reddit.com'},
+        {title:'We shipped our design system in 6 weeks. Here is what it cost',domain:'www.linkedin.com',href:'https://www.linkedin.com'},
+        {title:'shadcn/ui — the registry model explained',domain:'github.com',href:'https://github.com'},
+        {title:'Design tokens: a practical guide',domain:'www.figma.com',href:'https://www.figma.com'},
+        {title:'How we priced our component library',domain:'www.notion.so',href:'https://www.notion.so'},
+      ]},
+      {id:'x',label:'Searched X for',query:'component library OR design system pricing',meta:'7 posts'},
+      {id:'reddit',label:'Searched Reddit for',query:'r/reactjs worth paying for',meta:'12 threads'},
+      {id:'read',label:'Reading the strongest three threads'},
+    ]}/></div> ,
     'agent-limits-card': () =>
       e(C_AgentLimitsCard.AgentLimitsCard, {
         used: 184_200,
         limit: 400_000,
         usageRatio: 0.4605,
-        compactThreshold: 0.7,
+        compactThreshold: 0.85,
+        measurement:{source:variant === 'calibrated' ? 'provider-calibrated' : 'estimate',estimatedTokens:variant === 'calibrated' ? 179200 : 184200,
+          ...(variant === 'calibrated' ? {providerInputTokens:184200} : {})},
+        budget:{contextWindow:400000,reservedOutputTokens:8192,safetyMarginTokens:8192,fixedInputTokens:80200,availableInputTokens:383616,availableHistoryTokens:303416,compactTriggerTokens:340000,retainedTailTokens:62689},
         compactedAt: '2026-09-28T09:30:00.000Z',
         modelContextWindow: 400_000,
         contextWindowSource: 'configured',
@@ -785,6 +808,14 @@ export function Showcase({ name, variant = 'default' }: { name: string; variant?
       ),
     AgentLibrary: () => e(C_AgentLibrary.AgentLibrary, commonPage),
     TeamLibrary: () => e(C_TeamLibrary.TeamLibrary, commonPage),
+    GroupChatFolders: () =>
+      e(GroupChatFolders, {
+        scope: 'design-chat-folders-demo',
+        contacts: [],
+        searchTerm: '',
+        onCreateChat: noop,
+        renderContact: noop,
+      }),
     AgentContactsSidebar: () =>
       e(C_AgentContactsSidebar.default, {
         ...commonPage,
@@ -813,6 +844,8 @@ export function Showcase({ name, variant = 'default' }: { name: string; variant?
         workspaces: d.workspaces,
         renderManager: browser,
       }),
+    GroupBrowserAutomation: () =>
+      e(GroupBrowserSettings, { snapshot: d.collaboration, busy: true, onCommand: noop }),
     BrowserWorkflowPanel: () =>
       e(C_BrowserWorkflowPanel.BrowserWorkflowPanel, {
         workspaceId: d.workspaces[0].workspaceId,
@@ -868,6 +901,15 @@ export function Showcase({ name, variant = 'default' }: { name: string; variant?
       }),
     ChromeExtensionBridgeCard: () => e(C_ChromeExtensionBridgeCard.ChromeExtensionBridgeCard),
     TaskPanel: taskPanel,
+    // Automation dashboard is an opt-in specimen; scheduled tasks default to the original calendar.
+    AutomationCenter: () => (
+      <div className="sf-stack" style={{ height: 760, display: 'flex', flexDirection: 'column' }}>
+        <small>离线组件示例 · 仅演示任务配置与本地状态，不运行模型或发送邮件。</small>
+        <div style={{ flex: 1, minHeight: 0 }}>{e(C_TaskPanel.TaskPanel, { ...commonPage, initialView: 'center' })}</div>
+      </div>
+    ),
+    AutomationBindings: () => <AutomationBindingsSpecimen empty={empty} />,
+
     TaskCalendar: () =>
       e(C_TaskCalendar.TaskCalendar, {
         tasks: d.tasks,
@@ -1373,6 +1415,100 @@ function MinimapExample() {
         ))}
       </div>
       {e(C_ConversationMinimapRail.ConversationMinimapRail, { items, scrollerRef: scroller })}
+    </div>
+  );
+}
+
+/** Real binding component with explicitly offline registry metadata, not a recreated form. */
+function AutomationBindingsSpecimen({ empty }: { empty: boolean }) {
+  const [binding, setBinding] = useState<AutomationBinding>(() =>
+    empty
+      ? { executionMode: 'workspace' }
+      : {
+          executionMode: 'workspace',
+          browser: { profileId: d.profile.id, workflowTaskId: 'offline-published-flow' },
+          outputs: ['spreadsheet'],
+          delivery: {
+            kind: 'gmail',
+            mcpServerId: 'offline-gmail',
+            toolName: 'gmail_send_message',
+            recipient: 'offline-recipient@example.test',
+          },
+          acceptance: '离线组件示例：采集→整理→产物→交付；这里仅展示绑定，未生成文件或发送邮件。',
+        },
+  );
+  const [refreshed, setRefreshed] = useState(false);
+  const resources: AutomationResources = {
+    profiles: empty ? [] : [d.profile],
+    workflows: empty
+      ? []
+      : [
+          {
+            id: 'offline-published-flow',
+            profileId: d.profile.id,
+            name: '离线示例 · 已发布采集流程',
+            instruction: '离线组件示例，不采集外部网站。',
+            startUrl: 'https://example.test/offline',
+            source: 'manual',
+            status: 'enabled',
+            revision: 1,
+            publishedVersionId: 'offline-flow-v1',
+            successCount: 0,
+            failureCount: 0,
+            createdAt: d.timestamp,
+            updatedAt: d.timestamp,
+          },
+        ],
+    servers: empty
+      ? []
+      : [
+          {
+            mcpServerId: 'offline-gmail',
+            name: '离线示例 Gmail connector',
+            transport: 'remote-http',
+            endpoint: 'https://example.test/offline-mcp',
+            enabled: true,
+            trusted: true,
+            maxOutputBytes: 10000,
+            timeoutMs: 1000,
+            notes: '仅离线登记数据，不连接邮箱。',
+            tools: [
+              {
+                name: 'gmail_send_message',
+                description: '离线工具 schema，用来演示明确选择发件工具。',
+                inputSchemaJson: JSON.stringify({
+                  type: 'object',
+                  properties: { to: { type: 'string' }, subject: { type: 'string' } },
+                  required: ['to'],
+                }),
+              },
+              {
+                name: 'gmail_send_draft',
+                description: '离线工具 schema，只接受 draftId；用于演示 connector 格式提示。',
+                inputSchemaJson: JSON.stringify({
+                  type: 'object',
+                  properties: { draftId: { type: 'string' } },
+                  required: ['draftId'],
+                }),
+              },
+            ],
+            createdAt: d.timestamp,
+            updatedAt: d.timestamp,
+          },
+        ],
+    errors: {},
+    loading: false,
+  };
+  return (
+    <div className="sf-stack">
+      <small>离线组件示例 · 仅登记数据；不验证连接、不发送邮件。</small>
+      <AutomationBindings
+        value={binding}
+        onChange={setBinding}
+        resources={resources}
+        onReload={() => setRefreshed(true)}
+      />
+      {refreshed ? <small role="status">已刷新离线示例配置；没有连接外部服务。</small> : null}
     </div>
   );
 }

@@ -5,15 +5,10 @@
 :root[data-shell-design='agent'] .shell-normal-workspace .shell-topbar--chat .shell-workspace-tabs__scroller { align-items: center; gap: 8px; overflow: visible; }
 :root[data-shell-design='agent'] .shell-normal-workspace .shell-topbar--chat [data-testid='topbar-workspace-menu'] { width: auto; max-width: 230px; height: 28px; gap: 6px; padding: 0 4px; font-size: 12px; font-weight: 400; color: var(--color-text-secondary); }
 :root[data-shell-design='agent'] .shell-normal-workspace .shell-chat-breadcrumb__project { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-:root[data-shell-design='agent'] .shell-normal-workspace .shell-chat-breadcrumb__conversation { display: flex; align-items: center; min-width: 0; gap: 10px; padding-right: 76px; font-size: 12px; color: var(--color-text-secondary); }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-chat-breadcrumb__conversation { display: flex; align-items: center; min-width: 0; gap: 10px; padding-right: 0; font-size: 12px; color: var(--color-text-secondary); }
 :root[data-shell-design='agent'] .shell-normal-workspace .shell-chat-breadcrumb__conversation span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 :root[data-shell-design='agent'] .shell-normal-workspace .shell-topbar--chat .shell-workspace-workbench-toggles { gap: 2px; }
 :root[data-shell-design='agent'] .shell-normal-workspace .shell-topbar--chat .shell-workspace-workbench-toggles button { width: 28px; }
-:root[data-shell-design='agent'] .shell-normal-workspace .shell-conversation-tabs[data-compact-header='true'] { position: absolute; top: -40px; right: 80px; width: auto; height: 28px; min-height: 28px; padding: 0; gap: 2px; z-index: 5; overflow: visible; }
-:root[data-shell-design='agent'] .shell-normal-workspace .shell-conversation-tabs[data-compact-header='true'] .shell-conversation-tabs__scroller { display: none; }
-:root[data-shell-design='agent'] .shell-normal-workspace .shell-conversation-tabs[data-compact-header='true'] .shell-conversation-tabs__cluster { flex: 0 0 auto; }
-:root[data-shell-design='agent'] .shell-normal-workspace .shell-conversation-tabs[data-compact-header='true'] .shell-conversation-tabs__actions { margin-left: 0; }
-:root[data-shell-design='agent'] .shell-normal-workspace .shell-conversation-tabs[data-compact-header='true'] .shell-tab-add { width: 26px; min-width: 26px; }
 /* Search and the primary action stay neutral; blue belongs to selection/sending. */
 :root[data-shell-design='agent'] .shell-normal-workspace .shell-sidebar--chat .shell-sidebar-brand { margin-bottom: 8px; }
 :root[data-shell-design='agent'] .shell-normal-workspace .shell-sidebar--chat .sidebar-mode-switch { padding: 2px; margin-bottom: 10px; background: transparent; }
@@ -36,10 +31,8 @@
 :root[data-shell-design='agent'] .shell-normal-workspace .shell-sidebar--chat .st-conv-row { min-height: 32px; height: 32px; padding: 6px 7px 6px 18px; border-radius: 10px; font-weight: 400; }
 :root[data-shell-design='agent'] .shell-normal-workspace .shell-sidebar--chat .st-conv-row::before { content: ''; position: absolute; left: 0; top: -9px; width: 13px; height: 25px; border-left: 1px solid var(--color-border-strong); border-bottom: 1px solid var(--color-border-strong); border-bottom-left-radius: 6px; opacity: .65; pointer-events: none; }
 :root[data-shell-design='agent'] .shell-normal-workspace .shell-sidebar--chat .st-conv-row__time { border-radius: 4px; background: var(--color-hover); padding: 1px 3px; font-size: 10px; color: var(--color-text-secondary); }
-:root[data-shell-design='agent'] .shell-normal-workspace .shell-sidebar-theme { display: flex; gap: 2px; padding: 3px; width: fit-content; margin: auto 6px 0; border-radius: 999px; background: var(--color-hover); }
-:root[data-shell-design='agent'] .shell-normal-workspace .shell-sidebar-theme button { display: flex; align-items: center; justify-content: center; width: 30px; height: 30px; border: 0; border-radius: 50%; background: transparent; color: var(--color-text-secondary); cursor: pointer; }
-:root[data-shell-design='agent'] .shell-normal-workspace .shell-sidebar-theme button[aria-pressed='true'] { background: var(--color-surface); color: var(--color-text); box-shadow: var(--wb-surface-shadow); }
-:root[data-shell-design='agent'] .shell-normal-workspace [data-testid='sidebar-settings-box'] { margin-top: 0; background: var(--color-hover); border-radius: 14px; }
+/* The shell also contains the embedded agent workspace. These chat overrides
+ * belong only to workbench chat; ancestor opt-in alone is not a surface boundary. */
 /* Empty chat keeps its real shortcuts, but the input stays anchored like a thread. */
 :root[data-shell-design='agent'] .shell-normal-workspace .shell-chat-column--empty-newmax:not(.agent-chat-workspace *) { justify-content: flex-start; padding: 0; overflow-y: auto; }
 :root[data-shell-design='agent'] .shell-normal-workspace .shell-welcome--newmax:not(.agent-chat-workspace *) { order: 0; margin-top: auto; margin-bottom: 20px; padding-block: 28px 0; }
@@ -57,7 +50,8 @@
 :root[data-shell-design='agent'] .shell-normal-workspace .shell-user-bubble:not(.agent-chat-workspace *) { max-width: min(84%, 580px); border-radius: 18px; padding: 12px 14px; font-size: 13px; line-height: 1.55; }
 :root[data-shell-design='agent'] .shell-normal-workspace .shell-streaming-response:not(.agent-chat-workspace *)[data-variant='bubble'] > .shell-response__content:not(:empty) { padding: 0; background: transparent; border-radius: 0; font-size: 13px; }
 :root[data-shell-design='agent'] .shell-normal-workspace .shell-response__footer:not(.agent-chat-workspace *) { padding-inline: 0; }
-:root[data-shell-design='agent'] .shell-normal-workspace .shell-md-code:not(.agent-chat-workspace *) { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 16px; }
+/* Standalone Markdown owns a code card; expanded tool details own their single outer card. */
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-md-code:not(.agent-chat-workspace *):not(.shell-inline-process__tool-body *) { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 16px; }
 /* Compact input: every visible action uses the existing runtime implementation. */
 :root[data-shell-design='agent'] .shell-normal-workspace .shell-newmax-composer-frame[data-presentation='pill'] { display: flex; flex-direction: column; width: 100%; }
 :root[data-shell-design='agent'] .shell-normal-workspace .shell-newmax-composer-frame[data-presentation='pill'] > .shell-compose { display: grid; grid-template-columns: 34px minmax(0, 1fr) auto; align-items: end; gap: 6px; min-height: 52px; padding: 7px; border: 1px solid var(--color-border); border-radius: 26px; box-shadow: var(--wb-surface-shadow); }
@@ -87,7 +81,7 @@
 :root[data-shell-design='agent'] .shell-normal-workspace .shell-ai-composer-status .shell-compose__ctx svg { width: 15px; height: 15px; }
 :root[data-shell-design='agent'] .shell-normal-workspace .shell-ai-composer-status .shell-compose__ctx .shell-context-percent { white-space: nowrap; }
 :root[data-shell-design='agent'] .shell-normal-workspace .shell-newmax-composer-frame[data-presentation='pill'] .shell-compose__mode-keyword-hint { grid-column: 1 / -1; grid-row: 2; }
-:root[data-shell-design='agent'] .shell-normal-workspace .shell-workbench--right { background: var(--color-surface); }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-workbench--right { background: var(--color-workbench); }
 :root[data-shell-design='agent'] .shell-normal-workspace .shell-workbench--right .shell-workbench__tabbar { height: 52px; min-height: 52px; padding: 10px 8px; background: transparent; }
 :root[data-shell-design='agent'] .shell-normal-workspace .shell-workbench--right .shell-workbench-tab { background: transparent; box-shadow: none; }
 :root[data-shell-design='agent'] .shell-normal-workspace .shell-workbench--right .shell-workbench-tab.is-active { color: var(--color-accent-text); background: var(--color-accent-soft); box-shadow: none; }
@@ -97,11 +91,10 @@
   :root[data-shell-design='agent'] .shell-normal-workspace .shell-topbar--chat { padding-inline: 10px; }
   :root[data-shell-design='agent'] .shell-normal-workspace .shell-newmax-composer-frame[data-presentation='pill'] > .shell-compose { grid-template-columns: 30px minmax(0, 1fr) auto; gap: 3px; padding: 6px; }
   :root[data-shell-design='agent'] .shell-normal-workspace .shell-newmax-composer-frame[data-presentation='pill'] .shell-compose__bar-right .shell-compose__tool-wrap { max-width: 144px; }
-  :root[data-shell-design='agent'] .shell-normal-workspace .shell-chat-content-wrap { padding-inline: 10px; }
+  :root[data-shell-design='agent'] .shell-normal-workspace .shell-chat-content-wrap:not(.agent-chat-workspace *) { padding-inline: 10px; }
   :root[data-shell-design='agent'] .shell-normal-workspace .shell-newmax-composer-frame__status .shell-composer-git { flex-wrap: wrap; height: auto; }
 }
 @media (max-width: 760px) {
-  :root[data-shell-design='agent'] .shell-normal-workspace .shell-chat-breadcrumb__conversation { padding-right: 32px; }
   :root[data-shell-design='agent'] .shell-normal-workspace .shell-newmax-composer-frame[data-presentation='pill'] > .shell-compose { grid-template-columns: 30px minmax(0, 1fr); }
   :root[data-shell-design='agent'] .shell-normal-workspace .shell-newmax-composer-frame[data-presentation='pill'] .shell-compose__bar { grid-column: 1 / -1; grid-row: 2; justify-content: flex-end; }
   :root[data-shell-design='agent'] .shell-normal-workspace .shell-newmax-composer-frame[data-presentation='pill'] .shell-compose__bar-right .shell-compose__tool-wrap { max-width: 210px; }
@@ -116,7 +109,6 @@
 :root[data-shell-design='agent'] .shell-normal-workspace .shell-newmax-composer-frame[data-presentation='pill'] .shell-compose__model-btn > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 :root[data-shell-design='agent'] .shell-normal-workspace .shell-composer-paired-actions .shell-compose__voice { order: 0; }
 :root[data-shell-design='agent'] .shell-normal-workspace .shell-composer-paired-actions .shell-compose__send { order: 1; }
-:root[data-shell-design='agent'] .shell-normal-workspace :is(.shell-pane-frame, .shell-workspace-pane, .shell-pane-tree):has([data-compact-header='true']) { overflow: visible; }
 :root[data-shell-design='agent'] .shell-normal-workspace .shell-sidebar--chat .st-conv-row__identity { display: contents; }
 :root[data-shell-design='agent'] .shell-normal-workspace .shell-sidebar--chat .st-conv-row__identity > :not(.st-conv-row__activity) { display: none; }
 :root[data-shell-design='agent'] .shell-normal-workspace .shell-sidebar--chat .st-conv-row__identity > .st-conv-row__activity { position: absolute; top: calc(50% - 3px); right: 5px; bottom: auto; margin: 0; }

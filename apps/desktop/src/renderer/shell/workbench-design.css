@@ -34,7 +34,9 @@
 :root[data-shell-design='agent'] .shell-normal-workspace .shell-board.shell-stage--talk { border-radius: 0; background: transparent; }
 :root[data-shell-design='agent'] .shell-normal-workspace .shell-workspace-content-frame { border-radius: var(--wb-panel-radius); box-shadow: none; background: transparent; gap: 12px; }
 :root[data-shell-design='agent'] .shell-normal-workspace .shell-workspace-content-row { gap: 12px; }
-:root[data-shell-design='agent'] .shell-normal-workspace .shell-workspace-primary-content { border-radius: var(--wb-panel-radius); background: var(--color-chat); min-width: min(320px, 100%); }
+/* Set only the canvas color: background shorthand would clear the wallpaper
+ * image beneath overlay mode, which intentionally has no blurred copy. */
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-workspace-primary-content { border-radius: var(--wb-panel-radius); background-color: var(--color-chat); min-width: min(320px, 100%); }
 :root[data-shell-design='agent'] .shell-normal-workspace :is(.shell-pane, .shell-pane-canvas) { background: var(--color-chat); }
 /* 2. Navigation: a compact two-column tool shelf above real conversation history. */
 :root[data-shell-design='agent'] .shell-normal-workspace .shell-sidebar-panel__body { padding: 10px 8px; gap: 12px; }
@@ -94,7 +96,8 @@
 :root[data-shell-design='agent'] .shell-normal-workspace .shell-response__footer:not(.agent-chat-workspace *) { padding-inline: 4px; }
 :root[data-shell-design='agent'] .shell-normal-workspace :is(.shell-process-group, .shell-inline-process, .shell-harness-terminal):not(.agent-chat-workspace *) { border-radius: 14px; box-shadow: none; }
 :root[data-shell-design='agent'] .shell-normal-workspace .shell-process-group:not(.agent-chat-workspace *) { border-color: var(--color-border); }
-:root[data-shell-design='agent'] .shell-normal-workspace .shell-md-code:not(.agent-chat-workspace *) { border-radius: 14px; box-shadow: none; }
+/* Standalone Markdown owns a code card; expanded tool details own their single outer card. */
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-md-code:not(.agent-chat-workspace *):not(.shell-inline-process__tool-body *) { border-radius: 14px; box-shadow: none; }
 :root[data-shell-design='agent'] .shell-normal-workspace :is(.shell-compose, .shell-newmax-composer):not(.agent-chat-workspace *) { border: 1px solid var(--color-border); border-radius: 22px; background: var(--composer-surface); box-shadow: var(--composer-card-shadow); }
 :root[data-shell-design='agent'] .shell-normal-workspace :is(.shell-compose, .shell-newmax-composer):not(.agent-chat-workspace *):focus-within { border-color: color-mix(in srgb, var(--color-accent) 42%, var(--color-border)); box-shadow: var(--composer-card-shadow-focus); }
 :root[data-shell-design='agent'] .shell-normal-workspace .shell-compose__bar:not(.agent-chat-workspace *) { padding: 6px 10px 10px; }

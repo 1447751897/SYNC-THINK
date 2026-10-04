@@ -31,6 +31,7 @@ export interface ActiveToolApproval {
   allowedScopes: ToolApprovalScope[];
   resolve: (decision: ToolApprovalDecision) => void;
   createdAt: string;
+  applyApprovedArguments?: (args: Record<string, unknown>) => void;
 }
 
 export interface ActiveToolApprovalFilter {
@@ -132,6 +133,7 @@ export function decideActiveToolApproval(input: {
   commit(approval: ActiveToolApproval): Event;
   record(event: Event): void;
   publish(event: Event): void;
+  approvedArguments?: Record<string, unknown>;
 }): DecideActiveToolApprovalResult {
   const approval = input.lifecycle.get(input.approvalId);
   if (!approval) return { status: 'inactive' };
@@ -144,6 +146,11 @@ export function decideActiveToolApproval(input: {
 
   const event = input.commit(approval);
   input.record(event);
+  if (input.decision === 'approve' && input.approvedArguments) {
+    approval.applyApprovedArguments?.(input.approvedArguments);
+    approval.arguments = input.approvedArguments;
+    approval.toolCall.argumentsJson = JSON.stringify(input.approvedArguments);
+  }
   input.lifecycle.settle(input.approvalId, input.decision);
   input.publish(event);
   return { status: 'decided', approval, event, scope: input.scope };

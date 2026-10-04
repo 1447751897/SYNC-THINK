@@ -89,7 +89,7 @@ export function NewConversationDialog(props: NewConversationDialogProps) {
                   <Bot size={13} /> 智能体单聊
                 </button>
                 <button className="flex h-9 items-center justify-center gap-1 rounded-(--radius-row) border border-border text-[11px] hover:bg-hover" onClick={() => setCollaborationKind('group')}>
-                  <Network size={13} /> 智能体群聊
+                  <Network size={13} /> 群聊
                 </button>
               </div>
             )}
@@ -99,7 +99,7 @@ export function NewConversationDialog(props: NewConversationDialogProps) {
                 <div className="collab-picker" data-testid="collaboration-picker">
                   <div className="collab-picker__stage" aria-live="polite">
                     {picked.length ? <AvatarCluster members={picked} size={40} max={5} /> : <span className="collab-picker__placeholder"><Users size={18} /></span>}
-                    <span className="collab-picker__title">{picked.length ? (collaborationKind === 'group' ? collaborationGroupTitle(picked.map((agent) => agent.name)) : picked[0]!.name) : `选择${collaborationKind === 'direct' ? '一个' : '至少两个'}智能体`}</span>
+                    <span className="collab-picker__title">{picked.length ? (collaborationKind === 'group' ? collaborationGroupTitle(picked.map((agent) => agent.name)) : picked[0]!.name) : `选择${collaborationKind === 'direct' ? '一个' : '至少一个'}智能体`}</span>
                   </div>
                   {picked.length > 0 && <div className="collab-picker__pills">{picked.map((agent) => <button type="button" key={agent.id} className="collab-picker__pill" aria-label={`移除${agent.name}`} onClick={() => toggleMember(agent.id)}><AgentAvatarView name={agent.name} avatar={agent.avatar} size={16} />{agent.name}<X size={11} /></button>)}</div>}
                 </div>
@@ -109,7 +109,7 @@ export function NewConversationDialog(props: NewConversationDialogProps) {
                     return <button type="button" key={agent.id} aria-pressed={selected} aria-label={agent.name} className={clsx('flex h-10 w-full items-center gap-2 rounded-(--radius-row) px-2 text-left text-[12px]', selected ? 'bg-accent-soft text-accent-text' : 'hover:bg-hover')} onClick={() => toggleMember(agent.id)}><AgentAvatarView name={agent.name} avatar={agent.avatar} size={26} /><span className="min-w-0 flex-1"><span className="block truncate">{agent.name}</span>{agent.description && <span className="block truncate text-[11px] text-text-faint">{agent.description}</span>}</span>{selected && <Check size={13} />}</button>;
                   })}
                 </div>
-                <button type="button" className="mt-2 h-8 w-full rounded-(--radius-row) bg-accent-soft text-[11px] text-accent-text disabled:opacity-50" disabled={selectedMembers.length < (collaborationKind === 'direct' ? 1 : 2)} onClick={() => props.onPickCollaboration?.(collaborationKind, '', selectedMembers)}>{collaborationKind === 'group' ? `开始群聊${selectedMembers.length >= 2 ? `（${selectedMembers.length} 位）` : ''}` : '继续'}</button>
+                <button type="button" className="mt-2 h-8 w-full rounded-(--radius-row) bg-accent-soft text-[11px] text-accent-text disabled:opacity-50" disabled={selectedMembers.length < 1} onClick={() => props.onPickCollaboration?.(collaborationKind, '', selectedMembers)}>{collaborationKind === 'group' ? `创建群聊${selectedMembers.length >= 1 ? `（${selectedMembers.length} 位）` : ''}` : '继续'}</button>
               </div>
             )}
             {!collaborationKind && props.track === 'model' && (

@@ -1,3 +1,4 @@
+import { REASONING_OPTIONS } from './reasoning-options.js';
 /**
  * @vitest-environment jsdom
  */
@@ -465,6 +466,12 @@ describe('AgentLibrary tabbed detail drawer', () => {
     fireEvent.click(screen.getByTestId('agent-drawer-tab-settings'));
 
     const reasoning = within(screen.getByTestId('agent-drawer-settings')).getByRole('group', { name: '推理强度' });
+    expect(within(reasoning).getAllByRole('button').map(button => button.getAttribute('aria-label'))).toEqual(REASONING_OPTIONS.map(option => option.title));
+    for (const option of REASONING_OPTIONS) {
+      fireEvent.click(within(reasoning).getByRole('button', { name: option.title }));
+      expect(within(reasoning).getByRole('button', { name: option.title }).getAttribute('aria-pressed')).toBe('true');
+    }
+    fireEvent.click(within(reasoning).getByRole('button', { name: '自动' }));
     expect(
       within(reasoning).getByRole('button', { name: '自动' }).getAttribute('aria-pressed'),
     ).toBe('true');
@@ -472,6 +479,19 @@ describe('AgentLibrary tabbed detail drawer', () => {
     expect(within(reasoning).getByRole('button', { name: '高' }).getAttribute('aria-pressed')).toBe(
       'true',
     );
+  });
+
+  it.each(['minimal', 'xhigh', 'max'])('persists the newly exposed %s reasoning setting from the full agent editor', async reasoningEffort => {
+    const updateGlobalAgent = vi.fn().mockResolvedValue({ agent: { ...agent, reasoningEffort } });
+    Object.defineProperty(window, 'syncThink', { configurable: true, value: { runtime: { updateGlobalAgent } } });
+    renderLibrary();
+    openDrawer();
+    fireEvent.click(screen.getByTestId('agent-drawer-tab-settings'));
+    const option = REASONING_OPTIONS.find(option => option.value === reasoningEffort)!;
+    fireEvent.click(within(screen.getByRole('group', { name: '推理强度' })).getByRole('button', { name: option.title }));
+    fireEvent.click(screen.getByRole('button', { name: '保存' }));
+    await waitFor(() => expect(updateGlobalAgent).toHaveBeenCalledWith(expect.objectContaining({ agentId: agent.id, reasoningEffort })));
+    await waitFor(() => expect(screen.queryByTestId('agent-detail-drawer')).toBeNull());
   });
 
   it('filters skills with a capsule search and toggles a custom checkbox', async () => {

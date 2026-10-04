@@ -1,0 +1,49 @@
+.settings-image-theme__controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.settings-image-theme__opacity {
+  display: flex;
+  flex: 0 1 320px;
+  min-width: 180px;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--color-text);
+  font-size: 12px;
+}
+
+.settings-image-theme__opacity > span {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.settings-image-theme__opacity output {
+  color: var(--color-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.settings-image-theme__opacity input {
+  width: 100%;
+  min-height: 24px;
+  margin: 0;
+  accent-color: var(--color-accent);
+  cursor: pointer;
+}
+
+.settings-image-theme__opacity input:focus-visible {
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: 3px;
+  border-radius: var(--radius-row);
+}
+
+.settings-image-theme__hint {
+  margin: 0 0 12px;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}

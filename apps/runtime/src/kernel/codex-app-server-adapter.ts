@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync } from 'node:fs';
-import { isAbsolute } from 'node:path';
+import { existsSync, mkdirSync } from 'node:fs';
+import { isAbsolute, join } from 'node:path';
+import { managedKernelRoot } from './managed-kernel.js';
 import type {
   KernelAdapter,
   KernelEvent,
@@ -83,6 +84,8 @@ const COMMAND_SILENCE_REMINDER_MS = 120_000;
 export interface CodexAppServerAdapterDeps {
   spawn?: (args: string[], env: Record<string, string>, cwd: string) => KernelProcessHandle;
   requestTimeoutMs?: number;
+  /** Persistent app-owned state for API-key sessions; local-login sessions keep their original home. */
+  apiHomeDirectory?: string;
   /** Override the output reminder delay; tests inject a short interval. */
   commandSilenceReminderMs?: number;
 }
@@ -618,6 +621,13 @@ export class CodexAppServerKernelAdapter implements KernelAdapter {
     const secrets = [request.credential.apiKey, request.platformBroker?.token];
     let handle: KernelProcessHandle;
     try {
+      // API credentials are supplied by Sync-Think. Never reuse the desktop
+      // Codex app's restricted state database/config or copy its login tokens.
+      if (request.credential.apiKey && !request.credential.reuseLocalLogin) {
+        const home = this.deps.apiHomeDirectory ?? join(managedKernelRoot(), 'state', 'codex');
+        mkdirSync(home, { recursive: true, mode: 0o700 });
+        provider.env.CODEX_HOME = home;
+      }
       handle = this.deps.spawn
         ? this.deps.spawn(args, provider.env, request.workspaceDir)
         : startKernelProcess({

@@ -2,10 +2,10 @@
  * @vitest-environment jsdom
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { PERSONALIZATION_SETTING_KEY } from '@sync-think/protocol/preferences';
 import { compressThemeImage, PreferencesSettings } from './PreferencesSettings.js';
-import { APPEARANCE_PREFERENCE_KEY, SHORTCUT_PREFERENCE_KEY } from './preferences-store.js';
+import { APPEARANCE_PREFERENCE_KEY, SHORTCUT_PREFERENCE_KEY, readAppearancePreferences } from './preferences-store.js';
 
 const runtime = {
   setTheme: vi.fn().mockResolvedValue({ dark: false }),
@@ -171,6 +171,32 @@ describe('PreferencesSettings', () => {
     expect(screen.getByText('系统快捷键')).toBeTruthy();
   });
 
+  it('switches wallpaper effects without clearing the selected image', () => {
+    render(<PreferencesSettings />);
+    fireEvent.click(screen.getByRole('button', { name: '雾林深境图片主题' }));
+    const root = document.documentElement;
+    const image = root.style.getPropertyValue('--shell-wallpaper-image');
+    const overlay = screen.getByRole('radio', { name: '覆盖色' });
+    const blur = screen.getByRole('radio', { name: '模糊' });
+
+    fireEvent.click(overlay);
+    expect(overlay.getAttribute('aria-checked')).toBe('true');
+    expect(blur.getAttribute('aria-checked')).toBe('false');
+    expect(root.dataset.imageThemeEffect).toBe('overlay');
+    expect(root.style.getPropertyValue('--shell-message-reading-blur')).toBe('0px');
+    expect(root.style.getPropertyValue('--shell-wallpaper-image')).toBe(image);
+    expect(JSON.parse(localStorage.getItem(APPEARANCE_PREFERENCE_KEY) ?? '{}')).toMatchObject({
+      imageEffect: 'overlay', imageThemeId: 'preset-lakewood',
+    });
+
+    fireEvent.click(blur);
+    expect(blur.getAttribute('aria-checked')).toBe('true');
+    expect(overlay.getAttribute('aria-checked')).toBe('false');
+    expect(root.dataset.imageThemeEffect).toBe('blur');
+    expect(root.style.getPropertyValue('--shell-message-reading-blur')).toBe('18px');
+    expect(root.style.getPropertyValue('--shell-wallpaper-image')).toBe(image);
+  });
+
   it('supports image accent variants and reversible preset removal', () => {
     render(<PreferencesSettings />);
     fireEvent.click(screen.getByRole('button', { name: '雾林深境图片主题' }));
@@ -218,5 +244,108 @@ describe('PreferencesSettings', () => {
         }),
       { timeout: 2_000 },
     );
+  });
+});
+
+
+describe('wallpaper controls and uploaded library', () => {
+  it('previews and persists mask strength and can restore the old default', () => {
+    render(<PreferencesSettings />);
+    fireEvent.click(screen.getByRole('button', { name: '雾林深境图片主题' }));
+    fireEvent.click(screen.getByRole('radio', { name: '覆盖色' }));
+    const slider = screen.getByRole('slider', { name: '遮罩强度' });
+    fireEvent.change(slider, { target: { value: '0' } });
+    expect(readAppearancePreferences().imageOverlayOpacity).toBe(0);
+    expect(document.documentElement.style.getPropertyValue('--shell-wallpaper-overlay')).toBe('linear-gradient(transparent, transparent)');
+    fireEvent.click(screen.getByRole('button', { name: '恢复默认遮罩' }));
+    expect(readAppearancePreferences().imageOverlayOpacity).toBe(50);
+    expect(document.documentElement.style.getPropertyValue('--shell-wallpaper-overlay')).toContain('50%');
+  });
+
+  it('retains the existing upload and appends multiple new images that survive reopening', async () => {
+    localStorage.setItem(APPEARANCE_PREFERENCE_KEY, JSON.stringify({ imageThemeId: 'custom-upload', customImageDataUrl: 'data:image/webp;base64,b2xk', customImageName: '旧图片' }));
+    stubThemeImageDom();
+    const { unmount } = render(<PreferencesSettings />);
+    const input = screen.getByLabelText('上传图片主题');
+    expect(input.hasAttribute('multiple')).toBe(true);
+    fireEvent.change(input, { target: { files: [new File(['first'], 'first.png', { type: 'image/png' }), new File(['second'], 'second.webp', { type: 'image/webp' })] } });
+    await screen.findByRole('button', { name: 'second图片主题' });
+    expect(screen.getByRole('button', { name: '旧图片图片主题' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'first图片主题' })).toBeTruthy();
+    const saved = readAppearancePreferences();
+    expect(saved.customImageThemes).toHaveLength(3);
+    expect(saved.imageThemeId).toBe(saved.customImageThemes[2]?.id);
+    expect(new Set(saved.customImageThemes.map(image => image.id)).size).toBe(3);
+    unmount();
+    render(<PreferencesSettings />);
+    expect(screen.getByRole('button', { name: 'first图片主题' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'second图片主题' }).getAttribute('aria-pressed')).toBe('true');
+    fireEvent.click(screen.getByRole('button', { name: '旧图片图片主题' }));
+    expect(readAppearancePreferences().imageThemeId).toBe('custom-upload');
+  });
+
+  it('appends repeated uploads with unique names and removes only the selected image', async () => {
+    stubThemeImageDom();
+    render(<PreferencesSettings />);
+    const upload = () => fireEvent.change(screen.getByLabelText('上传图片主题'), { target: { files: [new File(['image'], 'photo.png', { type: 'image/png' })] } });
+    upload();
+    await screen.findByRole('button', { name: 'photo图片主题' });
+    const originalId = readAppearancePreferences().imageThemeId;
+    upload();
+    await screen.findByRole('button', { name: 'photo（2）图片主题' });
+    expect(readAppearancePreferences().customImageThemes).toHaveLength(2);
+    const card = screen.getByRole('button', { name: 'photo（2）图片主题' }).closest('.settings-image-theme__card')!;
+    fireEvent.click(within(card as HTMLElement).getByRole('button', { name: '删除图片主题' }));
+    fireEvent.click(within(card as HTMLElement).getByRole('button', { name: '确认删除图片主题' }));
+    expect(readAppearancePreferences().imageThemeId).toBe(originalId);
+    expect(screen.getByRole('button', { name: 'photo图片主题' }).getAttribute('aria-pressed')).toBe('true');
+    const firstCard = screen.getByRole('button', { name: 'photo图片主题' }).closest('.settings-image-theme__card')!;
+    fireEvent.click(within(firstCard as HTMLElement).getByRole('button', { name: '删除图片主题' }));
+    fireEvent.click(within(firstCard as HTMLElement).getByRole('button', { name: '确认删除图片主题' }));
+    expect(readAppearancePreferences().customImageThemes).toEqual([]);
+    expect(readAppearancePreferences().imageThemeId).toBeNull();
+    expect(document.documentElement.hasAttribute('data-image-theme')).toBe(false);
+  });
+
+  it('preserves mask changes made while images are being compressed', async () => {
+    stubThemeImageDom();
+    render(<PreferencesSettings />);
+    fireEvent.change(screen.getByLabelText('上传图片主题'), { target: { files: [new File(['image'], 'photo.png', { type: 'image/png' })] } });
+    fireEvent.change(screen.getByRole('slider', { name: '遮罩强度' }), { target: { value: '20' } });
+    await screen.findByRole('button', { name: 'photo图片主题' });
+    expect(readAppearancePreferences().imageOverlayOpacity).toBe(20);
+  });
+
+  it('edits and removes one image without changing another image or its selection', async () => {
+    stubThemeImageDom();
+    render(<PreferencesSettings />);
+    fireEvent.change(screen.getByLabelText('上传图片主题'), { target: { files: [new File(['first'], 'first.png', { type: 'image/png' }), new File(['second'], 'second.png', { type: 'image/png' })] } });
+    await screen.findByRole('button', { name: 'second图片主题' });
+    const secondId = readAppearancePreferences().imageThemeId;
+    let card = screen.getByRole('button', { name: 'first图片主题' }).closest('.settings-image-theme__card')!;
+    fireEvent.click(within(card as HTMLElement).getByRole('button', { name: '编辑图片主题' }));
+    const editor = screen.getByRole('dialog', { name: '编辑图片主题' });
+    fireEvent.change(within(editor).getByRole('textbox', { name: '名称' }), { target: { value: '编辑后的图片' } });
+    fireEvent.click(within(editor).getByRole('button', { name: '保存' }));
+    expect(readAppearancePreferences().imageThemeId).toBe(secondId);
+    card = screen.getByRole('button', { name: '编辑后的图片图片主题' }).closest('.settings-image-theme__card')!;
+    fireEvent.click(within(card as HTMLElement).getByRole('button', { name: '删除图片主题' }));
+    fireEvent.click(within(card as HTMLElement).getByRole('button', { name: '确认删除图片主题' }));
+    expect(readAppearancePreferences().customImageThemes).toHaveLength(1);
+    expect(readAppearancePreferences().imageThemeId).toBe(secondId);
+    expect(screen.getByRole('button', { name: 'second图片主题' }).getAttribute('aria-pressed')).toBe('true');
+  });
+
+  it('keeps previously saved images and reports a full local storage instead of pretending an upload succeeded', async () => {
+    localStorage.setItem(APPEARANCE_PREFERENCE_KEY, JSON.stringify({ imageThemeId: 'custom-upload', customImageDataUrl: 'data:image/webp;base64,b2xk', customImageName: '旧图片' }));
+    const previous = localStorage.getItem(APPEARANCE_PREFERENCE_KEY);
+    stubThemeImageDom();
+    render(<PreferencesSettings />);
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new DOMException('quota', 'QuotaExceededError'); });
+    fireEvent.change(screen.getByLabelText('上传图片主题'), { target: { files: [new File(['second'], 'second.png', { type: 'image/png' })] } });
+    expect((await screen.findByRole('alert')).textContent).toContain('存储');
+    expect(screen.queryByRole('button', { name: 'second图片主题' })).toBeNull();
+    expect(screen.getByRole('button', { name: '旧图片图片主题' })).toBeTruthy();
+    expect(localStorage.getItem(APPEARANCE_PREFERENCE_KEY)).toBe(previous);
   });
 });

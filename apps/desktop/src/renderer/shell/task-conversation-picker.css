@@ -1,0 +1,13 @@
+.task-run-target__menu { display: flex; flex-direction: column; width: min(560px, calc(100vw - 32px)); max-height: min(440px, var(--radix-dropdown-menu-content-available-height)); padding: 7px; border: 1px solid var(--color-border); border-radius: 16px; background: var(--color-overlay); color: var(--color-text); box-shadow: 0 16px 48px #0003; z-index: 10030; overflow: hidden; }
+.task-run-target__search { display: flex; gap: 8px; align-items: center; padding: 7px 9px 10px; color: var(--color-text-faint); }
+.task-run-target__search input { flex: 1; min-width: 0; border: 0; outline: none; background: transparent; color: var(--color-text); font: inherit; font-size: 13px; }
+.task-run-target__item { display: flex; flex-shrink: 0; align-items: center; gap: 9px; padding: 9px 10px; border-radius: 9px; outline: none; font-size: 13px; cursor: pointer; }
+.task-run-target__item[data-highlighted] { background: var(--color-hover); }
+.task-run-target__item>span { flex: 1; min-width: 0; }
+.task-run-target__item strong { display: block; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-run-target__item small { color: var(--color-text-faint); font-size: 11px; }
+.task-run-target__separator { height: 1px; margin: 7px 4px; background: var(--color-border); }
+.task-run-target__group { padding: 6px 10px; font-size: 11px; color: var(--color-text-faint); }
+.task-run-target__list { flex: 1 1 auto; min-height: 0; max-height: 265px; overflow-y: auto; }
+.task-run-target__list>p,.task-run-target__list>[role=alert] { display: flex; align-items: center; gap: 8px; padding: 15px 10px; color: var(--color-text-faint); font-size: 12px; }
+.task-run-target__hint { display: block; padding-top: 8px; color: var(--color-text-faint); font-size: 11px; line-height: 1.6; }

@@ -183,3 +183,34 @@ it('shows only the new preview if reading the replacement source fails', async (
   expect(screen.queryByText('旧来源全文')).toBeNull();
   expect(screen.getByText('新预览')).toBeTruthy();
 });
+
+it('mounts the full HTML preview only after scoped deferred prose is available', async () => {
+ const complete = '\u0060\u0060\u0060html\n<!doctype html><html><body><h1>Restored HTML</h1></body></html>\n\u0060\u0060\u0060';
+ vi.mocked(deferredContentReader.read).mockResolvedValueOnce(fullText(complete));
+ const {container}=render(<MessageTextContent conversationId="projectless" text="\u0060\u0060\u0060html\n<html>truncated" parts={[{text:'truncated',contentRef}]}/>);
+ expect(container.querySelector('iframe')).toBeNull();
+ await waitFor(()=>expect(container.querySelector('iframe')?.getAttribute('srcdoc')).toContain('Restored HTML'));
+ expect(screen.queryByRole('alert')).toBeNull();
+});
+
+
+it('hands off assembled HTML, never the deferred preview, after all source chunks load', async () => {
+  const html = '<!doctype html><html><head><style>body{color:green}</style></head><body><h1>Full page</h1><svg></svg></body></html>';
+  const complete = '已保存到 `visualizations/pelican-cycling.html`。\n\n```html\n' + html + '\n```';
+  const split = complete.indexOf('</style>');
+  let finish!: (value: ReturnType<typeof fullText>) => void;
+  const last = new Promise<ReturnType<typeof fullText>>((resolve) => { finish = resolve; });
+  vi.mocked(deferredContentReader.read)
+    .mockResolvedValueOnce({ content: { ...fullText(complete).content, text: complete.slice(0, split), nextOffset: split } })
+    .mockReturnValueOnce(last);
+  const open = vi.fn();
+  render(<MessageTextContent conversationId="html-history" projectFolder="D:/projects/demo"
+    text={complete.slice(0, split) + '\n[预览；完整内容按需读取]'}
+    parts={[{ text: 'truncated', contentRef }]} onOpenHtmlInBrowser={open} />);
+  expect(screen.queryByRole('button', { name: '浏览器打开' })).toBeNull();
+  await waitFor(() => expect(deferredContentReader.read).toHaveBeenCalledTimes(2));
+  expect(screen.queryByRole('button', { name: '浏览器打开' })).toBeNull();
+  await act(async () => { finish({ content: { ...fullText(complete).content, offset: split, text: complete.slice(split) } }); });
+  fireEvent.click(await screen.findByRole('button', { name: '浏览器打开' }));
+  expect(open).toHaveBeenCalledWith(html, { sourcePath: 'visualizations/pelican-cycling.html' });
+});

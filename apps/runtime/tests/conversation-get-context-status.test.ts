@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { measureContextRequest } from '../src/context-token-meter.js';
 import { randomBytes } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { connect, type Socket } from 'node:net';
@@ -123,6 +124,7 @@ function cloneProviderTool(tool: ProviderToolSchema): ProviderToolSchema {
 class ContextRecordingAdapter implements ProviderAdapter {
   readonly protocol = 'openai-chat' as const;
   readonly calls: ProviderCallRequest[] = [];
+  inputUsageOffset?:number;
 
   async discoverModels(): Promise<string[]> {
     return ['context-model'];
@@ -135,8 +137,19 @@ class ContextRecordingAdapter implements ProviderAdapter {
       messages: request.messages.map(cloneProviderMessage),
       ...(request.tools ? { tools: request.tools.map(cloneProviderTool) } : {}),
     });
+    const summaryRequested = request.messages.some(message => typeof message.content === 'string' &&
+      message.content.includes('Create a concise structured checkpoint'));
+    if (summaryRequested) {
+      yield { type: 'text-delta', text: [
+        '## Primary Request and Intent\n- 保留快照来源与验收。', '## Key Technical Concepts\n- Runtime context',
+        '## Files and Code\n- (none)', '## Errors and Fixes\n- (none)', '## Pending Jobs\n- 继续用户要求',
+        '## Current Work\n- 上下文回归', '## Next Step\n- 回答最新问题', '## Critical Context\n- 保留约束。',
+      ].join('\n') };
+      yield { type: 'finished', reason: 'stop' }; return;
+    }
     yield { type: 'reasoning-delta', text: HIDDEN_REASONING };
     yield { type: 'text-delta', text: `assistant-final-${this.calls.length}` };
+    if (this.inputUsageOffset !== undefined) yield {type:'usage',tokensIn:measureContextRequest(request,'fixture').usedTokens+this.inputUsageOffset,tokensOut:10,cachedTokensHit:50};
     yield { type: 'finished', reason: 'stop' };
   }
 }
@@ -152,6 +165,7 @@ interface RuntimeHarness {
   modelId: string;
   providerId: string;
   runtime: Runtime;
+  runtimeOptions:ConstructorParameters<typeof Runtime>[0];
   socket: Socket;
   skillStore: SqliteSkillStore;
   stateStore: SqliteEventCheckpointStore;
@@ -162,6 +176,7 @@ interface RuntimeHarness {
 
 interface CreateHarnessOptions {
   alternateContextWindow?: number;
+  modelMaxOutputTokens?:number;
   target?: 'agent' | 'model';
 }
 
@@ -200,7 +215,7 @@ async function createHarness(
       {
         providerModelId: 'context-model',
         displayName: 'Context Model',
-        limitsJson: JSON.stringify({ contextWindow }),
+        limitsJson: JSON.stringify({ contextWindow,maxOutputTokens:options.modelMaxOutputTokens }),
       },
       ...(options.alternateContextWindow
         ? [
@@ -303,7 +318,7 @@ async function createHarness(
 
   const installId = `context-status-${randomBytes(6).toString('hex')}`;
   const adapter = new ContextRecordingAdapter();
-  const runtime = new Runtime({
+  const runtimeOptions:ConstructorParameters<typeof Runtime>[0] = {
     installId,
     allowNoToken: true,
     stateStore,
@@ -321,7 +336,8 @@ async function createHarness(
     unitOfWork,
     secureStore,
     discoveryByProtocol: { 'openai-chat': adapter },
-  });
+  };
+  const runtime=new Runtime(runtimeOptions);
   await runtime.start();
   const socket = await connectRuntime(installId);
   const inbox = createFrameInbox(socket);
@@ -353,6 +369,7 @@ async function createHarness(
     modelId: model.id,
     providerId: provider.provider.id,
     runtime,
+    runtimeOptions,
     socket,
     skillStore,
     stateStore,
@@ -449,7 +466,7 @@ function expectedSectionsFromProviderRequest(request: ProviderCallRequest) {
   const agentBlock = extractPromptSection(prompt, '## Agent / Team instructions');
   const projectBlock = extractPromptSection(prompt, '## Project context');
   const summaryBlock = extractPromptSection(prompt, '## Compact summary');
-  return [
+  const sections = [
     { type: 'system' as const, tokens: estimateTextTokens(systemBlock) },
     { type: 'agent' as const, tokens: estimateTextTokens(agentBlock) },
     { type: 'project' as const, tokens: estimateTextTokens(projectBlock) },
@@ -466,9 +483,62 @@ function expectedSectionsFromProviderRequest(request: ProviderCallRequest) {
       tokens: request.tools?.length ? estimateTextTokens(JSON.stringify(request.tools)) : 0,
     },
   ];
+  const fixedBlocks = sections.slice(0, 4);
+  const blockTokens = fixedBlocks.reduce((total, section) => total + section.tokens, 0);
+  const framingSection = fixedBlocks.find(section => section.tokens > 0) ?? fixedBlocks[0]!;
+  framingSection.tokens += estimateTextTokens(prompt) - blockTokens;
+  return sections;
 }
 
 describe('conversation.getContextStatus runtime integration', () => {
+  it('reuses an automatically compacted canonical prefix in the next run instead of paying for the same summary again',async()=>{
+    const h=await createHarness(32000,{target:'model',modelMaxOutputTokens:2048});
+    try{
+      const messages=new SqliteMessageStore(h.connection.raw);
+      for(let index=0;index<12;index++)messages.appendMessage({id:('auto-prefix-'+index) as import('@sync-think/shared').MessageId,
+        threadId:h.threadId,sequence:index,role:index%2 ? 'assistant':'user',createdAt:'2026-10-02T00:00:00.000Z',blocks:[{type:'text',text:'raw-'+index+' '+ 'x'.repeat(8000)}]});
+      const version=await appendUserMessage(h,'继续当前工作并保留原约束',0,'automatic-first');
+      const compacted=h.stateStore.listEventsByTask(h.taskId).find(e=>e.type==='context.compacted');
+      expect(compacted?.payload).toMatchObject({mode:'auto',origin:'native-preflight'});
+      expect(Number(compacted!.payload.coveredThroughMessageSequence)).toBeGreaterThan(0);
+      const summaryCalls=()=>h.adapter.calls.filter(call=>call.messages.some(m=>typeof m.content==='string'&&m.content.includes('Create a concise structured checkpoint'))).length;
+      expect(summaryCalls()).toBe(1);
+      const checkpointRequest=h.adapter.calls.find(call=>call.messages.some(m=>typeof m.content==='string'&&m.content.includes('Create a concise structured checkpoint')))!;
+      expect(checkpointRequest.tools ?? []).toEqual([]);
+      const count=messages.listMessages(h.threadId,{limit:100}).messages.filter(m=>m.id.startsWith('auto-prefix-')).length;
+      expect(count).toBe(12);
+      await appendUserMessage(h,'继续；原约束还在吗？',version,'automatic-second');
+      expect(summaryCalls()).toBe(1);
+      const last=h.adapter.calls.at(-1)!;
+      expect(last.systemPrompt).toContain('Primary Request and Intent');
+      expect(JSON.stringify(last.messages)).not.toContain('raw-0 ');
+      expect(JSON.stringify(last.messages)).toContain('原约束还在吗');
+    }finally{await closeHarness(h);}
+  });
+  it('uses the metadata output cap and calibrates from the actual request across a Runtime restart',async()=>{
+    const h=await createHarness(128000,{target:'model',modelMaxOutputTokens:2048,alternateContextWindow:200000});
+    try{
+      const initial=await getContextStatus(h,'cap-before');
+      expect(initial.budget?.reservedOutputTokens).toBe(2048);
+      h.adapter.inputUsageOffset=200;
+      await appendUserMessage(h,'确认保留这段用户约束',0,'calibrated-append');
+      expect(h.adapter.calls[0]?.maxOutputTokens).toBe(2048);
+      const before=await getContextStatus(h,'calibrated-status');
+      expect(before.measurement?.source).toBe('provider-calibrated');
+      expect(before.estimatedUsedTokens).toBe(before.measurement!.estimatedTokens+200);
+      expect(before.sections.reduce((sum,s)=>sum+s.tokens,0)).toBe(before.estimatedUsedTokens);
+      expect(h.stateStore.listEventsByTask(h.taskId).filter(e=>e.type==='provider.usage')).toHaveLength(1);
+      h.socket.destroy();await h.runtime.stop();
+      h.runtime=new Runtime(h.runtimeOptions);await h.runtime.start();
+      h.socket=await connectRuntime(h.runtimeOptions.installId);h.inbox=createFrameInbox(h.socket);
+      await h.inbox.send({id:'restart-hello',kind:'request',type:'__hello',payload:{protocolVersion:2,appVersion:'fixture',installId:h.runtimeOptions.installId,nonce:'restart',features:['conversation.getContextStatus']}});
+      const after=await getContextStatus(h,'calibrated-restarted');
+      expect(after.estimatedUsedTokens).toBe(before.estimatedUsedTokens);
+      expect(after.measurement?.source).toBe('provider-calibrated');
+      const switched=await getContextStatus(h,'calibrated-switch',h.alternateModelId);
+      expect(switched.measurement?.source).toBe('estimate');
+    }finally{await closeHarness(h);}
+  });
   it('counts Computer Use schemas on a cache miss without a project or Agent tools', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'sync-think-context-status-desktop-'));
     tempDirs.push(dir);
@@ -547,7 +617,7 @@ describe('conversation.getContextStatus runtime integration', () => {
   });
 
   it('uses task-indexed history for context status and compact maintenance', async () => {
-    const harness = await createHarness(200);
+    const harness = await createHarness(32_000);
     const listTaskEvents = vi.spyOn(harness.stateStore, 'listEventsByTask');
     const listAllEvents = vi.spyOn(harness.stateStore, 'listAllEvents').mockImplementation(() => {
       throw new Error('global event history must not be materialized');
@@ -593,7 +663,7 @@ describe('conversation.getContextStatus runtime integration', () => {
   });
 
   it('does not load Skill bodies for status, peek, or compact maintenance paths', async () => {
-    const harness = await createHarness(200);
+    const harness = await createHarness(32_000);
     const getVersion = vi.spyOn(harness.skillStore, 'getVersion');
     try {
       const status = await getContextStatus(harness, 'maintenance-status');
@@ -768,7 +838,7 @@ describe('conversation.getContextStatus runtime integration', () => {
     }
   });
 
-  it('previews an explicit compose model for an Agent conversation without changing its default', async () => {
+  it('keeps Agent context on its owned model despite a stale composer model hint', async () => {
     const harness = await createHarness(128_000, {
       target: 'agent',
       alternateContextWindow: 400_000,
@@ -782,8 +852,8 @@ describe('conversation.getContextStatus runtime integration', () => {
         'agent-context-status-luna',
         harness.alternateModelId,
       );
-      expect(luna.modelId).toBe(harness.alternateModelId);
-      expect(luna.contextWindow).toBe(400_000);
+      expect(luna.modelId).toBe(original.modelId);
+      expect(luna.contextWindow).toBe(128_000);
 
       const restored = await getContextStatus(harness, 'agent-context-status-restored');
       expect(restored.modelId).not.toBe(harness.alternateModelId);
@@ -910,7 +980,7 @@ describe('conversation.getContextStatus runtime integration', () => {
       const status = await getContextStatus(harness, 'get-context-status');
       expect(getVersion).not.toHaveBeenCalled();
       getVersion.mockRestore();
-      expect(status.compactThreshold).toBe(0.7);
+      expect(status.compactThreshold).toBe(0.85);
       expect(status.contextWindow).toBe(1_000_000);
       expect(status.sections.reduce((total, section) => total + section.tokens, 0)).toBe(
         status.estimatedUsedTokens,
@@ -953,7 +1023,7 @@ describe('conversation.getContextStatus runtime integration', () => {
     }
   });
 
-  it('ignores forged high renderer hints when the Runtime snapshot is below 70 percent', async () => {
+  it('ignores forged high renderer hints when the Runtime snapshot is below 85 percent', async () => {
     const harness = await createHarness(1_000_000);
     try {
       let taskVersion = await appendUserMessage(harness, 'compact-low-usage-one', 0, 'low-1');
@@ -995,19 +1065,17 @@ describe('conversation.getContextStatus runtime integration', () => {
     }
   });
 
-  it('ignores forged low renderer hints, compacts at Runtime 70 percent truth, and reports snapshot beforeTokens', async () => {
-    const harness = await createHarness(200);
+  it('ignores forged low renderer hints, compacts at Runtime 85 percent truth, and reports snapshot beforeTokens', async () => {
+    const harness = await createHarness(32_000);
     try {
-      let taskVersion = 0;
-      for (let index = 0; index < 3; index += 1) {
-        taskVersion = await appendUserMessage(
-          harness,
-          `long-context-${index}:` + '上下文快照必须来自真实请求。'.repeat(1_200),
-          taskVersion,
-          `high-${index}`,
-        );
-      }
-      expect(taskVersion).toBe(3);
+      // Seed a pressure snapshot through the public durable-message store. Normal
+      // Native sends now compact before dispatch, rather than knowingly overflowing.
+      const messages = new SqliteMessageStore(harness.connection.raw);
+      for (let index = 0; index < 12; index++) messages.appendMessage({
+        id: ('pressure-fixture-' + index) as import('@sync-think/shared').MessageId,
+        threadId: harness.threadId, sequence: index, role: index % 2 ? 'assistant' : 'user',
+        createdAt: '2026-10-02T00:00:00.000Z', blocks: [{type: 'text', text: 'x'.repeat(8000)}],
+      });
       const status = await getContextStatus(harness, 'high-status');
       expect(status.usageRatio).toBeGreaterThanOrEqual(status.compactThreshold);
 

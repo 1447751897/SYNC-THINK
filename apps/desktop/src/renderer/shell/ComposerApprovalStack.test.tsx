@@ -55,6 +55,19 @@ describe('ComposerApprovalStack', () => {
     expect(screen.queryByText('工具审批')).toBeNull();
   });
 
+  it('keeps exiting approvals detached while a checklist remains below', () => {
+    vi.useFakeTimers();
+    const { rerender } = render(
+      <ComposerApprovalStack hasSurfaceBelow plan={{ key: 'plan-1', node: <div>方案审批</div> }} />,
+    );
+    rerender(<ComposerApprovalStack hasSurfaceBelow />);
+    const surface = screen.getByTestId('composer-peek-surface');
+    expect(surface.getAttribute('data-state')).toBe('exiting');
+    expect(surface.getAttribute('data-detached')).toBe('true');
+    act(() => vi.advanceTimersByTime(COMPOSER_PEEK_TRANSITION_MS));
+    expect(screen.queryByText('方案审批')).toBeNull();
+  });
+
   it('keeps the entering phase alive when the same approval rerenders', () => {
     vi.useFakeTimers();
     const { rerender } = render(<ComposerApprovalStack />);

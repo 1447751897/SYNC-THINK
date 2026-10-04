@@ -7,7 +7,8 @@ import { streamOpenAIChatCompletions } from './stream-chat.js';
 
 export interface OpenAIChatAdapterOptions {
   fetchImpl?: DiscoverOpenAICompatibleModelsOptions['fetchImpl'];
-  timeoutMs?: number;
+  timeoutMs?: number | null;
+  streamIdleTimeoutMs?: number | null;
 }
 
 /**
@@ -24,7 +25,7 @@ export class OpenAIChatAdapter implements ProviderAdapter {
       apiKey,
       baseUrl,
       fetchImpl: this.opts.fetchImpl,
-      timeoutMs: this.opts.timeoutMs,
+      timeoutMs: this.opts.timeoutMs ?? undefined,
     });
   }
 
@@ -32,6 +33,7 @@ export class OpenAIChatAdapter implements ProviderAdapter {
     yield* streamOpenAIChatCompletions(request, {
       fetchImpl: this.opts.fetchImpl,
       timeoutMs: this.opts.timeoutMs,
+      streamIdleTimeoutMs: this.opts.streamIdleTimeoutMs,
     });
   }
 }

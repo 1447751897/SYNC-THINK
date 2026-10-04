@@ -1,7 +1,7 @@
 /**
  * @vitest-environment jsdom
  */
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Event, RunIndexEntry } from '@sync-think/shared';
 import { ActivityCenterPage } from './ActivityCenterPage.js';
@@ -69,11 +69,17 @@ describe('ActivityCenterPage', () => {
   it('shows collaboration tasks across conversations and opens the owning chat', async () => {
     const onOpenConversation = vi.fn();
     runtime.collaboration.mockResolvedValue({
-      activities: [{
-        conversationId: 'collaboration-1', conversationTitle: '发布协作',
-        taskId: 'task-1', taskTitle: '验证发布', assigneeName: '验证员',
-        status: 'running', updatedAt: '2026-08-21T01:00:00.000Z',
-      }],
+      activities: [
+        {
+          conversationId: 'collaboration-1',
+          conversationTitle: '发布协作',
+          taskId: 'task-1',
+          taskTitle: '验证发布',
+          assigneeName: '验证员',
+          status: 'running',
+          updatedAt: '2026-08-21T01:00:00.000Z',
+        },
+      ],
     });
 
     render(<ActivityCenterPage onOpenConversation={onOpenConversation} />);
@@ -173,16 +179,14 @@ describe('ActivityCenterPage', () => {
       entries: RunIndexEntry[];
       counts: typeof EMPTY_COUNTS;
     }>();
-    runtime.activityListRuns.mockImplementation(
-      (payload: { states?: string[] }) => {
-        if (payload.states?.[0] === 'failed') return failed.promise;
-        if (payload.states?.[0] === 'completed') return completed.promise;
-        return Promise.resolve({
-          entries: [run({ runId: 'run-initial', title: '初始结果' })],
-          counts: { ...EMPTY_COUNTS, completed: 1 },
-        });
-      },
-    );
+    runtime.activityListRuns.mockImplementation((payload: { states?: string[] }) => {
+      if (payload.states?.[0] === 'failed') return failed.promise;
+      if (payload.states?.[0] === 'completed') return completed.promise;
+      return Promise.resolve({
+        entries: [run({ runId: 'run-initial', title: '初始结果' })],
+        counts: { ...EMPTY_COUNTS, completed: 1 },
+      });
+    });
 
     render(<ActivityCenterPage />);
     await screen.findByText('初始结果');
@@ -319,5 +323,227 @@ describe('ActivityCenterPage', () => {
     );
     await Promise.resolve();
     expect(runtime.activityListRuns).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('Inbox master/detail workbench', () => {
+  it('opens a message without navigating and returns to the list', async () => {
+    const open = vi.fn();
+    render(<ActivityCenterPage onOpenConversation={open} />);
+    fireEvent.click(await screen.findByRole('button', { name: '查看消息：第一个 Run' }));
+    const detail = screen.getByTestId('inbox-message-detail');
+    expect(within(detail).getByRole('heading', { name: '第一个 Run' })).toBeTruthy();
+    expect(open).not.toHaveBeenCalled();
+    expect(
+      document.querySelector('.inbox-workbench__frame')?.getAttribute('data-detail-open'),
+    ).toBe('true');
+    fireEvent.click(within(detail).getByRole('button', { name: '返回消息列表' }));
+    expect(
+      document.querySelector('.inbox-workbench__frame')?.getAttribute('data-detail-open'),
+    ).toBe('false');
+    expect(screen.getByRole('button', { name: '查看消息：第一个 Run' })).toBeTruthy();
+  });
+
+  it('searches loaded messages, reports no match and restores results when cleared', async () => {
+    runtime.activityListRuns.mockResolvedValue({
+      entries: [
+        run({ runId: 'alpha', title: '分析日志' }),
+        run({ runId: 'beta', title: '设计页面' }),
+      ],
+      counts: { ...EMPTY_COUNTS, completed: 2 },
+    });
+    render(<ActivityCenterPage />);
+    await screen.findByText('分析日志');
+    fireEvent.change(screen.getByRole('textbox', { name: '搜索消息或任务' }), {
+      target: { value: '设计' },
+    });
+    expect(screen.queryByRole('button', { name: '查看消息：分析日志' })).toBeNull();
+    expect(screen.getByRole('button', { name: '查看消息：设计页面' })).toBeTruthy();
+    fireEvent.change(screen.getByRole('textbox', { name: '搜索消息或任务' }), {
+      target: { value: '不存在的关键词' },
+    });
+    expect(screen.getByText('没有找到匹配的消息')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '清空搜索' }));
+    expect(screen.getByRole('button', { name: '查看消息：分析日志' })).toBeTruthy();
+  });
+
+  it('filters collaboration and system messages as well as runs', async () => {
+    runtime.collaboration.mockResolvedValue({
+      activities: [
+        {
+          conversationId: 'chat-a',
+          taskId: 'a',
+          taskTitle: '等待确认',
+          conversationTitle: '团队发布',
+          assigneeName: '设计员',
+          status: 'waiting_input',
+          updatedAt: '2026-10-04T01:00:00Z',
+        },
+        {
+          conversationId: 'chat-b',
+          taskId: 'b',
+          taskTitle: '交付完成',
+          conversationTitle: '团队发布',
+          assigneeName: '开发员',
+          status: 'succeeded',
+          updatedAt: '2026-10-04T02:00:00Z',
+        },
+      ],
+    });
+    runtime.activityListExternalEvents.mockResolvedValue({
+      entries: [
+        {
+          id: 'event-a',
+          dedupeKey: 'private-dedupe-key',
+          title: '外部回调失败',
+          state: 'failed',
+          sourceKind: 'webhook',
+          attemptCount: 2,
+          createdAt: '2026-10-04T03:00:00Z',
+          updatedAt: '2026-10-04T03:00:00Z',
+        },
+      ],
+    });
+    render(<ActivityCenterPage />);
+    await screen.findByText('等待确认');
+    fireEvent.click(
+      within(screen.getByRole('group', { name: '消息分类' })).getByRole('button', {
+        name: /需关注/,
+      }),
+    );
+    expect(screen.getByRole('button', { name: '查看消息：等待确认' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '查看消息：外部回调失败' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '查看消息：交付完成' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '查看消息：第一个 Run' })).toBeNull();
+    fireEvent.click(screen.getByTestId('activity-source-external'));
+    await waitFor(() =>
+      expect(runtime.activityListRuns).toHaveBeenLastCalledWith(
+        expect.objectContaining({ sources: ['external'] }),
+      ),
+    );
+    expect(screen.queryByRole('button', { name: '查看消息：等待确认' })).toBeNull();
+    expect(screen.getByRole('button', { name: '查看消息：外部回调失败' })).toBeTruthy();
+    expect(screen.queryByText('private-dedupe-key')).toBeNull();
+  });
+
+  it('shows the full error and seeds feedback only after explicit submission', async () => {
+    const open = vi.fn();
+    const seed = vi.fn();
+    runtime.activityListRuns.mockResolvedValue({
+      entries: [
+        run({
+          runId: 'failed',
+          title: '检查交付',
+          conversationId: 'chat-a',
+          state: 'failed',
+          errorMessage: '产物尚未提交',
+          failureClass: 'delivery',
+        }),
+      ],
+      counts: { ...EMPTY_COUNTS, failed: 1 },
+    });
+    render(<ActivityCenterPage onOpenConversation={open} onRetryRun={seed} />);
+    fireEvent.click(await screen.findByRole('button', { name: '查看消息：检查交付' }));
+    const detail = within(screen.getByTestId('inbox-message-detail'));
+    expect(detail.getByText('[delivery] 产物尚未提交')).toBeTruthy();
+    const submit = detail.getByRole('button', { name: '将反馈带回对话' }) as HTMLButtonElement;
+    expect(submit.disabled).toBe(true);
+    fireEvent.change(detail.getByRole('textbox', { name: '补充反馈' }), {
+      target: { value: '  请补充验收报告  ' },
+    });
+    expect(seed).not.toHaveBeenCalled();
+    fireEvent.click(submit);
+    expect(seed).toHaveBeenCalledWith({ conversationId: 'chat-a', text: '请补充验收报告' });
+    expect(open).toHaveBeenCalledWith('chat-a');
+    expect(runtime).not.toHaveProperty('appendMessage');
+  });
+
+  it('keeps message identity separate even when sources share an id', async () => {
+    runtime.activityListRuns.mockResolvedValue({
+      entries: [run({ runId: 'same', title: '执行结果' })],
+      counts: { ...EMPTY_COUNTS, completed: 1 },
+    });
+    runtime.activityListExternalEvents.mockResolvedValue({
+      entries: [
+        {
+          id: 'same',
+          title: '系统事件',
+          state: 'completed',
+          sourceKind: 'webhook',
+          attemptCount: 1,
+          createdAt: '2026-10-04T00:00:00Z',
+          updatedAt: '2026-10-04T00:00:00Z',
+        },
+      ],
+    });
+    render(<ActivityCenterPage />);
+    fireEvent.click(await screen.findByRole('button', { name: '查看消息：系统事件' }));
+    expect(
+      within(screen.getByTestId('inbox-message-detail')).getByRole('heading', { name: '系统事件' }),
+    ).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '将反馈带回对话' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '查看消息：执行结果' }));
+    expect(
+      within(screen.getByTestId('inbox-message-detail')).getByRole('heading', { name: '执行结果' }),
+    ).toBeTruthy();
+  });
+
+  it('refreshes system events together with the other message sources', async () => {
+    render(<ActivityCenterPage />);
+    await screen.findByText('第一个 Run');
+    expect(runtime.activityListExternalEvents).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByTestId('activity-refresh'));
+    await waitFor(() => expect(runtime.activityListExternalEvents).toHaveBeenCalledTimes(2));
+  });
+});
+
+describe('Inbox attention paging', () => {
+  it('requests attention states so older failures are not hidden behind the first page', async () => {
+    runtime.activityListRuns.mockImplementation((payload: { states?: string[] }) =>
+      Promise.resolve({
+        entries: payload.states?.includes('failed')
+          ? [run({ runId: 'old-failure', title: '历史执行异常', state: 'failed' })]
+          : [run({ runId: 'recent', title: '最近完成的执行' })],
+        counts: { ...EMPTY_COUNTS, failed: 12, completed: 25 },
+      }),
+    );
+    render(<ActivityCenterPage />);
+    await screen.findByText('最近完成的执行');
+    fireEvent.click(
+      within(screen.getByRole('group', { name: '消息分类' })).getByRole('button', {
+        name: /需关注/,
+      }),
+    );
+    expect(await screen.findByRole('button', { name: '查看消息：历史执行异常' })).toBeTruthy();
+    expect(runtime.activityListRuns).toHaveBeenLastCalledWith(
+      expect.objectContaining({ states: ['failed', 'paused'] }),
+    );
+  });
+
+  it('retains the selected message and updates its detail after a refresh', async () => {
+    runtime.activityListRuns.mockResolvedValueOnce({
+      entries: [run({ runId: 'stable', title: '核对交付', state: 'running' })],
+      counts: { ...EMPTY_COUNTS, running: 1 },
+    });
+    render(<ActivityCenterPage />);
+    fireEvent.click(await screen.findByRole('button', { name: '查看消息：核对交付' }));
+    expect(
+      within(screen.getByTestId('inbox-message-detail')).getByText(
+        '任务正在执行，运行状态会自动更新。',
+      ),
+    ).toBeTruthy();
+    runtime.activityListRuns.mockResolvedValue({
+      entries: [run({ runId: 'stable', title: '核对交付', state: 'completed' })],
+      counts: { ...EMPTY_COUNTS, completed: 1 },
+    });
+    fireEvent.click(screen.getByTestId('activity-refresh'));
+    await waitFor(() =>
+      expect(
+        within(screen.getByTestId('inbox-message-detail')).getByText('已完成执行'),
+      ).toBeTruthy(),
+    );
+    expect(
+      within(screen.getByTestId('inbox-message-detail')).getByRole('heading', { name: '核对交付' }),
+    ).toBeTruthy();
   });
 });

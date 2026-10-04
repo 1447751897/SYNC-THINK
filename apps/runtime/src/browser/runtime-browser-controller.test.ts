@@ -168,6 +168,16 @@ function handoffInput(
 }
 
 describe('RuntimeBrowserController durable permissions', () => {
+  it('keeps exact text matching intact in the action dispatched to the browser worker', async () => {
+    const { controller, worker } = await createHarness();
+    controller.recordPermissionDecision(permissionInput(), 'allow', 'approval-open');
+    await controller.execute(executeInput());
+    const selector = 'button:text-is("继续"), [role="button"]:text-is("继续")';
+    const click = permissionInput({ toolName: 'browser_click', argumentsJson: JSON.stringify({ selector }), idempotencyKey: 'exact-click' });
+    controller.recordPermissionDecision(click, 'allow', 'approval-exact');
+    expect(JSON.parse(await controller.execute(executeInput({ ...click, capabilityToken: 'exact-click' })))).toMatchObject({ ok: true });
+    expect(worker.calls.at(-1)?.input.action).toEqual({ kind: 'click', selector, text: '继续' });
+  });
   it('keeps command reservation behind Profile maintenance', async () => {
     const profileGate = createBlockingProfileGate();
     const maintenance = profileGate.runExclusive('default', async () => {
@@ -630,5 +640,17 @@ describe('RuntimeBrowserController durable permissions', () => {
 
     expect(result).toMatchObject({ ok: false, code: 'browser.intent-persist-failed' });
     expect(worker.calls).toHaveLength(0);
+  });
+});
+
+describe('per-conversation Browser Profile isolation', () => {
+  it('uses the selected Profile for both command persistence and worker execution', async () => {
+    const { controller, store, worker } = await createHarness();
+    store.createProfile({ id: 'profile-clothes', name: 'Clothes' });
+    const input = executeInput({ profileId: 'profile-clothes', approval: { approvalId: 'approved-profile' } });
+    await controller.execute(input);
+    expect(worker.calls[0].input.profileId).toBe('profile-clothes');
+    expect(store.getCommandByIdempotencyKey(input.idempotencyKey)?.profileId).toBe('profile-clothes');
+    expect(controller.evaluatePermission(permissionInput({ toolName: 'browser_read', argumentsJson: '{}', profileId: 'default' }))).toMatchObject({ decision: 'deny', code: 'browser.origin-grant-required' });
   });
 });

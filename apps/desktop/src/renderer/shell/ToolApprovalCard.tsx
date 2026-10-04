@@ -1,26 +1,14 @@
 import { useId, useMemo, useState } from 'react';
 import { Check, ChevronDown, CircleAlert, LoaderCircle, ShieldCheck, X } from 'lucide-react';
 import type { ToolApprovalScope } from '@sync-think/protocol';
+import type { PendingToolApproval } from './tool-approval-types.js';
+export type { PendingToolApproval } from './tool-approval-types.js';
 import { persistentComputerUseAppOf } from './tool-approval.js';
 import { approvalPresentation } from './tool-approval-presentation.js';
+import { skillApprovalTools } from './skill-approval-tools.js';
 import { CodeBlock } from './CodeBlock.js';
 import { LineDiffView, UnifiedDiffPreview } from './ExecutionProcessBlock.js';
 import { languageFromPath } from './code-highlight.js';
-
-export interface PendingToolApproval {
-  approvalId: string;
-  runId?: string;
-  toolCallId?: string;
-  toolName: string;
-  title: string;
-  detail: string;
-  reason?: string;
-  path?: string;
-  command?: string;
-  arguments?: Record<string, unknown>;
-  allowedScopes?: ToolApprovalScope[];
-  decided?: 'approve' | 'deny';
-}
 
 export interface ToolApprovalSubmission {
   decision: 'approve' | 'deny';
@@ -124,7 +112,7 @@ export function ToolApprovalCard({
   submission?: ToolApprovalSubmission;
   error?: string;
   pendingCount?: number;
-  onApprove(scope: ToolApprovalScope): void;
+  onApprove(scope: ToolApprovalScope, excludedSkillTools?: string[]): void;
   onDeny(): void;
 }) {
   // Key the stateful surface by request so details from one approval cannot leak to the next.
@@ -151,14 +139,18 @@ function ApprovalSurface({
   onApprove,
   onDeny,
 }: Parameters<typeof ToolApprovalCard>[0]) {
-  const preview = useMemo(() => approvalPresentation(approval), [approval]);
+  const [excludedSkillTools, setExcludedSkillTools] = useState<string[]>([]);
+  const declaredTools = useMemo(() => skillApprovalTools(approval), [approval]);
+  const preview = useMemo(() => approvalPresentation(declaredTools ? {
+    ...approval, detail: approval.detail.replace(/工具声明：[\s\S]*?(?= · |$)/, '').replace(/ ·\s* · /g, ' · '),
+  } : approval), [approval, declaredTools]);
   const [open, setOpen] = useState(false);
   const [mountedDetails, setMountedDetails] = useState(false);
   const detailsId = useId();
   const titleId = useId();
   const errorId = useId();
   const persistentApp = persistentComputerUseAppOf(approval.toolName, approval.arguments);
-  const scopes =
+  const scopes = declaredTools !== undefined ? ['once' as ToolApprovalScope] :
     approval.allowedScopes ?? (persistentApp ? ['once', 'always-app'] : ['once', 'session']);
   const decided = approval.decided;
   const pending = !decided;
@@ -224,6 +216,13 @@ function ApprovalSurface({
             {preview.description ? (
               <p className="shell-beui-approval__description">{preview.description}</p>
             ) : null}
+            {declaredTools !== undefined && <div className="shell-beui-approval__declarations" aria-label="Skill 工具声明">
+              <span className="shell-beui-approval__caption">工具声明</span>
+              <div className="shell-beui-approval__tool-chips">{declaredTools.filter(name => !excludedSkillTools.includes(name)).map(name => <span className="shell-beui-approval__tool-chip" key={name}><code>{name}</code><button type="button" aria-label={'移除工具声明 ' + name} title={'移除 ' + name} disabled={busy || !pending} onClick={() => setExcludedSkillTools(items => [...items, name])}><X size={11} aria-hidden="true" /></button></span>)}
+                {declaredTools.every(name => excludedSkillTools.includes(name)) && <span className="shell-beui-approval__empty">未声明工具</span>}
+              </div>
+              {excludedSkillTools.length > 0 && <small>批准后按剩余声明登记；应用权限保持不变。<button type="button" className="shell-beui-approval__reset-tools" disabled={busy || !pending} onClick={() => setExcludedSkillTools([])}>恢复声明</button></small>}
+            </div>}
             {preview.targets.length || preview.reason ? (
               <dl className="shell-beui-approval__summary">
                 {preview.targets.map(({ label, value }) => (
@@ -325,7 +324,7 @@ function ApprovalSurface({
                   type="button"
                   className="shell-beui-approval__button is-primary"
                   disabled={busy}
-                  onClick={() => onApprove('once')}
+                  onClick={() => excludedSkillTools.length ? onApprove('once', excludedSkillTools) : onApprove('once')}
                 >
                   {busy && submission?.decision === 'approve' && submission.scope === 'once'
                     ? '提交中…'

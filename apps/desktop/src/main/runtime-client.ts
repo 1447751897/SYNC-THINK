@@ -1,3 +1,4 @@
+
 import { randomBytes } from 'node:crypto';
 import { connect, type Socket } from 'node:net';
 import {
@@ -379,6 +380,12 @@ function isRetryableConnectionError(error: unknown): boolean {
 }
 
 export function classifyRuntimeConnectError(error: unknown): RuntimeConnectFailure {
+  if (
+    error instanceof Error &&
+    ['EPERM', 'EACCES'].includes((error as NodeJS.ErrnoException).code ?? '')
+  ) {
+    return { code: 'runtime.permission-denied', retryable: false };
+  }
   if (error instanceof RuntimeAuthenticationError) {
     return { code: 'runtime.authentication-failed', retryable: false };
   }
@@ -647,6 +654,8 @@ export class RuntimePipeClient {
   ): Promise<SkillCommandResponse<K>> {
     return this.request<SkillCommandResponse<K>>(type, payload, options);
   }
+
+
 
   requestMcpRegistry<K extends McpRegistryCommand>(
     type: K,

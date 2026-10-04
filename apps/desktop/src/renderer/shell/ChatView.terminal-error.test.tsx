@@ -484,3 +484,17 @@ describe('ChatView terminal failure reason', () => {
     ]);
   });
 });
+
+
+it('continues a historical output-limit failure with the existing conversation rather than regenerating the original task', async () => {
+  const lengthError = '单轮模型输出达到长度上限，任务尚未完成；已有进度已保留。';
+  runtime.listConversationMessages.mockResolvedValue({ messages: [userMessage, {
+    ...failedMessage, blocks: [{ type: 'text', text: '已完成部分核验' },
+      { type: 'error', payload: { terminalState: 'failed', failureClass: 'output_limit', errorMessage: lengthError } }],
+  }], hasMore: false });
+  render(<ChatView conversation={conversation} modelName="deepseek-flash" models={[{ modelId: 'model-terminal', displayName: 'deepseek-flash', providerName: 'Relay' }]} eventHistory={[]} onTitleUpdated={vi.fn()} />);
+  expect(await screen.findByText('已完成部分核验')).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: '继续回答' }));
+  await waitFor(() => expect(runtime.appendMessage).toHaveBeenCalledWith(expect.objectContaining({ text: '继续上一条未完成的回答。' })));
+  expect(runtime.sendConversationMessage).toHaveBeenCalledWith(expect.objectContaining({ conversationId: conversation.id }));
+});

@@ -1,3 +1,4 @@
+import { changeTaskControl } from './task-select-test-utils.js';
 /** @vitest-environment jsdom */
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -99,11 +100,11 @@ describe('browser task dashboard', () => {
     render(<BrowserTaskDashboard {...props} />);
     await screen.findByText('任务 one');
     expect(list).toHaveBeenCalledWith({ limit: 100, includeLive: true });
-    fireEvent.change(screen.getByLabelText('筛选工作区'), { target: { value: 'a' } });
+    changeTaskControl(screen.getByLabelText('筛选工作区'), { target: { value: 'a' } });
     expect(screen.getByText('任务 one')).toBeTruthy();
     expect(screen.queryByText('任务 two')).toBeNull();
     expect(screen.getByRole('button', { name: '放大 执行 two' })).toBeTruthy();
-    fireEvent.change(screen.getByLabelText('筛选工作区'), { target: { value: 'unassigned' } });
+    changeTaskControl(screen.getByLabelText('筛选工作区'), { target: { value: 'unassigned' } });
     expect(screen.getByText('任务 old')).toBeTruthy();
     expect(screen.queryByText('任务 one')).toBeNull();
   });
@@ -137,10 +138,10 @@ describe('browser task dashboard', () => {
   it('keeps one creation entry and inherits the chosen profile', async () => {
     render(<BrowserTaskDashboard {...props} activeWorkspaceId="a" onStartAiTask={vi.fn()} />);
     await screen.findByText('任务 one');
-    fireEvent.change(screen.getByLabelText('浏览器环境 Profile'), { target: { value: 'work' } });
+    changeTaskControl(screen.getByLabelText('浏览器环境 Profile'), { target: { value: 'work' } });
     fireEvent.click(screen.getByRole('button', { name: '让 AI 创建任务' }));
     const dialog = within(screen.getByRole('dialog'));
-    expect((dialog.getByLabelText('新任务所属工作区') as HTMLSelectElement).value).toBe('a');
+    expect((dialog.getByLabelText('新任务所属工作区') as HTMLElement).getAttribute('data-value')).toBe('a');
     expect(dialog.getByText('工作浏览器')).toBeTruthy();
     expect(screen.queryByLabelText('手动创建任务')).toBeNull();
     expect(dialog.queryByLabelText('新任务浏览器环境')).toBeNull();
@@ -154,7 +155,7 @@ describe('browser task dashboard', () => {
     render(<BrowserTaskDashboard {...props} />);
     await screen.findByText('任务 one');
     expect(screen.queryByText('任务 work')).toBeNull();
-    fireEvent.change(screen.getByLabelText('浏览器环境 Profile'), { target: { value: 'work' } });
+    changeTaskControl(screen.getByLabelText('浏览器环境 Profile'), { target: { value: 'work' } });
     expect(screen.getByText('任务 work')).toBeTruthy();
     expect(screen.queryByText('任务 one')).toBeNull();
     expect(screen.getByRole('button', { name: '放大 执行 one' })).toBeTruthy();
@@ -209,7 +210,7 @@ describe('browser task dashboard', () => {
     fireEvent.click(await screen.findByRole('button', { name: '立即执行 任务 one' }));
     const input = await screen.findByLabelText('部门');
     expect(execute).not.toHaveBeenCalled();
-    fireEvent.change(input, { target: { value: '产品' } });
+    changeTaskControl(input, { target: { value: '产品' } });
     fireEvent.submit(input.closest('form')!);
     await screen.findByText('确认访问站点');
     expect(execute).toHaveBeenCalledWith({ taskId: 'one', variables: { 部门: '产品' } });
@@ -250,4 +251,13 @@ describe('browser task dashboard', () => {
     fireEvent.click(screen.getByText('重试'));
     await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
   });
+});
+
+it('opens account management directly without creating a workflow and returns to the dashboard', async () => {
+  render(<BrowserTaskDashboard {...props} />);
+  fireEvent.click(screen.getByRole('button', { name: '账号管理' }));
+  expect(screen.getByRole('button', { name: '返回总览' })).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: '返回总览' }));
+  expect(await screen.findByLabelText('浏览器任务列表')).toBeTruthy();
+  expect(execute).not.toHaveBeenCalled();
 });

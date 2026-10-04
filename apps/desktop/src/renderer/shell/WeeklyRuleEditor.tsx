@@ -1,6 +1,7 @@
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import { Check, ChevronDown } from 'lucide-react';
 import { TaskTemporalPicker } from './TaskTemporalPicker.js';
+import { useTaskSheetPortalContainer } from './TaskSheet.js';
 import type { TaskRuleWeekly } from '@sync-think/shared';
 import {
   nextWeeklyRunAt,
@@ -19,6 +20,7 @@ function WeekdayPicker({
   value: number;
   onChange(day: number): void;
 }) {
+  const portalContainer = useTaskSheetPortalContainer();
   return (
     <DropdownMenu.Root modal={false}>
       <DropdownMenu.Trigger asChild>
@@ -27,7 +29,7 @@ function WeekdayPicker({
           <ChevronDown size={14} />
         </button>
       </DropdownMenu.Trigger>
-      <DropdownMenu.Portal>
+      <DropdownMenu.Portal container={portalContainer}>
         <DropdownMenu.Content className="task-weekly__menu" sideOffset={5} collisionPadding={12}>
           <DropdownMenu.RadioGroup
             value={String(value)}

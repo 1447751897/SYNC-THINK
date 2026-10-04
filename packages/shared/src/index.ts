@@ -12,6 +12,7 @@ export * from './types/agent.js';
 export * from './types/team.js';
 export * from './types/chat-plan.js';
 export * from './types/scheduled-task.js';
+export * from './automation-acceptance.js';
 export * from './types/external-event.js';
 export * from './types/run-index.js';
 export * from './types/delegated-run.js';
@@ -64,3 +65,10 @@ export * from './types/production-execution.js';
 export * from './orchestration-errors.js';
 export { scrubDiagnosticText } from './diagnostic-text.js';
 export * from './types/collaboration-chat.js';
+
+export * from './board-data.js';
+export * from './reasoning-effort.js';
+
+export * from './collaboration-activity.js';
+
+export * from './collaboration-visibility.js';

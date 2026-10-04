@@ -1,3 +1,4 @@
+import { ATTENTION_LABELS, type ConversationActivityView } from '../../conversation-attention.js';
 import { PROJECTLESS_SCOPE } from './projectless-scope.js';
 // NewMax-style top bar: workspace tabs + full menu from "+"
 // Menu portals to body so overflow:hidden stage boards cannot clip it.
@@ -278,7 +279,8 @@ export interface TopBarProps {
    * 各工作区任务状态（运行中动效 / 完成未读圆点）。
    * key = workspaceId；缺省即无指示。
    */
-  workspaceActivity?: ReadonlyMap<string, { running: boolean; unread: boolean }>;
+  workspaceActivity?: ReadonlyMap<string, ConversationActivityView>;
+  attentionCenter?: React.ReactNode;
   /** Non-conversation pages occupy one contextual tab instead of workspace tabs. */
   contextStage?: Exclude<ShellStage, 'talk' | 'settings'>;
 }
@@ -490,6 +492,7 @@ export function TopBar(props: TopBarProps) {
                 active={props.activeWorkspaceId === workspace.workspaceId}
                 running={props.workspaceActivity?.get(workspace.workspaceId)?.running ?? false}
                 unread={props.workspaceActivity?.get(workspace.workspaceId)?.unread ?? false}
+                attention={props.workspaceActivity?.get(workspace.workspaceId)?.attention}
                 width={workspaceLayout.tabWidth}
                 left={morph.leftFor(workspace.workspaceId)}
                 dragging={morph.draggingId === workspace.workspaceId}
@@ -790,6 +793,8 @@ export function TopBar(props: TopBarProps) {
         </button>
       ) : null}
 
+      {props.attentionCenter}
+
       {createOpen ? (
         <Suspense fallback={<span role="status">正在载入工作区设置…</span>}><WorkspaceFormDialog
           mode="create"
@@ -841,6 +846,7 @@ function ProjectTab(props: {
   running?: boolean;
   /** 该工作区有已完成但未查看的任务 → 静态未读圆点。 */
   unread?: boolean;
+  attention?: ConversationActivityView['attention'];
   dragging?: boolean;
   onHide?(): void;
   onPointerDown(event: React.PointerEvent<HTMLDivElement>): void;
@@ -861,7 +867,7 @@ function ProjectTab(props: {
       data-workspace-id={props.workspaceId}
       data-active={props.active ? 'true' : 'false'}
       title={
-        props.running
+        props.attention ? `${props.title ?? props.label} · ${ATTENTION_LABELS[props.attention]}` : props.running
           ? `${props.title ?? props.label} · 有任务正在运行`
           : props.unread
             ? `${props.title ?? props.label} · 有已完成任务待查看`
@@ -906,7 +912,9 @@ function ProjectTab(props: {
           )}
         </span>
         <span className="min-w-0 flex-1 truncate text-left">{props.label}</span>
-        {props.running ? (
+        {props.attention ? (
+          <span className="shell-activity-dot shell-activity-dot--attention" title={ATTENTION_LABELS[props.attention]} aria-label={ATTENTION_LABELS[props.attention]} />
+        ) : props.running ? (
           <span
             className="shell-activity-dot shell-activity-dot--running"
             data-testid={`workspace-running-${props.label}`}

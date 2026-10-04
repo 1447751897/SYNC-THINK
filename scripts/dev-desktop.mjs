@@ -1,3 +1,5 @@
+import { rendererBuildIsCurrent } from '../apps/desktop/scripts/renderer-build-freshness.mjs';
+import { resolveDevDesktopElectron } from './dev-desktop-electron-path.mjs';
 // dev:desktop launcher. Ensures the Electron binary exists before starting.
 // If the binary is missing (likely because VS Build Tools aren't installed),
 // emits an actionable message and exits with code 2 (NOT a crash).
@@ -14,9 +16,14 @@ const desktopRequire = createRequire(join(desktopDir, 'package.json'));
 
 let electronPath = null;
 try {
-  electronPath = desktopRequire('electron');
-} catch {
-  electronPath = null;
+  const electronVersion = desktopRequire('electron/package.json').version;
+  let packagePath;
+  try { packagePath = desktopRequire('electron'); } catch { /* A cached runtime can still work. */ }
+  const selected = resolveDevDesktopElectron({ packagePath, electronVersion });
+  electronPath = selected?.path ?? null;
+  if (selected) console.log(`[dev:desktop] Electron (${selected.source}): ${selected.path}`);
+} catch (error) {
+  console.error('[dev:desktop] Electron selection failed:', error.message);
 }
 
 if (!electronPath || !existsSync(electronPath)) {
@@ -48,6 +55,11 @@ if (!existsSync(desktopMain) || !existsSync(desktopPreload) || !existsSync(rende
 }
 
 const developmentRenderer = process.argv.includes('--renderer-development');
+if (!developmentRenderer && !process.env.VITE_DEV_SERVER_URL &&
+  !rendererBuildIsCurrent(rootDir, join(desktopDir, 'dist', 'renderer-shell'))) {
+  console.log('[dev:desktop] renderer sources changed; rebuilding production shell...');
+  execFileSync(process.execPath, ['scripts/build-shell.mjs'], { cwd: desktopDir, stdio: 'inherit' });
+}
 if (developmentRenderer && !process.env.VITE_DEV_SERVER_URL) {
   execFileSync(process.execPath, ['scripts/build-shell.mjs', '--mode', 'development'], {
     cwd: desktopDir,

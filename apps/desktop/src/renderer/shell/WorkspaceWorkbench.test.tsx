@@ -611,3 +611,29 @@ describe('main chat work panel shortcuts', () => {
     expect(screen.getByRole('button', { name: '浏览器' }).hasAttribute('disabled')).toBe(false);
   });
 });
+
+
+it('keeps other conversation guests mounted but excludes them from active tabs and focus', () => {
+  const a = openWorkbenchTab(createWorkspaceWorkbenchLayout(), 'right', browserWorkbenchTab('a', 'https://a.test')).right;
+  const b = openWorkbenchTab(createWorkspaceWorkbenchLayout(), 'right', browserWorkbenchTab('b', 'https://b.test')).right;
+  const retainedBrowserTabs = [...a.tabs, ...b.tabs];
+  const props = { placement: 'right' as const, retainedBrowserTabs,
+    renderContent: (tab: import('./workspace-workbench.js').WorkbenchTab) => <input data-testid={'input-' + tab.id} defaultValue="original" />,
+    onActivateTab: vi.fn(), onCloseTab: vi.fn(), onNewResource: vi.fn(), onClose: vi.fn(), onSizeChange: vi.fn(),
+  };
+  const view = render(<WorkspaceWorkbench {...props} scope={a} />);
+  const inputA = screen.getByTestId('input-browser:a') as HTMLInputElement;
+  fireEvent.change(inputA, { target: { value: 'only A' } });
+  expect(screen.getAllByRole('tab')).toHaveLength(1);
+  expect(screen.getByTestId('workbench-surface-browser-a').getAttribute('data-active')).toBe('true');
+  expect(screen.getByTestId('workbench-surface-browser-b').getAttribute('data-active')).toBe('false');
+  view.rerender(<WorkspaceWorkbench {...props} scope={b} />);
+  expect(screen.getByTestId('input-browser:a')).toBe(inputA);
+  expect(inputA.value).toBe('only A');
+  expect(screen.getAllByRole('tab')).toHaveLength(1);
+  expect(screen.getByTestId('workbench-surface-browser-a').getAttribute('data-active')).toBe('false');
+  expect(screen.getByTestId('workbench-surface-browser-b').getAttribute('data-active')).toBe('true');
+  view.rerender(<WorkspaceWorkbench {...props} scope={b} open={false} />);
+  expect(screen.getByTestId('workbench-surface-browser-b').getAttribute('data-active')).toBe('false');
+  expect(screen.getByTestId('input-browser:a')).toBe(inputA);
+});

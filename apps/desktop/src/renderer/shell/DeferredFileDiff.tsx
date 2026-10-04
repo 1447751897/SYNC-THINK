@@ -13,9 +13,12 @@ import { FileDiffToolbar, FileDiffViewport } from './FileDiffSurface.js';
 import { highlightCodeLines, languageFromPath } from './code-highlight.js';
 import { WordSegments, wordHighlightMap } from './word-diff.js';
 
+export type FileDiffCounts = Pick<FileDiffPage, 'added' | 'removed'>;
+
 interface Props {
   item: FileChangeItem;
   conversationId?: string;
+  onCountsChange?: (counts: FileDiffCounts) => void;
   wrapLines?: boolean;
   showWhitespace?: boolean;
   /** NewMax "单词级差异": highlight the changed tokens inside paired lines. */
@@ -99,6 +102,7 @@ function Session({
   showWhitespace = false,
   wordLevel = false,
   showLineNumbers = true,
+  onCountsChange,
 }: Props) {
   const [loaded, setLoaded] = useState<LoadedDiff>();
   const [busy, setBusy] = useState(false);
@@ -166,6 +170,10 @@ function Session({
     // The session remounts (keyed) whenever the scope or snapshot changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (loaded) onCountsChange?.({ added: loaded.added, removed: loaded.removed });
+  }, [loaded, onCountsChange]);
 
   // Scrolling to the bottom continues reading instead of paging by hand.
   const continueReading = () => {

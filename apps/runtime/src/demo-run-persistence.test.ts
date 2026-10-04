@@ -137,3 +137,47 @@ describe('committed native run snapshot journal', () => {
     ).toThrow('run-state.identity-mismatch');
   });
 });
+
+
+describe('scheduled occurrence run recovery contract', () => {
+  it('retains the exact scheduled occurrence and frozen task through persisted run parsing', () => {
+    const scheduledTaskContext: NonNullable<DemoRunState['scheduledTaskContext']> = { version: 1, threadId: 'incremental-thread', firedAt: '2026-10-02T01:00:00.000Z', task: { id: 'schedule-1', name: 'Daily report', instruction: 'Keep this original instruction', target: {kind:'model', modelId:'model-a'}, rule:{kind:'every',intervalMinutes:5}, timeZone:'Asia/Shanghai', enabled:true, workspaceId:'workspace-a', skillVersionIds:['skill-original'], createdAt:'2026-10-01T00:00:00.000Z', updatedAt:'2026-10-01T00:00:00.000Z', automation:{executionMode:'workspace',outputs:['spreadsheet']} } };
+    const state = { ...run(), scheduledTaskContext };
+    const recovered = parseDemoRuns([serializeDemoRun(state)])[0];
+    expect(recovered).toMatchObject({scheduledTaskContext});
+  });
+});
+
+
+describe('native context checkpoint recovery', () => {
+  it('restores the exact checkpoint through incremental journal replay after a restart', () => {
+    const journal = new DemoRunPersistenceJournal();
+    const initial = run();
+    const first = journal.stage([draft(initial, 'before-maintenance', 'run.started')]);
+    first.commit(false);
+    const nativeContextCheckpoint = {
+      bindingKey: 'incremental-thread:model-a:incremental-run',
+      sourceMessageCount: 14,
+      sourcePrefixFingerprint: 'a'.repeat(64),
+      summary: '原始约束：仅写 story.md，等待验收；当前任务继续。',
+    };
+    const maintained = { ...initial, nativeContextCheckpoint };
+    const second = journal.stage([draft(maintained, 'maintained', 'context.request_maintained')]);
+    second.commit(false);
+    const restored = new Map<string, DemoRunState>();
+    applyDemoRunEvent(restored, event(first.events[0], 1));
+    applyDemoRunEvent(restored, event(second.events[0], 2));
+    expect(restored.get(runId)?.nativeContextCheckpoint).toEqual(nativeContextCheckpoint);
+    expect(restored.get(runId)?.assistantText).toBe(largeText);
+  });
+
+  it('discards a corrupt replacement boundary while retaining the original run text', () => {
+    const original = serializeDemoRun(run());
+    const restored = parseDemoRuns([{ ...original, nativeContextCheckpoint: {
+      bindingKey: 'incremental-thread:model-a:incremental-run', sourceMessageCount: -2,
+      sourcePrefixFingerprint: 'invalid', summary: 'partial',
+    } }])[0]!;
+    expect(restored.nativeContextCheckpoint).toBeUndefined();
+    expect(restored.assistantText).toBe(largeText);
+  });
+});

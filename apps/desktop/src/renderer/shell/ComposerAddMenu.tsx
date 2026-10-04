@@ -11,6 +11,7 @@ import {
 import { createPortal } from 'react-dom';
 import { listenForFrameCoalescedViewportChange } from './viewport-frame.js';
 import {
+  AtSign,
   Check,
   FileCode2,
   FolderOpen,
@@ -89,6 +90,8 @@ export interface ComposerAddControlProps {
   permissionMode: PermissionMode;
   /** NewMax moves permission choices into Add only after the toolbar collapses them. */
   showPermissionItems?: boolean;
+  /** Model chats use + and typed @ instead of a duplicate reference button. */
+  showReferenceTrigger?: boolean;
   disabled?: boolean;
   attachDisabled?: boolean;
   onAttach(): void;
@@ -116,6 +119,7 @@ export function ComposerAddControl({
   networkEnabled,
   permissionMode,
   showPermissionItems = false,
+  showReferenceTrigger = true,
   disabled = false,
   attachDisabled = false,
   onAttach,
@@ -128,6 +132,8 @@ export function ComposerAddControl({
   menuTestId,
 }: ComposerAddControlProps) {
   const triggerRef = useRef<HTMLButtonElement>(null);
+  const referenceTriggerRef = useRef<HTMLButtonElement>(null);
+  const [referenceOnly, setReferenceOnly] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const searchAnchorRef = useRef<ComposerAddSearchAnchor | null>(null);
@@ -155,7 +161,10 @@ export function ComposerAddControl({
   );
 
   useEffect(() => {
-    if (!menuPresence.rendered) searchAnchorRef.current = null;
+    if (!menuPresence.rendered) {
+      searchAnchorRef.current = null;
+      setReferenceOnly(false);
+    }
   }, [menuPresence.rendered]);
 
   const captureSearchAnchor = useCallback(() => {
@@ -186,6 +195,7 @@ export function ComposerAddControl({
       close(true);
       return;
     }
+    setReferenceOnly(false);
     onBeforeOpen?.();
     captureSearchAnchor();
     onOpenChange(true);
@@ -224,7 +234,7 @@ export function ComposerAddControl({
   }, [open, query, workspaceFolder]);
 
   const actionItems = useMemo<ComposerAddItem[]>(() => {
-    if (searching) return [];
+    if (searching || referenceOnly) return [];
     return [
       { kind: 'attach', key: 'attach', Icon: Paperclip },
       { kind: 'plan', key: 'plan', Icon: ListTodo },
@@ -242,7 +252,7 @@ export function ComposerAddControl({
           )
         : []),
     ];
-  }, [searching, showPermissionItems]);
+  }, [searching, referenceOnly, showPermissionItems]);
   const fileItems = useMemo<ComposerAddItem[]>(
     () => files.map((file) => ({ kind: 'file', key: `file:${file.kind}:${file.path}`, file })),
     [files],
@@ -418,6 +428,7 @@ export function ComposerAddControl({
       if (
         menuRef.current?.contains(target) ||
         triggerRef.current?.contains(target) ||
+        referenceTriggerRef.current?.contains(target) ||
         inputRef.current?.contains(target)
       ) {
         return;
@@ -576,10 +587,10 @@ export function ComposerAddControl({
         ref={scrollRef}
         className="shell-composer-add-menu__scroll"
         role="listbox"
-        aria-label="添加文件和更多"
+        aria-label={referenceOnly ? '引用工作区文件' : '添加文件和更多'}
       >
         <ComposerMenuHighlight containerRef={scrollRef} activeIndex={activeIndex} />
-        {!searching ? (
+        {!searching && !referenceOnly ? (
           <>
             <div className="shell-composer-add-menu__section">添加</div>
             {actionItems.slice(0, 4).map(renderItem)}
@@ -623,6 +634,12 @@ export function ComposerAddControl({
       >
         <Plus size={18} aria-hidden="true" />
       </button>
+      {showReferenceTrigger ? <button ref={referenceTriggerRef} type="button" className="shell-compose__icon-tool shell-compose__shortcut-mention"
+        aria-label="引用工作区文件" title="引用工作区文件（@）" aria-haspopup="listbox" aria-expanded={open && referenceOnly}
+        disabled={disabled || !workspaceFolder} onMouseDown={event => event.preventDefault()}
+        onClick={() => { onBeforeOpen?.(); captureSearchAnchor(); setReferenceOnly(true); onOpenChange(true); inputRef.current?.focus(); }}>
+        <AtSign size={17} aria-hidden="true" />
+      </button> : null}
       {menu && typeof document !== 'undefined' ? createPortal(menu, document.body) : menu}
       <MeetingMinutesDialog
         open={meetingOpen}

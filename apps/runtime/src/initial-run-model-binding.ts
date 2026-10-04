@@ -1,3 +1,4 @@
+import { parseModelOutputLimit } from './context-policy.js';
 import {
   resolveCredentialRef,
   resolveModelBinding,
@@ -63,6 +64,7 @@ export interface InitialRunModelBinding {
   credential?: RunBindingCredential;
   credentialResolutionSource: CredentialResolutionSource;
   useFakeProvider: boolean;
+  modelMaxOutputTokens?: number;
   modelContextWindow: number;
   contextWindowEstimated: boolean;
 }
@@ -78,7 +80,7 @@ function findByProviderModelId(
   return undefined;
 }
 
-function resolveContextWindow(model: RunBindingModel | undefined): {
+export function resolveContextWindow(model: RunBindingModel | undefined): {
   modelContextWindow: number;
   contextWindowEstimated: boolean;
 } {
@@ -123,8 +125,7 @@ export function resolveRunCredentialBinding(
     getCredentialRef: (id) => catalog.getCredentialRef(id),
     getFirstCredentialInGroup: (groupId) => catalog.getFirstCredentialInGroup(groupId),
     getPrimaryCredentialRef: (providerId) => catalog.getPrimaryCredentialRef(providerId),
-    getProviderIdForCredentialGroup: (groupId) =>
-      catalog.getProviderIdForCredentialGroup(groupId),
+    getProviderIdForCredentialGroup: (groupId) => catalog.getProviderIdForCredentialGroup(groupId),
   });
   return {
     credential: resolution.credential,
@@ -143,15 +144,12 @@ export function resolveInitialRunModelBinding(
     externalKernel?: boolean;
   },
 ): InitialRunModelBinding {
-  const requestedModelId = input.requestedModelId
-    ? (input.requestedModelId as ModelId)
-    : undefined;
+  const requestedModelId = input.requestedModelId ? (input.requestedModelId as ModelId) : undefined;
   const resolution = resolveModelBinding({
     agent: input.agent,
     runModelId: requestedModelId,
   });
-  let modelId =
-    resolution.status === 'resolved' ? resolution.modelId : input.agent.defaultModelId;
+  let modelId = resolution.status === 'resolved' ? resolution.modelId : input.agent.defaultModelId;
   let resolutionSource: ModelResolutionSource =
     resolution.status === 'resolved' ? resolution.source : 'agentDefault';
   let model = ports.catalog?.getModel(modelId);
@@ -185,9 +183,14 @@ export function resolveInitialRunModelBinding(
   const explicitDemo = modelId === 'fake-mini' && !model && !ports.externalKernel;
   // Missing/stale real model bindings must never masquerade as a successful demo reply.
   if (!ports.externalKernel && !explicitDemo) {
-    if (!model) throw new Error('MODEL_BINDING_UNAVAILABLE: 当前绑定的模型已失效，请在智能体设置中重新选择可用模型。');
-    if (!provider) throw new Error('MODEL_PROVIDER_UNAVAILABLE: 模型服务商已失效，请检查模型设置。');
-    if (!ports.secureStoreAvailable) throw new Error('MODEL_CREDENTIAL_STORE_UNAVAILABLE: 凭据服务尚未就绪，请重新连接运行时。');
+    if (!model)
+      throw new Error(
+        'MODEL_BINDING_UNAVAILABLE: 当前绑定的模型已失效，请在智能体设置中重新选择可用模型。',
+      );
+    if (!provider)
+      throw new Error('MODEL_PROVIDER_UNAVAILABLE: 模型服务商已失效，请检查模型设置。');
+    if (!ports.secureStoreAvailable)
+      throw new Error('MODEL_CREDENTIAL_STORE_UNAVAILABLE: 凭据服务尚未就绪，请重新连接运行时。');
   }
   const credentialResolution = resolveRunCredentialBinding(
     {
@@ -205,6 +208,7 @@ export function resolveInitialRunModelBinding(
     credential: credentialResolution.credential,
     credentialResolutionSource: credentialResolution.source,
     useFakeProvider: explicitDemo,
+    modelMaxOutputTokens: parseModelOutputLimit(model?.limitsJson),
     ...resolveContextWindow(model),
   };
 }

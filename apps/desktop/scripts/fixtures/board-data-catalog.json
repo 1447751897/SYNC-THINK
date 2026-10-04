@@ -1,0 +1,6267 @@
+{
+  "version": 1,
+  "title": "BoardUI 全组件验收",
+  "source": "示例数据，非真实业务数据",
+  "components": [
+    {
+      "title": "Activity",
+      "items": [
+        {
+          "label": "Move",
+          "value": 1592,
+          "target": 2000,
+          "unit": "kcal"
+        },
+        {
+          "label": "Exercise",
+          "value": 105,
+          "target": 120,
+          "unit": "min"
+        },
+        {
+          "label": "Running",
+          "value": 5.2,
+          "target": 7,
+          "unit": "km"
+        }
+      ],
+      "type": "activity-rings-card",
+      "source": "组件验收示例 · 非真实业务数据",
+      "timeRange": "2026-01 — 2026-12"
+    },
+    {
+      "title": "Visitors",
+      "data": [
+        {
+          "label": "Jan",
+          "current": 1200,
+          "previous": 984,
+          "organic": 2000,
+          "referral": 900,
+          "paid": 500,
+          "conversion": 0.024
+        },
+        {
+          "label": "Feb",
+          "current": 1800,
+          "previous": 1476,
+          "organic": 2250,
+          "referral": 1000,
+          "paid": 590,
+          "conversion": 0.025500000000000002
+        },
+        {
+          "label": "Mar",
+          "current": 2600,
+          "previous": 2132,
+          "organic": 2500,
+          "referral": 1100,
+          "paid": 680,
+          "conversion": 0.027
+        },
+        {
+          "label": "Apr",
+          "current": 2200,
+          "previous": 1804,
+          "organic": 2750,
+          "referral": 1200,
+          "paid": 770,
+          "conversion": 0.0285
+        },
+        {
+          "label": "May",
+          "current": 3600,
+          "previous": 2952,
+          "organic": 3000,
+          "referral": 1300,
+          "paid": 860,
+          "conversion": 0.03
+        },
+        {
+          "label": "Jun",
+          "current": 3400,
+          "previous": 2788,
+          "organic": 3250,
+          "referral": 1400,
+          "paid": 950,
+          "conversion": 0.0315
+        },
+        {
+          "label": "Jul",
+          "current": 2700,
+          "previous": 2214,
+          "organic": 3500,
+          "referral": 1500,
+          "paid": 1040,
+          "conversion": 0.033
+        },
+        {
+          "label": "Aug",
+          "current": 4500,
+          "previous": 3690,
+          "organic": 3750,
+          "referral": 1600,
+          "paid": 1130,
+          "conversion": 0.0345
+        },
+        {
+          "label": "Sep",
+          "current": 5900,
+          "previous": 4838,
+          "organic": 4000,
+          "referral": 1700,
+          "paid": 1220,
+          "conversion": 0.036000000000000004
+        },
+        {
+          "label": "Oct",
+          "current": 5600,
+          "previous": 4592,
+          "organic": 4250,
+          "referral": 1800,
+          "paid": 1310,
+          "conversion": 0.0375
+        },
+        {
+          "label": "Nov",
+          "current": 4300,
+          "previous": 3526,
+          "organic": 4500,
+          "referral": 1900,
+          "paid": 1400,
+          "conversion": 0.039
+        },
+        {
+          "label": "Dec",
+          "current": 6600,
+          "previous": 5412,
+          "organic": 4750,
+          "referral": 2000,
+          "paid": 1490,
+          "conversion": 0.0405
+        }
+      ],
+      "series": [
+        {
+          "key": "organic",
+          "label": "Organic"
+        },
+        {
+          "key": "referral",
+          "label": "Referral"
+        },
+        {
+          "key": "paid",
+          "label": "Paid"
+        }
+      ],
+      "delta": 8.2,
+      "type": "area-chart-card",
+      "source": "组件验收示例 · 非真实业务数据",
+      "timeRange": "2026-01 — 2026-12"
+    },
+    {
+      "title": "VISITORS",
+      "format": "percent",
+      "data": [
+        {
+          "label": "Desktop",
+          "value": 0.61
+        },
+        {
+          "label": "Mobile",
+          "value": 0.31
+        },
+        {
+          "label": "Tablet",
+          "value": 0.08
+        }
+      ],
+      "type": "bar-list-card",
+      "source": "组件验收示例 · 非真实业务数据",
+      "timeRange": "2026-01 — 2026-12"
+    },
+    {
+      "title": "Sessions · Conversion",
+      "data": [
+        {
+          "label": "Jan",
+          "current": 1200,
+          "previous": 984,
+          "organic": 2000,
+          "referral": 900,
+          "paid": 500,
+          "conversion": 0.024
+        },
+        {
+          "label": "Feb",
+          "current": 1800,
+          "previous": 1476,
+          "organic": 2250,
+          "referral": 1000,
+          "paid": 590,
+          "conversion": 0.025500000000000002
+        },
+        {
+          "label": "Mar",
+          "current": 2600,
+          "previous": 2132,
+          "organic": 2500,
+          "referral": 1100,
+          "paid": 680,
+          "conversion": 0.027
+        },
+        {
+          "label": "Apr",
+          "current": 2200,
+          "previous": 1804,
+          "organic": 2750,
+          "referral": 1200,
+          "paid": 770,
+          "conversion": 0.0285
+        },
+        {
+          "label": "May",
+          "current": 3600,
+          "previous": 2952,
+          "organic": 3000,
+          "referral": 1300,
+          "paid": 860,
+          "conversion": 0.03
+        },
+        {
+          "label": "Jun",
+          "current": 3400,
+          "previous": 2788,
+          "organic": 3250,
+          "referral": 1400,
+          "paid": 950,
+          "conversion": 0.0315
+        },
+        {
+          "label": "Jul",
+          "current": 2700,
+          "previous": 2214,
+          "organic": 3500,
+          "referral": 1500,
+          "paid": 1040,
+          "conversion": 0.033
+        },
+        {
+          "label": "Aug",
+          "current": 4500,
+          "previous": 3690,
+          "organic": 3750,
+          "referral": 1600,
+          "paid": 1130,
+          "conversion": 0.0345
+        },
+        {
+          "label": "Sep",
+          "current": 5900,
+          "previous": 4838,
+          "organic": 4000,
+          "referral": 1700,
+          "paid": 1220,
+          "conversion": 0.036000000000000004
+        },
+        {
+          "label": "Oct",
+          "current": 5600,
+          "previous": 4592,
+          "organic": 4250,
+          "referral": 1800,
+          "paid": 1310,
+          "conversion": 0.0375
+        },
+        {
+          "label": "Nov",
+          "current": 4300,
+          "previous": 3526,
+          "organic": 4500,
+          "referral": 1900,
+          "paid": 1400,
+          "conversion": 0.039
+        },
+        {
+          "label": "Dec",
+          "current": 6600,
+          "previous": 5412,
+          "organic": 4750,
+          "referral": 2000,
+          "paid": 1490,
+          "conversion": 0.0405
+        }
+      ],
+      "series": [
+        {
+          "key": "current",
+          "label": "Sessions",
+          "type": "bar"
+        },
+        {
+          "key": "conversion",
+          "label": "Conversion",
+          "type": "line",
+          "axis": "right",
+          "format": "percent"
+        }
+      ],
+      "delta": 9.4,
+      "type": "combo-chart-card",
+      "source": "组件验收示例 · 非真实业务数据",
+      "timeRange": "2026-01 — 2026-12",
+      "periods": [
+        {
+          "label": "Weekly",
+          "data": [
+            {
+              "label": "Jan",
+              "current": 1200,
+              "previous": 984,
+              "organic": 2000,
+              "referral": 900,
+              "paid": 500,
+              "conversion": 0.024
+            },
+            {
+              "label": "Feb",
+              "current": 1800,
+              "previous": 1476,
+              "organic": 2250,
+              "referral": 1000,
+              "paid": 590,
+              "conversion": 0.025500000000000002
+            },
+            {
+              "label": "Mar",
+              "current": 2600,
+              "previous": 2132,
+              "organic": 2500,
+              "referral": 1100,
+              "paid": 680,
+              "conversion": 0.027
+            },
+            {
+              "label": "Apr",
+              "current": 2200,
+              "previous": 1804,
+              "organic": 2750,
+              "referral": 1200,
+              "paid": 770,
+              "conversion": 0.0285
+            },
+            {
+              "label": "May",
+              "current": 3600,
+              "previous": 2952,
+              "organic": 3000,
+              "referral": 1300,
+              "paid": 860,
+              "conversion": 0.03
+            },
+            {
+              "label": "Jun",
+              "current": 3400,
+              "previous": 2788,
+              "organic": 3250,
+              "referral": 1400,
+              "paid": 950,
+              "conversion": 0.0315
+            },
+            {
+              "label": "Jul",
+              "current": 2700,
+              "previous": 2214,
+              "organic": 3500,
+              "referral": 1500,
+              "paid": 1040,
+              "conversion": 0.033
+            },
+            {
+              "label": "Aug",
+              "current": 4500,
+              "previous": 3690,
+              "organic": 3750,
+              "referral": 1600,
+              "paid": 1130,
+              "conversion": 0.0345
+            },
+            {
+              "label": "Sep",
+              "current": 5900,
+              "previous": 4838,
+              "organic": 4000,
+              "referral": 1700,
+              "paid": 1220,
+              "conversion": 0.036000000000000004
+            },
+            {
+              "label": "Oct",
+              "current": 5600,
+              "previous": 4592,
+              "organic": 4250,
+              "referral": 1800,
+              "paid": 1310,
+              "conversion": 0.0375
+            },
+            {
+              "label": "Nov",
+              "current": 4300,
+              "previous": 3526,
+              "organic": 4500,
+              "referral": 1900,
+              "paid": 1400,
+              "conversion": 0.039
+            },
+            {
+              "label": "Dec",
+              "current": 6600,
+              "previous": 5412,
+              "organic": 4750,
+              "referral": 2000,
+              "paid": 1490,
+              "conversion": 0.0405
+            }
+          ]
+        },
+        {
+          "label": "Monthly",
+          "data": [
+            {
+              "label": "Jan",
+              "current": 1200,
+              "previous": 984,
+              "organic": 2000,
+              "referral": 900,
+              "paid": 500,
+              "conversion": 0.024
+            },
+            {
+              "label": "Feb",
+              "current": 1800,
+              "previous": 1476,
+              "organic": 2250,
+              "referral": 1000,
+              "paid": 590,
+              "conversion": 0.025500000000000002
+            },
+            {
+              "label": "Mar",
+              "current": 2600,
+              "previous": 2132,
+              "organic": 2500,
+              "referral": 1100,
+              "paid": 680,
+              "conversion": 0.027
+            },
+            {
+              "label": "Apr",
+              "current": 2200,
+              "previous": 1804,
+              "organic": 2750,
+              "referral": 1200,
+              "paid": 770,
+              "conversion": 0.0285
+            },
+            {
+              "label": "May",
+              "current": 3600,
+              "previous": 2952,
+              "organic": 3000,
+              "referral": 1300,
+              "paid": 860,
+              "conversion": 0.03
+            },
+            {
+              "label": "Jun",
+              "current": 3400,
+              "previous": 2788,
+              "organic": 3250,
+              "referral": 1400,
+              "paid": 950,
+              "conversion": 0.0315
+            }
+          ]
+        },
+        {
+          "label": "Yearly",
+          "data": [
+            {
+              "label": "Jan",
+              "current": 1200,
+              "previous": 984,
+              "organic": 2000,
+              "referral": 900,
+              "paid": 500,
+              "conversion": 0.024
+            },
+            {
+              "label": "Feb",
+              "current": 1800,
+              "previous": 1476,
+              "organic": 2250,
+              "referral": 1000,
+              "paid": 590,
+              "conversion": 0.025500000000000002
+            },
+            {
+              "label": "Mar",
+              "current": 2600,
+              "previous": 2132,
+              "organic": 2500,
+              "referral": 1100,
+              "paid": 680,
+              "conversion": 0.027
+            },
+            {
+              "label": "Apr",
+              "current": 2200,
+              "previous": 1804,
+              "organic": 2750,
+              "referral": 1200,
+              "paid": 770,
+              "conversion": 0.0285
+            },
+            {
+              "label": "May",
+              "current": 3600,
+              "previous": 2952,
+              "organic": 3000,
+              "referral": 1300,
+              "paid": 860,
+              "conversion": 0.03
+            },
+            {
+              "label": "Jun",
+              "current": 3400,
+              "previous": 2788,
+              "organic": 3250,
+              "referral": 1400,
+              "paid": 950,
+              "conversion": 0.0315
+            },
+            {
+              "label": "Jul",
+              "current": 2700,
+              "previous": 2214,
+              "organic": 3500,
+              "referral": 1500,
+              "paid": 1040,
+              "conversion": 0.033
+            },
+            {
+              "label": "Aug",
+              "current": 4500,
+              "previous": 3690,
+              "organic": 3750,
+              "referral": 1600,
+              "paid": 1130,
+              "conversion": 0.0345
+            },
+            {
+              "label": "Sep",
+              "current": 5900,
+              "previous": 4838,
+              "organic": 4000,
+              "referral": 1700,
+              "paid": 1220,
+              "conversion": 0.036000000000000004
+            },
+            {
+              "label": "Oct",
+              "current": 5600,
+              "previous": 4592,
+              "organic": 4250,
+              "referral": 1800,
+              "paid": 1310,
+              "conversion": 0.0375
+            },
+            {
+              "label": "Nov",
+              "current": 4300,
+              "previous": 3526,
+              "organic": 4500,
+              "referral": 1900,
+              "paid": 1400,
+              "conversion": 0.039
+            },
+            {
+              "label": "Dec",
+              "current": 6600,
+              "previous": 5412,
+              "organic": 4750,
+              "referral": 2000,
+              "paid": 1490,
+              "conversion": 0.0405
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Contributions this year",
+      "delta": 14.8,
+      "data": [
+        {
+          "date": "2026-01-01",
+          "value": null
+        },
+        {
+          "date": "2026-01-02",
+          "value": 7
+        },
+        {
+          "date": "2026-01-03",
+          "value": 14
+        },
+        {
+          "date": "2026-01-04",
+          "value": 6
+        },
+        {
+          "date": "2026-01-05",
+          "value": 13
+        },
+        {
+          "date": "2026-01-06",
+          "value": 5
+        },
+        {
+          "date": "2026-01-07",
+          "value": 12
+        },
+        {
+          "date": "2026-01-08",
+          "value": 4
+        },
+        {
+          "date": "2026-01-09",
+          "value": 11
+        },
+        {
+          "date": "2026-01-10",
+          "value": 3
+        },
+        {
+          "date": "2026-01-11",
+          "value": 10
+        },
+        {
+          "date": "2026-01-12",
+          "value": null
+        },
+        {
+          "date": "2026-01-13",
+          "value": 9
+        },
+        {
+          "date": "2026-01-14",
+          "value": 1
+        },
+        {
+          "date": "2026-01-15",
+          "value": 8
+        },
+        {
+          "date": "2026-01-16",
+          "value": 0
+        },
+        {
+          "date": "2026-01-17",
+          "value": 7
+        },
+        {
+          "date": "2026-01-18",
+          "value": 14
+        },
+        {
+          "date": "2026-01-19",
+          "value": 6
+        },
+        {
+          "date": "2026-01-20",
+          "value": 13
+        },
+        {
+          "date": "2026-01-21",
+          "value": 5
+        },
+        {
+          "date": "2026-01-22",
+          "value": 12
+        },
+        {
+          "date": "2026-01-23",
+          "value": null
+        },
+        {
+          "date": "2026-01-24",
+          "value": 11
+        },
+        {
+          "date": "2026-01-25",
+          "value": 3
+        },
+        {
+          "date": "2026-01-26",
+          "value": 10
+        },
+        {
+          "date": "2026-01-27",
+          "value": 2
+        },
+        {
+          "date": "2026-01-28",
+          "value": 9
+        },
+        {
+          "date": "2026-01-29",
+          "value": 1
+        },
+        {
+          "date": "2026-01-30",
+          "value": 8
+        },
+        {
+          "date": "2026-01-31",
+          "value": 0
+        },
+        {
+          "date": "2026-02-01",
+          "value": 7
+        },
+        {
+          "date": "2026-02-02",
+          "value": 14
+        },
+        {
+          "date": "2026-02-03",
+          "value": null
+        },
+        {
+          "date": "2026-02-04",
+          "value": 13
+        },
+        {
+          "date": "2026-02-05",
+          "value": 5
+        },
+        {
+          "date": "2026-02-06",
+          "value": 12
+        },
+        {
+          "date": "2026-02-07",
+          "value": 4
+        },
+        {
+          "date": "2026-02-08",
+          "value": 11
+        },
+        {
+          "date": "2026-02-09",
+          "value": 3
+        },
+        {
+          "date": "2026-02-10",
+          "value": 10
+        },
+        {
+          "date": "2026-02-11",
+          "value": 2
+        },
+        {
+          "date": "2026-02-12",
+          "value": 9
+        },
+        {
+          "date": "2026-02-13",
+          "value": 1
+        },
+        {
+          "date": "2026-02-14",
+          "value": null
+        },
+        {
+          "date": "2026-02-15",
+          "value": 0
+        },
+        {
+          "date": "2026-02-16",
+          "value": 7
+        },
+        {
+          "date": "2026-02-17",
+          "value": 14
+        },
+        {
+          "date": "2026-02-18",
+          "value": 6
+        },
+        {
+          "date": "2026-02-19",
+          "value": 13
+        },
+        {
+          "date": "2026-02-20",
+          "value": 5
+        },
+        {
+          "date": "2026-02-21",
+          "value": 12
+        },
+        {
+          "date": "2026-02-22",
+          "value": 4
+        },
+        {
+          "date": "2026-02-23",
+          "value": 11
+        },
+        {
+          "date": "2026-02-24",
+          "value": 3
+        },
+        {
+          "date": "2026-02-25",
+          "value": null
+        },
+        {
+          "date": "2026-02-26",
+          "value": 2
+        },
+        {
+          "date": "2026-02-27",
+          "value": 9
+        },
+        {
+          "date": "2026-02-28",
+          "value": 1
+        },
+        {
+          "date": "2026-03-01",
+          "value": 8
+        },
+        {
+          "date": "2026-03-02",
+          "value": 0
+        },
+        {
+          "date": "2026-03-03",
+          "value": 7
+        },
+        {
+          "date": "2026-03-04",
+          "value": 14
+        },
+        {
+          "date": "2026-03-05",
+          "value": 6
+        },
+        {
+          "date": "2026-03-06",
+          "value": 13
+        },
+        {
+          "date": "2026-03-07",
+          "value": 5
+        },
+        {
+          "date": "2026-03-08",
+          "value": null
+        },
+        {
+          "date": "2026-03-09",
+          "value": 4
+        },
+        {
+          "date": "2026-03-10",
+          "value": 11
+        },
+        {
+          "date": "2026-03-11",
+          "value": 3
+        },
+        {
+          "date": "2026-03-12",
+          "value": 10
+        },
+        {
+          "date": "2026-03-13",
+          "value": 2
+        },
+        {
+          "date": "2026-03-14",
+          "value": 9
+        },
+        {
+          "date": "2026-03-15",
+          "value": 1
+        },
+        {
+          "date": "2026-03-16",
+          "value": 8
+        },
+        {
+          "date": "2026-03-17",
+          "value": 0
+        },
+        {
+          "date": "2026-03-18",
+          "value": 7
+        },
+        {
+          "date": "2026-03-19",
+          "value": null
+        },
+        {
+          "date": "2026-03-20",
+          "value": 6
+        },
+        {
+          "date": "2026-03-21",
+          "value": 13
+        },
+        {
+          "date": "2026-03-22",
+          "value": 5
+        },
+        {
+          "date": "2026-03-23",
+          "value": 12
+        },
+        {
+          "date": "2026-03-24",
+          "value": 4
+        },
+        {
+          "date": "2026-03-25",
+          "value": 11
+        },
+        {
+          "date": "2026-03-26",
+          "value": 3
+        },
+        {
+          "date": "2026-03-27",
+          "value": 10
+        },
+        {
+          "date": "2026-03-28",
+          "value": 2
+        },
+        {
+          "date": "2026-03-29",
+          "value": 9
+        },
+        {
+          "date": "2026-03-30",
+          "value": null
+        },
+        {
+          "date": "2026-03-31",
+          "value": 8
+        },
+        {
+          "date": "2026-04-01",
+          "value": 0
+        },
+        {
+          "date": "2026-04-02",
+          "value": 7
+        },
+        {
+          "date": "2026-04-03",
+          "value": 14
+        },
+        {
+          "date": "2026-04-04",
+          "value": 6
+        },
+        {
+          "date": "2026-04-05",
+          "value": 13
+        },
+        {
+          "date": "2026-04-06",
+          "value": 5
+        },
+        {
+          "date": "2026-04-07",
+          "value": 12
+        },
+        {
+          "date": "2026-04-08",
+          "value": 4
+        },
+        {
+          "date": "2026-04-09",
+          "value": 11
+        },
+        {
+          "date": "2026-04-10",
+          "value": null
+        },
+        {
+          "date": "2026-04-11",
+          "value": 10
+        },
+        {
+          "date": "2026-04-12",
+          "value": 2
+        },
+        {
+          "date": "2026-04-13",
+          "value": 9
+        },
+        {
+          "date": "2026-04-14",
+          "value": 1
+        },
+        {
+          "date": "2026-04-15",
+          "value": 8
+        },
+        {
+          "date": "2026-04-16",
+          "value": 0
+        },
+        {
+          "date": "2026-04-17",
+          "value": 7
+        },
+        {
+          "date": "2026-04-18",
+          "value": 14
+        },
+        {
+          "date": "2026-04-19",
+          "value": 6
+        },
+        {
+          "date": "2026-04-20",
+          "value": 13
+        },
+        {
+          "date": "2026-04-21",
+          "value": null
+        },
+        {
+          "date": "2026-04-22",
+          "value": 12
+        },
+        {
+          "date": "2026-04-23",
+          "value": 4
+        },
+        {
+          "date": "2026-04-24",
+          "value": 11
+        },
+        {
+          "date": "2026-04-25",
+          "value": 3
+        },
+        {
+          "date": "2026-04-26",
+          "value": 10
+        },
+        {
+          "date": "2026-04-27",
+          "value": 2
+        },
+        {
+          "date": "2026-04-28",
+          "value": 9
+        },
+        {
+          "date": "2026-04-29",
+          "value": 1
+        },
+        {
+          "date": "2026-04-30",
+          "value": 8
+        },
+        {
+          "date": "2026-05-01",
+          "value": 0
+        },
+        {
+          "date": "2026-05-02",
+          "value": null
+        },
+        {
+          "date": "2026-05-03",
+          "value": 14
+        },
+        {
+          "date": "2026-05-04",
+          "value": 6
+        },
+        {
+          "date": "2026-05-05",
+          "value": 13
+        },
+        {
+          "date": "2026-05-06",
+          "value": 5
+        },
+        {
+          "date": "2026-05-07",
+          "value": 12
+        },
+        {
+          "date": "2026-05-08",
+          "value": 4
+        },
+        {
+          "date": "2026-05-09",
+          "value": 11
+        },
+        {
+          "date": "2026-05-10",
+          "value": 3
+        },
+        {
+          "date": "2026-05-11",
+          "value": 10
+        },
+        {
+          "date": "2026-05-12",
+          "value": 2
+        },
+        {
+          "date": "2026-05-13",
+          "value": null
+        },
+        {
+          "date": "2026-05-14",
+          "value": 1
+        },
+        {
+          "date": "2026-05-15",
+          "value": 8
+        },
+        {
+          "date": "2026-05-16",
+          "value": 0
+        },
+        {
+          "date": "2026-05-17",
+          "value": 7
+        },
+        {
+          "date": "2026-05-18",
+          "value": 14
+        },
+        {
+          "date": "2026-05-19",
+          "value": 6
+        },
+        {
+          "date": "2026-05-20",
+          "value": 13
+        },
+        {
+          "date": "2026-05-21",
+          "value": 5
+        },
+        {
+          "date": "2026-05-22",
+          "value": 12
+        },
+        {
+          "date": "2026-05-23",
+          "value": 4
+        },
+        {
+          "date": "2026-05-24",
+          "value": null
+        },
+        {
+          "date": "2026-05-25",
+          "value": 3
+        },
+        {
+          "date": "2026-05-26",
+          "value": 10
+        },
+        {
+          "date": "2026-05-27",
+          "value": 2
+        },
+        {
+          "date": "2026-05-28",
+          "value": 9
+        },
+        {
+          "date": "2026-05-29",
+          "value": 1
+        },
+        {
+          "date": "2026-05-30",
+          "value": 8
+        },
+        {
+          "date": "2026-05-31",
+          "value": 0
+        },
+        {
+          "date": "2026-06-01",
+          "value": 7
+        },
+        {
+          "date": "2026-06-02",
+          "value": 14
+        },
+        {
+          "date": "2026-06-03",
+          "value": 6
+        },
+        {
+          "date": "2026-06-04",
+          "value": null
+        },
+        {
+          "date": "2026-06-05",
+          "value": 5
+        },
+        {
+          "date": "2026-06-06",
+          "value": 12
+        },
+        {
+          "date": "2026-06-07",
+          "value": 4
+        },
+        {
+          "date": "2026-06-08",
+          "value": 11
+        },
+        {
+          "date": "2026-06-09",
+          "value": 3
+        },
+        {
+          "date": "2026-06-10",
+          "value": 10
+        },
+        {
+          "date": "2026-06-11",
+          "value": 2
+        },
+        {
+          "date": "2026-06-12",
+          "value": 9
+        },
+        {
+          "date": "2026-06-13",
+          "value": 1
+        },
+        {
+          "date": "2026-06-14",
+          "value": 8
+        },
+        {
+          "date": "2026-06-15",
+          "value": null
+        },
+        {
+          "date": "2026-06-16",
+          "value": 7
+        },
+        {
+          "date": "2026-06-17",
+          "value": 14
+        },
+        {
+          "date": "2026-06-18",
+          "value": 6
+        },
+        {
+          "date": "2026-06-19",
+          "value": 13
+        },
+        {
+          "date": "2026-06-20",
+          "value": 5
+        },
+        {
+          "date": "2026-06-21",
+          "value": 12
+        },
+        {
+          "date": "2026-06-22",
+          "value": 4
+        },
+        {
+          "date": "2026-06-23",
+          "value": 11
+        },
+        {
+          "date": "2026-06-24",
+          "value": 3
+        },
+        {
+          "date": "2026-06-25",
+          "value": 10
+        },
+        {
+          "date": "2026-06-26",
+          "value": null
+        },
+        {
+          "date": "2026-06-27",
+          "value": 9
+        },
+        {
+          "date": "2026-06-28",
+          "value": 1
+        },
+        {
+          "date": "2026-06-29",
+          "value": 8
+        },
+        {
+          "date": "2026-06-30",
+          "value": 0
+        },
+        {
+          "date": "2026-07-01",
+          "value": 7
+        },
+        {
+          "date": "2026-07-02",
+          "value": 14
+        },
+        {
+          "date": "2026-07-03",
+          "value": 6
+        },
+        {
+          "date": "2026-07-04",
+          "value": 13
+        },
+        {
+          "date": "2026-07-05",
+          "value": 5
+        },
+        {
+          "date": "2026-07-06",
+          "value": 12
+        },
+        {
+          "date": "2026-07-07",
+          "value": null
+        },
+        {
+          "date": "2026-07-08",
+          "value": 11
+        },
+        {
+          "date": "2026-07-09",
+          "value": 3
+        },
+        {
+          "date": "2026-07-10",
+          "value": 10
+        },
+        {
+          "date": "2026-07-11",
+          "value": 2
+        },
+        {
+          "date": "2026-07-12",
+          "value": 9
+        },
+        {
+          "date": "2026-07-13",
+          "value": 1
+        },
+        {
+          "date": "2026-07-14",
+          "value": 8
+        },
+        {
+          "date": "2026-07-15",
+          "value": 0
+        },
+        {
+          "date": "2026-07-16",
+          "value": 7
+        },
+        {
+          "date": "2026-07-17",
+          "value": 14
+        },
+        {
+          "date": "2026-07-18",
+          "value": null
+        },
+        {
+          "date": "2026-07-19",
+          "value": 13
+        },
+        {
+          "date": "2026-07-20",
+          "value": 5
+        },
+        {
+          "date": "2026-07-21",
+          "value": 12
+        },
+        {
+          "date": "2026-07-22",
+          "value": 4
+        },
+        {
+          "date": "2026-07-23",
+          "value": 11
+        },
+        {
+          "date": "2026-07-24",
+          "value": 3
+        },
+        {
+          "date": "2026-07-25",
+          "value": 10
+        },
+        {
+          "date": "2026-07-26",
+          "value": 2
+        },
+        {
+          "date": "2026-07-27",
+          "value": 9
+        },
+        {
+          "date": "2026-07-28",
+          "value": 1
+        },
+        {
+          "date": "2026-07-29",
+          "value": null
+        },
+        {
+          "date": "2026-07-30",
+          "value": 0
+        },
+        {
+          "date": "2026-07-31",
+          "value": 7
+        },
+        {
+          "date": "2026-08-01",
+          "value": 14
+        },
+        {
+          "date": "2026-08-02",
+          "value": 6
+        },
+        {
+          "date": "2026-08-03",
+          "value": 13
+        },
+        {
+          "date": "2026-08-04",
+          "value": 5
+        },
+        {
+          "date": "2026-08-05",
+          "value": 12
+        },
+        {
+          "date": "2026-08-06",
+          "value": 4
+        },
+        {
+          "date": "2026-08-07",
+          "value": 11
+        },
+        {
+          "date": "2026-08-08",
+          "value": 3
+        },
+        {
+          "date": "2026-08-09",
+          "value": null
+        },
+        {
+          "date": "2026-08-10",
+          "value": 2
+        },
+        {
+          "date": "2026-08-11",
+          "value": 9
+        },
+        {
+          "date": "2026-08-12",
+          "value": 1
+        },
+        {
+          "date": "2026-08-13",
+          "value": 8
+        },
+        {
+          "date": "2026-08-14",
+          "value": 0
+        },
+        {
+          "date": "2026-08-15",
+          "value": 7
+        },
+        {
+          "date": "2026-08-16",
+          "value": 14
+        },
+        {
+          "date": "2026-08-17",
+          "value": 6
+        },
+        {
+          "date": "2026-08-18",
+          "value": 13
+        },
+        {
+          "date": "2026-08-19",
+          "value": 5
+        },
+        {
+          "date": "2026-08-20",
+          "value": null
+        },
+        {
+          "date": "2026-08-21",
+          "value": 4
+        },
+        {
+          "date": "2026-08-22",
+          "value": 11
+        },
+        {
+          "date": "2026-08-23",
+          "value": 3
+        },
+        {
+          "date": "2026-08-24",
+          "value": 10
+        },
+        {
+          "date": "2026-08-25",
+          "value": 2
+        },
+        {
+          "date": "2026-08-26",
+          "value": 9
+        },
+        {
+          "date": "2026-08-27",
+          "value": 1
+        },
+        {
+          "date": "2026-08-28",
+          "value": 8
+        },
+        {
+          "date": "2026-08-29",
+          "value": 0
+        },
+        {
+          "date": "2026-08-30",
+          "value": 7
+        },
+        {
+          "date": "2026-08-31",
+          "value": null
+        },
+        {
+          "date": "2026-09-01",
+          "value": 6
+        },
+        {
+          "date": "2026-09-02",
+          "value": 13
+        },
+        {
+          "date": "2026-09-03",
+          "value": 5
+        },
+        {
+          "date": "2026-09-04",
+          "value": 12
+        },
+        {
+          "date": "2026-09-05",
+          "value": 4
+        },
+        {
+          "date": "2026-09-06",
+          "value": 11
+        },
+        {
+          "date": "2026-09-07",
+          "value": 3
+        },
+        {
+          "date": "2026-09-08",
+          "value": 10
+        },
+        {
+          "date": "2026-09-09",
+          "value": 2
+        },
+        {
+          "date": "2026-09-10",
+          "value": 9
+        },
+        {
+          "date": "2026-09-11",
+          "value": null
+        },
+        {
+          "date": "2026-09-12",
+          "value": 8
+        },
+        {
+          "date": "2026-09-13",
+          "value": 0
+        },
+        {
+          "date": "2026-09-14",
+          "value": 7
+        },
+        {
+          "date": "2026-09-15",
+          "value": 14
+        },
+        {
+          "date": "2026-09-16",
+          "value": 6
+        },
+        {
+          "date": "2026-09-17",
+          "value": 13
+        },
+        {
+          "date": "2026-09-18",
+          "value": 5
+        },
+        {
+          "date": "2026-09-19",
+          "value": 12
+        },
+        {
+          "date": "2026-09-20",
+          "value": 4
+        },
+        {
+          "date": "2026-09-21",
+          "value": 11
+        },
+        {
+          "date": "2026-09-22",
+          "value": null
+        },
+        {
+          "date": "2026-09-23",
+          "value": 10
+        },
+        {
+          "date": "2026-09-24",
+          "value": 2
+        },
+        {
+          "date": "2026-09-25",
+          "value": 9
+        },
+        {
+          "date": "2026-09-26",
+          "value": 1
+        },
+        {
+          "date": "2026-09-27",
+          "value": 8
+        },
+        {
+          "date": "2026-09-28",
+          "value": 0
+        },
+        {
+          "date": "2026-09-29",
+          "value": 7
+        },
+        {
+          "date": "2026-09-30",
+          "value": 14
+        },
+        {
+          "date": "2026-10-01",
+          "value": 6
+        },
+        {
+          "date": "2026-10-02",
+          "value": 13
+        },
+        {
+          "date": "2026-10-03",
+          "value": null
+        },
+        {
+          "date": "2026-10-04",
+          "value": 12
+        },
+        {
+          "date": "2026-10-05",
+          "value": 4
+        },
+        {
+          "date": "2026-10-06",
+          "value": 11
+        },
+        {
+          "date": "2026-10-07",
+          "value": 3
+        },
+        {
+          "date": "2026-10-08",
+          "value": 10
+        },
+        {
+          "date": "2026-10-09",
+          "value": 2
+        },
+        {
+          "date": "2026-10-10",
+          "value": 9
+        },
+        {
+          "date": "2026-10-11",
+          "value": 1
+        },
+        {
+          "date": "2026-10-12",
+          "value": 8
+        },
+        {
+          "date": "2026-10-13",
+          "value": 0
+        },
+        {
+          "date": "2026-10-14",
+          "value": null
+        },
+        {
+          "date": "2026-10-15",
+          "value": 14
+        },
+        {
+          "date": "2026-10-16",
+          "value": 6
+        },
+        {
+          "date": "2026-10-17",
+          "value": 13
+        },
+        {
+          "date": "2026-10-18",
+          "value": 5
+        },
+        {
+          "date": "2026-10-19",
+          "value": 12
+        },
+        {
+          "date": "2026-10-20",
+          "value": 4
+        },
+        {
+          "date": "2026-10-21",
+          "value": 11
+        },
+        {
+          "date": "2026-10-22",
+          "value": 3
+        },
+        {
+          "date": "2026-10-23",
+          "value": 10
+        },
+        {
+          "date": "2026-10-24",
+          "value": 2
+        },
+        {
+          "date": "2026-10-25",
+          "value": null
+        },
+        {
+          "date": "2026-10-26",
+          "value": 1
+        },
+        {
+          "date": "2026-10-27",
+          "value": 8
+        },
+        {
+          "date": "2026-10-28",
+          "value": 0
+        },
+        {
+          "date": "2026-10-29",
+          "value": 7
+        },
+        {
+          "date": "2026-10-30",
+          "value": 14
+        },
+        {
+          "date": "2026-10-31",
+          "value": 6
+        },
+        {
+          "date": "2026-11-01",
+          "value": 13
+        },
+        {
+          "date": "2026-11-02",
+          "value": 5
+        },
+        {
+          "date": "2026-11-03",
+          "value": 12
+        },
+        {
+          "date": "2026-11-04",
+          "value": 4
+        },
+        {
+          "date": "2026-11-05",
+          "value": null
+        },
+        {
+          "date": "2026-11-06",
+          "value": 3
+        },
+        {
+          "date": "2026-11-07",
+          "value": 10
+        },
+        {
+          "date": "2026-11-08",
+          "value": 2
+        },
+        {
+          "date": "2026-11-09",
+          "value": 9
+        },
+        {
+          "date": "2026-11-10",
+          "value": 1
+        },
+        {
+          "date": "2026-11-11",
+          "value": 8
+        },
+        {
+          "date": "2026-11-12",
+          "value": 0
+        },
+        {
+          "date": "2026-11-13",
+          "value": 7
+        },
+        {
+          "date": "2026-11-14",
+          "value": 14
+        },
+        {
+          "date": "2026-11-15",
+          "value": 6
+        },
+        {
+          "date": "2026-11-16",
+          "value": null
+        },
+        {
+          "date": "2026-11-17",
+          "value": 5
+        },
+        {
+          "date": "2026-11-18",
+          "value": 12
+        },
+        {
+          "date": "2026-11-19",
+          "value": 4
+        },
+        {
+          "date": "2026-11-20",
+          "value": 11
+        },
+        {
+          "date": "2026-11-21",
+          "value": 3
+        },
+        {
+          "date": "2026-11-22",
+          "value": 10
+        },
+        {
+          "date": "2026-11-23",
+          "value": 2
+        },
+        {
+          "date": "2026-11-24",
+          "value": 9
+        },
+        {
+          "date": "2026-11-25",
+          "value": 1
+        },
+        {
+          "date": "2026-11-26",
+          "value": 8
+        },
+        {
+          "date": "2026-11-27",
+          "value": null
+        },
+        {
+          "date": "2026-11-28",
+          "value": 7
+        },
+        {
+          "date": "2026-11-29",
+          "value": 14
+        },
+        {
+          "date": "2026-11-30",
+          "value": 6
+        },
+        {
+          "date": "2026-12-01",
+          "value": 13
+        },
+        {
+          "date": "2026-12-02",
+          "value": 5
+        },
+        {
+          "date": "2026-12-03",
+          "value": 12
+        },
+        {
+          "date": "2026-12-04",
+          "value": 4
+        },
+        {
+          "date": "2026-12-05",
+          "value": 11
+        },
+        {
+          "date": "2026-12-06",
+          "value": 3
+        },
+        {
+          "date": "2026-12-07",
+          "value": 10
+        },
+        {
+          "date": "2026-12-08",
+          "value": null
+        },
+        {
+          "date": "2026-12-09",
+          "value": 9
+        },
+        {
+          "date": "2026-12-10",
+          "value": 1
+        },
+        {
+          "date": "2026-12-11",
+          "value": 8
+        },
+        {
+          "date": "2026-12-12",
+          "value": 0
+        },
+        {
+          "date": "2026-12-13",
+          "value": 7
+        },
+        {
+          "date": "2026-12-14",
+          "value": 14
+        },
+        {
+          "date": "2026-12-15",
+          "value": 6
+        },
+        {
+          "date": "2026-12-16",
+          "value": 13
+        },
+        {
+          "date": "2026-12-17",
+          "value": 5
+        },
+        {
+          "date": "2026-12-18",
+          "value": 12
+        },
+        {
+          "date": "2026-12-19",
+          "value": null
+        },
+        {
+          "date": "2026-12-20",
+          "value": 11
+        },
+        {
+          "date": "2026-12-21",
+          "value": 3
+        },
+        {
+          "date": "2026-12-22",
+          "value": 10
+        },
+        {
+          "date": "2026-12-23",
+          "value": 2
+        },
+        {
+          "date": "2026-12-24",
+          "value": 9
+        },
+        {
+          "date": "2026-12-25",
+          "value": 1
+        },
+        {
+          "date": "2026-12-26",
+          "value": 8
+        },
+        {
+          "date": "2026-12-27",
+          "value": 0
+        },
+        {
+          "date": "2026-12-28",
+          "value": 7
+        },
+        {
+          "date": "2026-12-29",
+          "value": 14
+        },
+        {
+          "date": "2026-12-30",
+          "value": null
+        },
+        {
+          "date": "2026-12-31",
+          "value": 13
+        }
+      ],
+      "metrics": [
+        {
+          "label": "Lifetime tokens",
+          "value": "9B"
+        },
+        {
+          "label": "Peak tokens",
+          "value": "562.7M"
+        },
+        {
+          "label": "Longest task",
+          "value": "12h 54m"
+        },
+        {
+          "label": "Top streak",
+          "value": "62 days"
+        }
+      ],
+      "type": "contributions-card",
+      "source": "组件验收示例 · 非真实业务数据",
+      "timeRange": "2026-01 — 2026-12"
+    },
+    {
+      "title": "Earned so far",
+      "format": "currency",
+      "currency": "USD",
+      "data": [
+        {
+          "label": "Jan",
+          "current": 1200,
+          "previous": 984,
+          "organic": 2000,
+          "referral": 900,
+          "paid": 500,
+          "conversion": 0.024
+        },
+        {
+          "label": "Feb",
+          "current": 1800,
+          "previous": 1476,
+          "organic": 2250,
+          "referral": 1000,
+          "paid": 590,
+          "conversion": 0.025500000000000002
+        },
+        {
+          "label": "Mar",
+          "current": 2600,
+          "previous": 2132,
+          "organic": 2500,
+          "referral": 1100,
+          "paid": 680,
+          "conversion": 0.027
+        },
+        {
+          "label": "Apr",
+          "current": 2200,
+          "previous": 1804,
+          "organic": 2750,
+          "referral": 1200,
+          "paid": 770,
+          "conversion": 0.0285
+        },
+        {
+          "label": "May",
+          "current": 3600,
+          "previous": 2952,
+          "organic": 3000,
+          "referral": 1300,
+          "paid": 860,
+          "conversion": 0.03
+        },
+        {
+          "label": "Jun",
+          "current": 3400,
+          "previous": 2788,
+          "organic": 3250,
+          "referral": 1400,
+          "paid": 950,
+          "conversion": 0.0315
+        },
+        {
+          "label": "Jul",
+          "current": 2700,
+          "previous": 2214,
+          "organic": 3500,
+          "referral": 1500,
+          "paid": 1040,
+          "conversion": 0.033
+        },
+        {
+          "label": "Aug",
+          "current": 4500,
+          "previous": 3690,
+          "organic": 3750,
+          "referral": 1600,
+          "paid": 1130,
+          "conversion": 0.0345
+        },
+        {
+          "label": "Sep",
+          "current": 5900,
+          "previous": 4838,
+          "organic": 4000,
+          "referral": 1700,
+          "paid": 1220,
+          "conversion": 0.036000000000000004
+        },
+        {
+          "label": "Oct",
+          "current": 5600,
+          "previous": 4592,
+          "organic": 4250,
+          "referral": 1800,
+          "paid": 1310,
+          "conversion": 0.0375
+        },
+        {
+          "label": "Nov",
+          "current": 4300,
+          "previous": 3526,
+          "organic": 4500,
+          "referral": 1900,
+          "paid": 1400,
+          "conversion": 0.039
+        },
+        {
+          "label": "Dec",
+          "current": 6600,
+          "previous": 5412,
+          "organic": 4750,
+          "referral": 2000,
+          "paid": 1490,
+          "conversion": 0.0405
+        }
+      ],
+      "series": [
+        {
+          "key": "current",
+          "label": "Earnings"
+        }
+      ],
+      "delta": 14.8,
+      "type": "earnings-chart-card",
+      "source": "组件验收示例 · 非真实业务数据",
+      "timeRange": "2026-01 — 2026-12",
+      "periods": [
+        {
+          "label": "Weekly",
+          "data": [
+            {
+              "label": "Jan",
+              "current": 1200,
+              "previous": 984,
+              "organic": 2000,
+              "referral": 900,
+              "paid": 500,
+              "conversion": 0.024
+            },
+            {
+              "label": "Feb",
+              "current": 1800,
+              "previous": 1476,
+              "organic": 2250,
+              "referral": 1000,
+              "paid": 590,
+              "conversion": 0.025500000000000002
+            },
+            {
+              "label": "Mar",
+              "current": 2600,
+              "previous": 2132,
+              "organic": 2500,
+              "referral": 1100,
+              "paid": 680,
+              "conversion": 0.027
+            },
+            {
+              "label": "Apr",
+              "current": 2200,
+              "previous": 1804,
+              "organic": 2750,
+              "referral": 1200,
+              "paid": 770,
+              "conversion": 0.0285
+            },
+            {
+              "label": "May",
+              "current": 3600,
+              "previous": 2952,
+              "organic": 3000,
+              "referral": 1300,
+              "paid": 860,
+              "conversion": 0.03
+            },
+            {
+              "label": "Jun",
+              "current": 3400,
+              "previous": 2788,
+              "organic": 3250,
+              "referral": 1400,
+              "paid": 950,
+              "conversion": 0.0315
+            },
+            {
+              "label": "Jul",
+              "current": 2700,
+              "previous": 2214,
+              "organic": 3500,
+              "referral": 1500,
+              "paid": 1040,
+              "conversion": 0.033
+            },
+            {
+              "label": "Aug",
+              "current": 4500,
+              "previous": 3690,
+              "organic": 3750,
+              "referral": 1600,
+              "paid": 1130,
+              "conversion": 0.0345
+            },
+            {
+              "label": "Sep",
+              "current": 5900,
+              "previous": 4838,
+              "organic": 4000,
+              "referral": 1700,
+              "paid": 1220,
+              "conversion": 0.036000000000000004
+            },
+            {
+              "label": "Oct",
+              "current": 5600,
+              "previous": 4592,
+              "organic": 4250,
+              "referral": 1800,
+              "paid": 1310,
+              "conversion": 0.0375
+            },
+            {
+              "label": "Nov",
+              "current": 4300,
+              "previous": 3526,
+              "organic": 4500,
+              "referral": 1900,
+              "paid": 1400,
+              "conversion": 0.039
+            },
+            {
+              "label": "Dec",
+              "current": 6600,
+              "previous": 5412,
+              "organic": 4750,
+              "referral": 2000,
+              "paid": 1490,
+              "conversion": 0.0405
+            }
+          ]
+        },
+        {
+          "label": "Monthly",
+          "data": [
+            {
+              "label": "Jan",
+              "current": 1200,
+              "previous": 984,
+              "organic": 2000,
+              "referral": 900,
+              "paid": 500,
+              "conversion": 0.024
+            },
+            {
+              "label": "Feb",
+              "current": 1800,
+              "previous": 1476,
+              "organic": 2250,
+              "referral": 1000,
+              "paid": 590,
+              "conversion": 0.025500000000000002
+            },
+            {
+              "label": "Mar",
+              "current": 2600,
+              "previous": 2132,
+              "organic": 2500,
+              "referral": 1100,
+              "paid": 680,
+              "conversion": 0.027
+            },
+            {
+              "label": "Apr",
+              "current": 2200,
+              "previous": 1804,
+              "organic": 2750,
+              "referral": 1200,
+              "paid": 770,
+              "conversion": 0.0285
+            },
+            {
+              "label": "May",
+              "current": 3600,
+              "previous": 2952,
+              "organic": 3000,
+              "referral": 1300,
+              "paid": 860,
+              "conversion": 0.03
+            },
+            {
+              "label": "Jun",
+              "current": 3400,
+              "previous": 2788,
+              "organic": 3250,
+              "referral": 1400,
+              "paid": 950,
+              "conversion": 0.0315
+            }
+          ]
+        },
+        {
+          "label": "Yearly",
+          "data": [
+            {
+              "label": "Jan",
+              "current": 1200,
+              "previous": 984,
+              "organic": 2000,
+              "referral": 900,
+              "paid": 500,
+              "conversion": 0.024
+            },
+            {
+              "label": "Feb",
+              "current": 1800,
+              "previous": 1476,
+              "organic": 2250,
+              "referral": 1000,
+              "paid": 590,
+              "conversion": 0.025500000000000002
+            },
+            {
+              "label": "Mar",
+              "current": 2600,
+              "previous": 2132,
+              "organic": 2500,
+              "referral": 1100,
+              "paid": 680,
+              "conversion": 0.027
+            },
+            {
+              "label": "Apr",
+              "current": 2200,
+              "previous": 1804,
+              "organic": 2750,
+              "referral": 1200,
+              "paid": 770,
+              "conversion": 0.0285
+            },
+            {
+              "label": "May",
+              "current": 3600,
+              "previous": 2952,
+              "organic": 3000,
+              "referral": 1300,
+              "paid": 860,
+              "conversion": 0.03
+            },
+            {
+              "label": "Jun",
+              "current": 3400,
+              "previous": 2788,
+              "organic": 3250,
+              "referral": 1400,
+              "paid": 950,
+              "conversion": 0.0315
+            },
+            {
+              "label": "Jul",
+              "current": 2700,
+              "previous": 2214,
+              "organic": 3500,
+              "referral": 1500,
+              "paid": 1040,
+              "conversion": 0.033
+            },
+            {
+              "label": "Aug",
+              "current": 4500,
+              "previous": 3690,
+              "organic": 3750,
+              "referral": 1600,
+              "paid": 1130,
+              "conversion": 0.0345
+            },
+            {
+              "label": "Sep",
+              "current": 5900,
+              "previous": 4838,
+              "organic": 4000,
+              "referral": 1700,
+              "paid": 1220,
+              "conversion": 0.036000000000000004
+            },
+            {
+              "label": "Oct",
+              "current": 5600,
+              "previous": 4592,
+              "organic": 4250,
+              "referral": 1800,
+              "paid": 1310,
+              "conversion": 0.0375
+            },
+            {
+              "label": "Nov",
+              "current": 4300,
+              "previous": 3526,
+              "organic": 4500,
+              "referral": 1900,
+              "paid": 1400,
+              "conversion": 0.039
+            },
+            {
+              "label": "Dec",
+              "current": 6600,
+              "previous": 5412,
+              "organic": 4750,
+              "referral": 2000,
+              "paid": 1490,
+              "conversion": 0.0405
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Sign-up funnel",
+      "value": 197,
+      "delta": 5.2,
+      "data": [
+        {
+          "label": "Link opened",
+          "value": 197
+        },
+        {
+          "label": "Started",
+          "value": 110
+        },
+        {
+          "label": "Completed",
+          "value": 77
+        },
+        {
+          "label": "Converted",
+          "value": 38
+        }
+      ],
+      "type": "funnel-chart-card",
+      "source": "组件验收示例 · 非真实业务数据",
+      "timeRange": "2026-01 — 2026-12"
+    },
+    {
+      "title": "Active users",
+      "delta": 5.2,
+      "data": [
+        {
+          "row": "Mon",
+          "column": "00",
+          "value": 60
+        },
+        {
+          "row": "Mon",
+          "column": "02",
+          "value": 80
+        },
+        {
+          "row": "Mon",
+          "column": "04",
+          "value": 100
+        },
+        {
+          "row": "Mon",
+          "column": "06",
+          "value": 120
+        },
+        {
+          "row": "Mon",
+          "column": "08",
+          "value": 140
+        },
+        {
+          "row": "Mon",
+          "column": "10",
+          "value": 160
+        },
+        {
+          "row": "Mon",
+          "column": "12",
+          "value": 180
+        },
+        {
+          "row": "Mon",
+          "column": "14",
+          "value": 200
+        },
+        {
+          "row": "Mon",
+          "column": "16",
+          "value": 220
+        },
+        {
+          "row": "Mon",
+          "column": "18",
+          "value": 200
+        },
+        {
+          "row": "Mon",
+          "column": "20",
+          "value": 180
+        },
+        {
+          "row": "Mon",
+          "column": "22",
+          "value": 160
+        },
+        {
+          "row": "Tue",
+          "column": "00",
+          "value": 56
+        },
+        {
+          "row": "Tue",
+          "column": "02",
+          "value": 74
+        },
+        {
+          "row": "Tue",
+          "column": "04",
+          "value": 92
+        },
+        {
+          "row": "Tue",
+          "column": "06",
+          "value": 110
+        },
+        {
+          "row": "Tue",
+          "column": "08",
+          "value": 128
+        },
+        {
+          "row": "Tue",
+          "column": "10",
+          "value": 146
+        },
+        {
+          "row": "Tue",
+          "column": "12",
+          "value": 164
+        },
+        {
+          "row": "Tue",
+          "column": "14",
+          "value": 182
+        },
+        {
+          "row": "Tue",
+          "column": "16",
+          "value": 200
+        },
+        {
+          "row": "Tue",
+          "column": "18",
+          "value": 182
+        },
+        {
+          "row": "Tue",
+          "column": "20",
+          "value": 164
+        },
+        {
+          "row": "Tue",
+          "column": "22",
+          "value": 146
+        },
+        {
+          "row": "Wed",
+          "column": "00",
+          "value": 52
+        },
+        {
+          "row": "Wed",
+          "column": "02",
+          "value": 68
+        },
+        {
+          "row": "Wed",
+          "column": "04",
+          "value": 84
+        },
+        {
+          "row": "Wed",
+          "column": "06",
+          "value": 100
+        },
+        {
+          "row": "Wed",
+          "column": "08",
+          "value": 116
+        },
+        {
+          "row": "Wed",
+          "column": "10",
+          "value": 132
+        },
+        {
+          "row": "Wed",
+          "column": "12",
+          "value": 148
+        },
+        {
+          "row": "Wed",
+          "column": "14",
+          "value": 164
+        },
+        {
+          "row": "Wed",
+          "column": "16",
+          "value": 180
+        },
+        {
+          "row": "Wed",
+          "column": "18",
+          "value": 164
+        },
+        {
+          "row": "Wed",
+          "column": "20",
+          "value": 148
+        },
+        {
+          "row": "Wed",
+          "column": "22",
+          "value": 132
+        },
+        {
+          "row": "Thu",
+          "column": "00",
+          "value": 48
+        },
+        {
+          "row": "Thu",
+          "column": "02",
+          "value": 62
+        },
+        {
+          "row": "Thu",
+          "column": "04",
+          "value": 76
+        },
+        {
+          "row": "Thu",
+          "column": "06",
+          "value": 90
+        },
+        {
+          "row": "Thu",
+          "column": "08",
+          "value": 104
+        },
+        {
+          "row": "Thu",
+          "column": "10",
+          "value": 118
+        },
+        {
+          "row": "Thu",
+          "column": "12",
+          "value": 132
+        },
+        {
+          "row": "Thu",
+          "column": "14",
+          "value": 146
+        },
+        {
+          "row": "Thu",
+          "column": "16",
+          "value": 160
+        },
+        {
+          "row": "Thu",
+          "column": "18",
+          "value": 146
+        },
+        {
+          "row": "Thu",
+          "column": "20",
+          "value": 132
+        },
+        {
+          "row": "Thu",
+          "column": "22",
+          "value": 118
+        },
+        {
+          "row": "Fri",
+          "column": "00",
+          "value": 44
+        },
+        {
+          "row": "Fri",
+          "column": "02",
+          "value": 56
+        },
+        {
+          "row": "Fri",
+          "column": "04",
+          "value": 68
+        },
+        {
+          "row": "Fri",
+          "column": "06",
+          "value": 80
+        },
+        {
+          "row": "Fri",
+          "column": "08",
+          "value": 92
+        },
+        {
+          "row": "Fri",
+          "column": "10",
+          "value": 104
+        },
+        {
+          "row": "Fri",
+          "column": "12",
+          "value": 116
+        },
+        {
+          "row": "Fri",
+          "column": "14",
+          "value": 128
+        },
+        {
+          "row": "Fri",
+          "column": "16",
+          "value": 140
+        },
+        {
+          "row": "Fri",
+          "column": "18",
+          "value": 128
+        },
+        {
+          "row": "Fri",
+          "column": "20",
+          "value": 116
+        },
+        {
+          "row": "Fri",
+          "column": "22",
+          "value": 104
+        },
+        {
+          "row": "Sat",
+          "column": "00",
+          "value": 40
+        },
+        {
+          "row": "Sat",
+          "column": "02",
+          "value": 50
+        },
+        {
+          "row": "Sat",
+          "column": "04",
+          "value": 60
+        },
+        {
+          "row": "Sat",
+          "column": "06",
+          "value": 70
+        },
+        {
+          "row": "Sat",
+          "column": "08",
+          "value": 80
+        },
+        {
+          "row": "Sat",
+          "column": "10",
+          "value": 90
+        },
+        {
+          "row": "Sat",
+          "column": "12",
+          "value": 100
+        },
+        {
+          "row": "Sat",
+          "column": "14",
+          "value": 110
+        },
+        {
+          "row": "Sat",
+          "column": "16",
+          "value": 120
+        },
+        {
+          "row": "Sat",
+          "column": "18",
+          "value": 110
+        },
+        {
+          "row": "Sat",
+          "column": "20",
+          "value": 100
+        },
+        {
+          "row": "Sat",
+          "column": "22",
+          "value": 90
+        },
+        {
+          "row": "Sun",
+          "column": "00",
+          "value": 36
+        },
+        {
+          "row": "Sun",
+          "column": "02",
+          "value": 44
+        },
+        {
+          "row": "Sun",
+          "column": "04",
+          "value": 52
+        },
+        {
+          "row": "Sun",
+          "column": "06",
+          "value": 60
+        },
+        {
+          "row": "Sun",
+          "column": "08",
+          "value": 68
+        },
+        {
+          "row": "Sun",
+          "column": "10",
+          "value": 76
+        },
+        {
+          "row": "Sun",
+          "column": "12",
+          "value": 84
+        },
+        {
+          "row": "Sun",
+          "column": "14",
+          "value": 92
+        },
+        {
+          "row": "Sun",
+          "column": "16",
+          "value": 100
+        },
+        {
+          "row": "Sun",
+          "column": "18",
+          "value": 92
+        },
+        {
+          "row": "Sun",
+          "column": "20",
+          "value": 84
+        },
+        {
+          "row": "Sun",
+          "column": "22",
+          "value": 76
+        }
+      ],
+      "type": "heatmap-chart-card",
+      "source": "组件验收示例 · 非真实业务数据",
+      "timeRange": "2026-01 — 2026-12"
+    },
+    {
+      "title": "Revenue",
+      "data": [
+        {
+          "label": "Jan",
+          "current": 1200,
+          "previous": 984,
+          "organic": 2000,
+          "referral": 900,
+          "paid": 500,
+          "conversion": 0.024
+        },
+        {
+          "label": "Feb",
+          "current": 1800,
+          "previous": 1476,
+          "organic": 2250,
+          "referral": 1000,
+          "paid": 590,
+          "conversion": 0.025500000000000002
+        },
+        {
+          "label": "Mar",
+          "current": 2600,
+          "previous": 2132,
+          "organic": 2500,
+          "referral": 1100,
+          "paid": 680,
+          "conversion": 0.027
+        },
+        {
+          "label": "Apr",
+          "current": 2200,
+          "previous": 1804,
+          "organic": 2750,
+          "referral": 1200,
+          "paid": 770,
+          "conversion": 0.0285
+        },
+        {
+          "label": "May",
+          "current": 3600,
+          "previous": 2952,
+          "organic": 3000,
+          "referral": 1300,
+          "paid": 860,
+          "conversion": 0.03
+        },
+        {
+          "label": "Jun",
+          "current": 3400,
+          "previous": 2788,
+          "organic": 3250,
+          "referral": 1400,
+          "paid": 950,
+          "conversion": 0.0315
+        },
+        {
+          "label": "Jul",
+          "current": 2700,
+          "previous": 2214,
+          "organic": 3500,
+          "referral": 1500,
+          "paid": 1040,
+          "conversion": 0.033
+        },
+        {
+          "label": "Aug",
+          "current": 4500,
+          "previous": 3690,
+          "organic": 3750,
+          "referral": 1600,
+          "paid": 1130,
+          "conversion": 0.0345
+        },
+        {
+          "label": "Sep",
+          "current": 5900,
+          "previous": 4838,
+          "organic": 4000,
+          "referral": 1700,
+          "paid": 1220,
+          "conversion": 0.036000000000000004
+        },
+        {
+          "label": "Oct",
+          "current": 5600,
+          "previous": 4592,
+          "organic": 4250,
+          "referral": 1800,
+          "paid": 1310,
+          "conversion": 0.0375
+        },
+        {
+          "label": "Nov",
+          "current": 4300,
+          "previous": 3526,
+          "organic": 4500,
+          "referral": 1900,
+          "paid": 1400,
+          "conversion": 0.039
+        },
+        {
+          "label": "Dec",
+          "current": 6600,
+          "previous": 5412,
+          "organic": 4750,
+          "referral": 2000,
+          "paid": 1490,
+          "conversion": 0.0405
+        }
+      ],
+      "series": [
+        {
+          "key": "current",
+          "label": "Revenue"
+        }
+      ],
+      "format": "currency",
+      "currency": "USD",
+      "delta": 9.4,
+      "type": "line-chart-card",
+      "source": "组件验收示例 · 非真实业务数据",
+      "timeRange": "2026-01 — 2026-12",
+      "periods": [
+        {
+          "label": "Weekly",
+          "data": [
+            {
+              "label": "Jan",
+              "current": 1200,
+              "previous": 984,
+              "organic": 2000,
+              "referral": 900,
+              "paid": 500,
+              "conversion": 0.024
+            },
+            {
+              "label": "Feb",
+              "current": 1800,
+              "previous": 1476,
+              "organic": 2250,
+              "referral": 1000,
+              "paid": 590,
+              "conversion": 0.025500000000000002
+            },
+            {
+              "label": "Mar",
+              "current": 2600,
+              "previous": 2132,
+              "organic": 2500,
+              "referral": 1100,
+              "paid": 680,
+              "conversion": 0.027
+            },
+            {
+              "label": "Apr",
+              "current": 2200,
+              "previous": 1804,
+              "organic": 2750,
+              "referral": 1200,
+              "paid": 770,
+              "conversion": 0.0285
+            },
+            {
+              "label": "May",
+              "current": 3600,
+              "previous": 2952,
+              "organic": 3000,
+              "referral": 1300,
+              "paid": 860,
+              "conversion": 0.03
+            },
+            {
+              "label": "Jun",
+              "current": 3400,
+              "previous": 2788,
+              "organic": 3250,
+              "referral": 1400,
+              "paid": 950,
+              "conversion": 0.0315
+            },
+            {
+              "label": "Jul",
+              "current": 2700,
+              "previous": 2214,
+              "organic": 3500,
+              "referral": 1500,
+              "paid": 1040,
+              "conversion": 0.033
+            },
+            {
+              "label": "Aug",
+              "current": 4500,
+              "previous": 3690,
+              "organic": 3750,
+              "referral": 1600,
+              "paid": 1130,
+              "conversion": 0.0345
+            },
+            {
+              "label": "Sep",
+              "current": 5900,
+              "previous": 4838,
+              "organic": 4000,
+              "referral": 1700,
+              "paid": 1220,
+              "conversion": 0.036000000000000004
+            },
+            {
+              "label": "Oct",
+              "current": 5600,
+              "previous": 4592,
+              "organic": 4250,
+              "referral": 1800,
+              "paid": 1310,
+              "conversion": 0.0375
+            },
+            {
+              "label": "Nov",
+              "current": 4300,
+              "previous": 3526,
+              "organic": 4500,
+              "referral": 1900,
+              "paid": 1400,
+              "conversion": 0.039
+            },
+            {
+              "label": "Dec",
+              "current": 6600,
+              "previous": 5412,
+              "organic": 4750,
+              "referral": 2000,
+              "paid": 1490,
+              "conversion": 0.0405
+            }
+          ]
+        },
+        {
+          "label": "Monthly",
+          "data": [
+            {
+              "label": "Jan",
+              "current": 1200,
+              "previous": 984,
+              "organic": 2000,
+              "referral": 900,
+              "paid": 500,
+              "conversion": 0.024
+            },
+            {
+              "label": "Feb",
+              "current": 1800,
+              "previous": 1476,
+              "organic": 2250,
+              "referral": 1000,
+              "paid": 590,
+              "conversion": 0.025500000000000002
+            },
+            {
+              "label": "Mar",
+              "current": 2600,
+              "previous": 2132,
+              "organic": 2500,
+              "referral": 1100,
+              "paid": 680,
+              "conversion": 0.027
+            },
+            {
+              "label": "Apr",
+              "current": 2200,
+              "previous": 1804,
+              "organic": 2750,
+              "referral": 1200,
+              "paid": 770,
+              "conversion": 0.0285
+            },
+            {
+              "label": "May",
+              "current": 3600,
+              "previous": 2952,
+              "organic": 3000,
+              "referral": 1300,
+              "paid": 860,
+              "conversion": 0.03
+            },
+            {
+              "label": "Jun",
+              "current": 3400,
+              "previous": 2788,
+              "organic": 3250,
+              "referral": 1400,
+              "paid": 950,
+              "conversion": 0.0315
+            }
+          ]
+        },
+        {
+          "label": "Yearly",
+          "data": [
+            {
+              "label": "Jan",
+              "current": 1200,
+              "previous": 984,
+              "organic": 2000,
+              "referral": 900,
+              "paid": 500,
+              "conversion": 0.024
+            },
+            {
+              "label": "Feb",
+              "current": 1800,
+              "previous": 1476,
+              "organic": 2250,
+              "referral": 1000,
+              "paid": 590,
+              "conversion": 0.025500000000000002
+            },
+            {
+              "label": "Mar",
+              "current": 2600,
+              "previous": 2132,
+              "organic": 2500,
+              "referral": 1100,
+              "paid": 680,
+              "conversion": 0.027
+            },
+            {
+              "label": "Apr",
+              "current": 2200,
+              "previous": 1804,
+              "organic": 2750,
+              "referral": 1200,
+              "paid": 770,
+              "conversion": 0.0285
+            },
+            {
+              "label": "May",
+              "current": 3600,
+              "previous": 2952,
+              "organic": 3000,
+              "referral": 1300,
+              "paid": 860,
+              "conversion": 0.03
+            },
+            {
+              "label": "Jun",
+              "current": 3400,
+              "previous": 2788,
+              "organic": 3250,
+              "referral": 1400,
+              "paid": 950,
+              "conversion": 0.0315
+            },
+            {
+              "label": "Jul",
+              "current": 2700,
+              "previous": 2214,
+              "organic": 3500,
+              "referral": 1500,
+              "paid": 1040,
+              "conversion": 0.033
+            },
+            {
+              "label": "Aug",
+              "current": 4500,
+              "previous": 3690,
+              "organic": 3750,
+              "referral": 1600,
+              "paid": 1130,
+              "conversion": 0.0345
+            },
+            {
+              "label": "Sep",
+              "current": 5900,
+              "previous": 4838,
+              "organic": 4000,
+              "referral": 1700,
+              "paid": 1220,
+              "conversion": 0.036000000000000004
+            },
+            {
+              "label": "Oct",
+              "current": 5600,
+              "previous": 4592,
+              "organic": 4250,
+              "referral": 1800,
+              "paid": 1310,
+              "conversion": 0.0375
+            },
+            {
+              "label": "Nov",
+              "current": 4300,
+              "previous": 3526,
+              "organic": 4500,
+              "referral": 1900,
+              "paid": 1400,
+              "conversion": 0.039
+            },
+            {
+              "label": "Dec",
+              "current": 6600,
+              "previous": 5412,
+              "organic": 4750,
+              "referral": 2000,
+              "paid": 1490,
+              "conversion": 0.0405
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Most active days",
+      "unit": "steps",
+      "data": [
+        {
+          "date": "2026-01-01",
+          "value": 3200,
+          "items": [
+            {
+              "label": "Move",
+              "value": 300,
+              "target": 900
+            },
+            {
+              "label": "Exercise",
+              "value": 12,
+              "target": 60
+            },
+            {
+              "label": "Running",
+              "value": 2,
+              "target": 8
+            }
+          ]
+        },
+        {
+          "date": "2026-01-02",
+          "value": 3317,
+          "items": [
+            {
+              "label": "Move",
+              "value": 367,
+              "target": 900
+            },
+            {
+              "label": "Exercise",
+              "value": 19,
+              "target": 60
+            },
+            {
+              "label": "Running",
+              "value": 3,
+              "target": 8
+            }
+          ]
+        },
+        {
+          "date": "2026-01-03",
+          "value": 3434,
+          "items": [
+            {
+              "label": "Move",
+              "value": 434,
+              "target": 900
+            },
+            {
+              "label": "Exercise",
+              "value": 26,
+              "target": 60
+            },
+            {
+              "label": "Running",
+              "value": 4,
+              "target": 8
+            }
+          ]
+        },
+        {
+          "date": "2026-01-04",
+          "value": 3551,
+          "items": [
+            {
+              "label": "Move",
+              "value": 501,
+              "target": 900
+            },
+            {
+              "label": "Exercise",
+              "value": 33,
+              "target": 60
+            },
+            {
+              "label": "Running",
+              "value": 5,
+              "target": 8
+            }
+          ]
+        },
+        {
+          "date": "2026-01-05",
+          "value": 3668,
+          "items": [
+            {
+              "label": "Move",
+              "value": 568,
+              "target": 900
+            },
+            {
+              "label": "Exercise",
+              "value": 40,
+              "target": 60
+            },
+            {
+              "label": "Running",
+              "value": 6,
+              "target": 8
+            }
+          ]
+        },
+        {
+          "date": "2026-01-06",
+          "value": 3785,
+          "items": [
+            {
+              "label": "Move",
+              "value": 635,
+              "target": 900
+            },
+            {
+              "label": "Exercise",
+              "value": 47,
+              "target": 60
+            },
+            {
+              "label": "Running",
+              "value": 2,
+              "target": 8
+            }
+          ]
+        },
+        {
+          "date": "2026-01-07",
+          "value": 3902,
+          "items": [
+            {
+              "label": "Move",
+              "value": 702,
+              "target": 900
+            },
+            {
+              "label": "Exercise",
+              "value": 14,
+              "target": 60
+            },
+            {
+              "label": "Running",
+              "value": 3,
+              "target": 8
+            }
+          ]
+        },
+        {
+          "date": "2026-01-08",
+          "value": 4019,
+          "items": [
+            {
+              "label": "Move",
+              "value": 769,
+              "target": 900
+            },
+            {
+              "label": "Exercise",
+              "value": 21,
+              "target": 60
+            },
+            {
+              "label": "Running",
+              "value": 4,
+              "target": 8
+            }
+          ]
+        },
+        {
+          "date": "2026-01-09",
+          "value": 4136,
+          "items": [
+            {
+              "label": "Move",
+              "value": 336,
+              "target": 900
+            },
+            {
+              "label": "Exercise",
+              "value": 28,
+              "target": 60
+            },
+            {
+              "label": "Running",
+              "value": 5,
+              "target": 8
+            }
+          ]
+        },
+        {
+          "date": "2026-01-10",
+          "value": 4253,
+          "items": [
+            {
+              "label": "Move",
+              "value": 403,
+              "target": 900
+            },
+            {
+              "label": "Exercise",
+              "value": 35,
+              "target": 60
+            },
+            {
+              "label": "Running",
+              "value": 6,
+              "target": 8
+            }
+          ]
+        },
+        {
+          "date": "2026-01-11",
+          "value": 4370,
+          "items": [
+            {
+              "label": "Move",
+              "value": 470,
+              "target": 900
+            },
+            {
+              "label": "Exercise",
+              "value": 42,
+              "target": 60
+            },
+            {
+              "label": "Running",
+              "value": 2,
+              "target": 8
+            }
+          ]
+        },
+        {
+          "date": "2026-01-12",
+          "value": 4487,
+          "items": [
+            {
+              "label": "Move",
+              "value": 537,
+              "target": 900
+            },
+            {
+              "label": "Exercise",
+              "value": 49,
+              "target": 60
+            },
+            {
+              "label": "Running",
+              "value": 3,
+              "target": 8
+            }
+          ]
+        },
+        {
+          "date": "2026-01-13",
+          "value": 4604,
+          "items": [
+            {
+              "label": "Move",
+              "value": 604,
+              "target": 900
+            },
+            {
+              "label": "Exercise",
+              "value": 16,
+              "target": 60
+            },
+            {
+              "label": "Running",
+              "value": 4,
+              "target": 8
+            }
+          ]
+        },
+        {
+          "date": "2026-01-14",
+          "value": 4721,
+          "items": [
+            {
+              "label": "Move",
+              "value": 671,
+              "target": 900
+            },
+            {
+              "label": "Exercise",
+              "value": 23,
+              "target": 60
+            },
+            {
+              "label": "Running",
+              "value": 5,
+              "target": 8
+            }
+          ]
+        },
+        {
+          "date": "2026-01-15",
+          "value": 4838,
+          "items": [
+            {
+              "label": "Move",
+              "value": 738,
+              "target": 900
+            },
+            {
+              "label": "Exercise",
+              "value": 30,
+              "target": 60
+            },
+            {
+              "label": "Running",
+              "value": 6,
+              "target": 8
+            }
+          ]
+        },
+        {
+          "date": "2026-01-16",
+          "value": 4955,
+          "items": [
+            {
+              "label": "Move",
+              "value": 305,
+              "target": 900
+            },
+            {
+              "label": "Exercise",
+              "value": 37,
+              "target": 60
+            },
+            {
+              "label": "Running",
+              "value": 2,
+              "target": 8
+            }
+          ]
+        },
+        {
+          "date": "2026-01-17",
+          "value": 5072,
+          "items": [
+            {
+              "label": "Move",
+              "value": 372,
+              "target": 900
+            },
+            {
+              "label": "Exercise",
+              "value": 44,
+              "target": 60
+            },
+            {
+              "label": "Running",
+              "value": 3,
+              "target": 8
+            }
+          ]
+        },
+        {
+          "date": "2026-01-18",
+          "value": 5189,
+          "items": [
+            {
+              "label": "Move",
+              "value": 439,
+              "target": 900
+            },
+            {
+              "label": "Exercise",
+              "value": 51,
+              "target": 60
+            },
+            {
+              "label": "Running",
+              "value": 4,
+              "target": 8
+            }
+          ]
+        },
+        {
+          "date": "2026-01-19",
+          "value": 5306,
+          "items": [
+            {
+              "label": "Move",
+              "value": 506,
+              "target": 900
+            },
+            {
+              "label": "Exercise",
+              "value": 18,
+              "target": 60
+            },
+            {
+              "label": "Running",
+              "value": 5,
+              "target": 8
+            }
+          ]
+        },
+        {
+          "date": "2026-01-20",
+          "value": 5423,
+          "items": [
+            {
+              "label": "Move",
+              "value": 573,
+              "target": 900
+            },
+            {
+              "label": "Exercise",
+              "value": 25,
+              "target": 60
+            },
+            {
+              "label": "Running",
+              "value": 6,
+              "target": 8
+            }
+          ]
+        },
+        {
+          "date": "2026-01-21",
+          "value": 5540,
+          "items": [
+            {
+              "label": "Move",
+              "value": 640,
+              "target": 900
+            },
+            {
+              "label": "Exercise",
+              "value": 32,
+              "target": 60
+            },
+            {
+              "label": "Running",
+              "value": 2,
+              "target": 8
+            }
+          ]
+        },
+        {
+          "date": "2026-01-22",
+          "value": 5657,
+          "items": [
+            {
+              "label": "Move",
+              "value": 707,
+              "target": 900
+            },
+            {
+              "label": "Exercise",
+              "value": 39,
+              "target": 60
+            },
+            {
+              "label": "Running",
+              "value": 3,
+              "target": 8
+            }
+          ]
+        },
+        {
+          "date": "2026-01-23",
+          "value": 5774,
+          "items": [
+            {
+              "label": "Move",
+              "value": 774,
+              "target": 900
+            },
+            {
+              "label": "Exercise",
+              "value": 46,
+              "target": 60
+            },
+            {
+              "label": "Running",
+              "value": 4,
+              "target": 8
+            }
+          ]
+        },
+        {
+          "date": "2026-01-24",
+          "value": 5891,
+          "items": [
+            {
+              "label": "Move",
+              "value": 341,
+              "target": 900
+            },
+            {
+              "label": "Exercise",
+              "value": 13,
+              "target": 60
+            },
+            {
+              "label": "Running",
+              "value": 5,
+              "target": 8
+            }
+          ]
+        },
+        {
+          "date": "2026-01-25",
+          "value": 6008,
+          "items": [
+            {
+              "label": "Move",
+              "value": 408,
+              "target": 900
+            },
+            {
+              "label": "Exercise",
+              "value": 20,
+              "target": 60
+            },
+            {
+              "label": "Running",
+              "value": 6,
+              "target": 8
+            }
+          ]
+        },
+        {
+          "date": "2026-01-26",
+          "value": 6125,
+          "items": [
+            {
+              "label": "Move",
+              "value": 475,
+              "target": 900
+            },
+            {
+              "label": "Exercise",
+              "value": 27,
+              "target": 60
+            },
+            {
+              "label": "Running",
+              "value": 2,
+              "target": 8
+            }
+          ]
+        },
+        {
+          "date": "2026-01-27",
+          "value": 6242,
+          "items": [
+            {
+              "label": "Move",
+              "value": 542,
+              "target": 900
+            },
+            {
+              "label": "Exercise",
+              "value": 34,
+              "target": 60
+            },
+            {
+              "label": "Running",
+              "value": 3,
+              "target": 8
+            }
+          ]
+        },
+        {
+          "date": "2026-01-28",
+          "value": 6359,
+          "items": [
+            {
+              "label": "Move",
+              "value": 609,
+              "target": 900
+            },
+            {
+              "label": "Exercise",
+              "value": 41,
+              "target": 60
+            },
+            {
+              "label": "Running",
+              "value": 4,
+              "target": 8
+            }
+          ]
+        },
+        {
+          "date": "2026-01-29",
+          "value": 6476,
+          "items": [
+            {
+              "label": "Move",
+              "value": 676,
+              "target": 900
+            },
+            {
+              "label": "Exercise",
+              "value": 48,
+              "target": 60
+            },
+            {
+              "label": "Running",
+              "value": 5,
+              "target": 8
+            }
+          ]
+        },
+        {
+          "date": "2026-01-30",
+          "value": 6593,
+          "items": [
+            {
+              "label": "Move",
+              "value": 743,
+              "target": 900
+            },
+            {
+              "label": "Exercise",
+              "value": 15,
+              "target": 60
+            },
+            {
+              "label": "Running",
+              "value": 6,
+              "target": 8
+            }
+          ]
+        },
+        {
+          "date": "2026-01-31",
+          "value": 6710,
+          "items": [
+            {
+              "label": "Move",
+              "value": 310,
+              "target": 900
+            },
+            {
+              "label": "Exercise",
+              "value": 22,
+              "target": 60
+            },
+            {
+              "label": "Running",
+              "value": 2,
+              "target": 8
+            }
+          ]
+        },
+        {
+          "date": "2026-02-01",
+          "value": 6827,
+          "items": [
+            {
+              "label": "Move",
+              "value": 377,
+              "target": 900
+            },
+            {
+              "label": "Exercise",
+              "value": 29,
+              "target": 60
+            },
+            {
+              "label": "Running",
+              "value": 3,
+              "target": 8
+            }
+          ]
+        },
+        {
+          "date": "2026-02-02",
+          "value": 6944,
+          "items": [
+            {
+              "label": "Move",
+              "value": 444,
+              "target": 900
+            },
+            {
+              "label": "Exercise",
+              "value": 36,
+              "target": 60
+            },
+            {
+              "label": "Running",
+              "value": 4,
+              "target": 8
+            }
+          ]
+        },
+        {
+          "date": "2026-02-03",
+          "value": 7061,
+          "items": [
+            {
+              "label": "Move",
+              "value": 511,
+              "target": 900
+            },
+            {
+              "label": "Exercise",
+              "value": 43,
+              "target": 60
+            },
+            {
+              "label": "Running",
+              "value": 5,
+              "target": 8
+            }
+          ]
+        },
+        {
+          "date": "2026-02-04",
+          "value": 7178,
+          "items": [
+            {
+              "label": "Move",
+              "value": 578,
+              "target": 900
+            },
+            {
+              "label": "Exercise",
+              "value": 50,
+              "target": 60
+            },
+            {
+              "label": "Running",
+              "value": 6,
+              "target": 8
+            }
+          ]
+        },
+        {
+          "date": "2026-02-05",
+          "value": 7295,
+          "items": [
+            {
+              "label": "Move",
+              "value": 645,
+              "target": 900
+            },
+            {
+              "label": "Exercise",
+              "value": 17,
+              "target": 60
+            },
+            {
+              "label": "Running",
+              "value": 2,
+              "target": 8
+            }
+          ]
+        },
+        {
+          "date": "2026-02-06",
+          "value": 7412,
+          "items": [
+            {
+              "label": "Move",
+              "value": 712,
+              "target": 900
+            },
+            {
+              "label": "Exercise",
+              "value": 24,
+              "target": 60
+            },
+            {
+              "label": "Running",
+              "value": 3,
+              "target": 8
+            }
+          ]
+        },
+        {
+          "date": "2026-02-07",
+          "value": 7529,
+          "items": [
+            {
+              "label": "Move",
+              "value": 779,
+              "target": 900
+            },
+            {
+              "label": "Exercise",
+              "value": 31,
+              "target": 60
+            },
+            {
+              "label": "Running",
+              "value": 4,
+              "target": 8
+            }
+          ]
+        },
+        {
+          "date": "2026-02-08",
+          "value": 7646,
+          "items": [
+            {
+              "label": "Move",
+              "value": 346,
+              "target": 900
+            },
+            {
+              "label": "Exercise",
+              "value": 38,
+              "target": 60
+            },
+            {
+              "label": "Running",
+              "value": 5,
+              "target": 8
+            }
+          ]
+        },
+        {
+          "date": "2026-02-09",
+          "value": 7763,
+          "items": [
+            {
+              "label": "Move",
+              "value": 413,
+              "target": 900
+            },
+            {
+              "label": "Exercise",
+              "value": 45,
+              "target": 60
+            },
+            {
+              "label": "Running",
+              "value": 6,
+              "target": 8
+            }
+          ]
+        },
+        {
+          "date": "2026-02-10",
+          "value": 7880,
+          "items": [
+            {
+              "label": "Move",
+              "value": 480,
+              "target": 900
+            },
+            {
+              "label": "Exercise",
+              "value": 12,
+              "target": 60
+            },
+            {
+              "label": "Running",
+              "value": 2,
+              "target": 8
+            }
+          ]
+        },
+        {
+          "date": "2026-02-11",
+          "value": 7997,
+          "items": [
+            {
+              "label": "Move",
+              "value": 547,
+              "target": 900
+            },
+            {
+              "label": "Exercise",
+              "value": 19,
+              "target": 60
+            },
+            {
+              "label": "Running",
+              "value": 3,
+              "target": 8
+            }
+          ]
+        },
+        {
+          "date": "2026-02-12",
+          "value": 8114,
+          "items": [
+            {
+              "label": "Move",
+              "value": 614,
+              "target": 900
+            },
+            {
+              "label": "Exercise",
+              "value": 26,
+              "target": 60
+            },
+            {
+              "label": "Running",
+              "value": 4,
+              "target": 8
+            }
+          ]
+        },
+        {
+          "date": "2026-02-13",
+          "value": 8231,
+          "items": [
+            {
+              "label": "Move",
+              "value": 681,
+              "target": 900
+            },
+            {
+              "label": "Exercise",
+              "value": 33,
+              "target": 60
+            },
+            {
+              "label": "Running",
+              "value": 5,
+              "target": 8
+            }
+          ]
+        },
+        {
+          "date": "2026-02-14",
+          "value": 8348,
+          "items": [
+            {
+              "label": "Move",
+              "value": 748,
+              "target": 900
+            },
+            {
+              "label": "Exercise",
+              "value": 40,
+              "target": 60
+            },
+            {
+              "label": "Running",
+              "value": 6,
+              "target": 8
+            }
+          ]
+        },
+        {
+          "date": "2026-02-15",
+          "value": 8465,
+          "items": [
+            {
+              "label": "Move",
+              "value": 315,
+              "target": 900
+            },
+            {
+              "label": "Exercise",
+              "value": 47,
+              "target": 60
+            },
+            {
+              "label": "Running",
+              "value": 2,
+              "target": 8
+            }
+          ]
+        },
+        {
+          "date": "2026-02-16",
+          "value": 8582,
+          "items": [
+            {
+              "label": "Move",
+              "value": 382,
+              "target": 900
+            },
+            {
+              "label": "Exercise",
+              "value": 14,
+              "target": 60
+            },
+            {
+              "label": "Running",
+              "value": 3,
+              "target": 8
+            }
+          ]
+        },
+        {
+          "date": "2026-02-17",
+          "value": 8699,
+          "items": [
+            {
+              "label": "Move",
+              "value": 449,
+              "target": 900
+            },
+            {
+              "label": "Exercise",
+              "value": 21,
+              "target": 60
+            },
+            {
+              "label": "Running",
+              "value": 4,
+              "target": 8
+            }
+          ]
+        },
+        {
+          "date": "2026-02-18",
+          "value": 8816,
+          "items": [
+            {
+              "label": "Move",
+              "value": 516,
+              "target": 900
+            },
+            {
+              "label": "Exercise",
+              "value": 28,
+              "target": 60
+            },
+            {
+              "label": "Running",
+              "value": 5,
+              "target": 8
+            }
+          ]
+        },
+        {
+          "date": "2026-02-19",
+          "value": 8933,
+          "items": [
+            {
+              "label": "Move",
+              "value": 583,
+              "target": 900
+            },
+            {
+              "label": "Exercise",
+              "value": 35,
+              "target": 60
+            },
+            {
+              "label": "Running",
+              "value": 6,
+              "target": 8
+            }
+          ]
+        },
+        {
+          "date": "2026-02-20",
+          "value": 9050,
+          "items": [
+            {
+              "label": "Move",
+              "value": 650,
+              "target": 900
+            },
+            {
+              "label": "Exercise",
+              "value": 42,
+              "target": 60
+            },
+            {
+              "label": "Running",
+              "value": 2,
+              "target": 8
+            }
+          ]
+        },
+        {
+          "date": "2026-02-21",
+          "value": 9167,
+          "items": [
+            {
+              "label": "Move",
+              "value": 717,
+              "target": 900
+            },
+            {
+              "label": "Exercise",
+              "value": 49,
+              "target": 60
+            },
+            {
+              "label": "Running",
+              "value": 3,
+              "target": 8
+            }
+          ]
+        },
+        {
+          "date": "2026-02-22",
+          "value": 9284,
+          "items": [
+            {
+              "label": "Move",
+              "value": 784,
+              "target": 900
+            },
+            {
+              "label": "Exercise",
+              "value": 16,
+              "target": 60
+            },
+            {
+              "label": "Running",
+              "value": 4,
+              "target": 8
+            }
+          ]
+        },
+        {
+          "date": "2026-02-23",
+          "value": 9401,
+          "items": [
+            {
+              "label": "Move",
+              "value": 351,
+              "target": 900
+            },
+            {
+              "label": "Exercise",
+              "value": 23,
+              "target": 60
+            },
+            {
+              "label": "Running",
+              "value": 5,
+              "target": 8
+            }
+          ]
+        },
+        {
+          "date": "2026-02-24",
+          "value": 9518,
+          "items": [
+            {
+              "label": "Move",
+              "value": 418,
+              "target": 900
+            },
+            {
+              "label": "Exercise",
+              "value": 30,
+              "target": 60
+            },
+            {
+              "label": "Running",
+              "value": 6,
+              "target": 8
+            }
+          ]
+        },
+        {
+          "date": "2026-02-25",
+          "value": 9635,
+          "items": [
+            {
+              "label": "Move",
+              "value": 485,
+              "target": 900
+            },
+            {
+              "label": "Exercise",
+              "value": 37,
+              "target": 60
+            },
+            {
+              "label": "Running",
+              "value": 2,
+              "target": 8
+            }
+          ]
+        },
+        {
+          "date": "2026-02-26",
+          "value": 9752,
+          "items": [
+            {
+              "label": "Move",
+              "value": 552,
+              "target": 900
+            },
+            {
+              "label": "Exercise",
+              "value": 44,
+              "target": 60
+            },
+            {
+              "label": "Running",
+              "value": 3,
+              "target": 8
+            }
+          ]
+        },
+        {
+          "date": "2026-02-27",
+          "value": 9869,
+          "items": [
+            {
+              "label": "Move",
+              "value": 619,
+              "target": 900
+            },
+            {
+              "label": "Exercise",
+              "value": 51,
+              "target": 60
+            },
+            {
+              "label": "Running",
+              "value": 4,
+              "target": 8
+            }
+          ]
+        },
+        {
+          "date": "2026-02-28",
+          "value": 9986,
+          "items": [
+            {
+              "label": "Move",
+              "value": 686,
+              "target": 900
+            },
+            {
+              "label": "Exercise",
+              "value": 18,
+              "target": 60
+            },
+            {
+              "label": "Running",
+              "value": 5,
+              "target": 8
+            }
+          ]
+        },
+        {
+          "date": "2026-03-01",
+          "value": 10103,
+          "items": [
+            {
+              "label": "Move",
+              "value": 753,
+              "target": 900
+            },
+            {
+              "label": "Exercise",
+              "value": 25,
+              "target": 60
+            },
+            {
+              "label": "Running",
+              "value": 6,
+              "target": 8
+            }
+          ]
+        }
+      ],
+      "type": "most-active-days-card",
+      "source": "组件验收示例 · 非真实业务数据",
+      "timeRange": "2026-01 — 2026-12"
+    },
+    {
+      "title": "Orders",
+      "data": [
+        {
+          "label": "Jan",
+          "current": 1200,
+          "previous": 984,
+          "organic": 2000,
+          "referral": 900,
+          "paid": 500,
+          "conversion": 0.024
+        },
+        {
+          "label": "Feb",
+          "current": 1800,
+          "previous": 1476,
+          "organic": 2250,
+          "referral": 1000,
+          "paid": 590,
+          "conversion": 0.025500000000000002
+        },
+        {
+          "label": "Mar",
+          "current": 2600,
+          "previous": 2132,
+          "organic": 2500,
+          "referral": 1100,
+          "paid": 680,
+          "conversion": 0.027
+        },
+        {
+          "label": "Apr",
+          "current": 2200,
+          "previous": 1804,
+          "organic": 2750,
+          "referral": 1200,
+          "paid": 770,
+          "conversion": 0.0285
+        },
+        {
+          "label": "May",
+          "current": 3600,
+          "previous": 2952,
+          "organic": 3000,
+          "referral": 1300,
+          "paid": 860,
+          "conversion": 0.03
+        },
+        {
+          "label": "Jun",
+          "current": 3400,
+          "previous": 2788,
+          "organic": 3250,
+          "referral": 1400,
+          "paid": 950,
+          "conversion": 0.0315
+        },
+        {
+          "label": "Jul",
+          "current": 2700,
+          "previous": 2214,
+          "organic": 3500,
+          "referral": 1500,
+          "paid": 1040,
+          "conversion": 0.033
+        },
+        {
+          "label": "Aug",
+          "current": 4500,
+          "previous": 3690,
+          "organic": 3750,
+          "referral": 1600,
+          "paid": 1130,
+          "conversion": 0.0345
+        },
+        {
+          "label": "Sep",
+          "current": 5900,
+          "previous": 4838,
+          "organic": 4000,
+          "referral": 1700,
+          "paid": 1220,
+          "conversion": 0.036000000000000004
+        },
+        {
+          "label": "Oct",
+          "current": 5600,
+          "previous": 4592,
+          "organic": 4250,
+          "referral": 1800,
+          "paid": 1310,
+          "conversion": 0.0375
+        },
+        {
+          "label": "Nov",
+          "current": 4300,
+          "previous": 3526,
+          "organic": 4500,
+          "referral": 1900,
+          "paid": 1400,
+          "conversion": 0.039
+        },
+        {
+          "label": "Dec",
+          "current": 6600,
+          "previous": 5412,
+          "organic": 4750,
+          "referral": 2000,
+          "paid": 1490,
+          "conversion": 0.0405
+        }
+      ],
+      "series": [
+        {
+          "key": "current",
+          "label": "This year"
+        },
+        {
+          "key": "previous",
+          "label": "Last year"
+        }
+      ],
+      "value": 49200,
+      "previous": 40344,
+      "delta": 20,
+      "type": "orders-chart-card",
+      "source": "组件验收示例 · 非真实业务数据",
+      "timeRange": "2026-01 — 2026-12"
+    },
+    {
+      "title": "Visitors",
+      "delta": 5.2,
+      "data": [
+        {
+          "label": "January",
+          "value": 186
+        },
+        {
+          "label": "February",
+          "value": 305
+        },
+        {
+          "label": "March",
+          "value": 237
+        },
+        {
+          "label": "April",
+          "value": 273
+        },
+        {
+          "label": "May",
+          "value": 209
+        },
+        {
+          "label": "June",
+          "value": 214
+        }
+      ],
+      "type": "radar-chart-card",
+      "source": "组件验收示例 · 非真实业务数据",
+      "timeRange": "2026-01 — 2026-12"
+    },
+    {
+      "title": "Visitors",
+      "value": 925,
+      "delta": 5.2,
+      "data": [
+        {
+          "label": "Other",
+          "value": 90
+        },
+        {
+          "label": "Edge",
+          "value": 173
+        },
+        {
+          "label": "Firefox",
+          "value": 187
+        },
+        {
+          "label": "Safari",
+          "value": 200
+        },
+        {
+          "label": "Chrome",
+          "value": 275
+        }
+      ],
+      "max": 300,
+      "type": "radial-chart-card",
+      "source": "组件验收示例 · 非真实业务数据",
+      "timeRange": "2026-01 — 2026-12"
+    },
+    {
+      "title": "Revenue",
+      "data": [
+        {
+          "label": "Jan",
+          "current": 1200,
+          "previous": 984,
+          "organic": 2000,
+          "referral": 900,
+          "paid": 500,
+          "conversion": 0.024
+        },
+        {
+          "label": "Feb",
+          "current": 1800,
+          "previous": 1476,
+          "organic": 2250,
+          "referral": 1000,
+          "paid": 590,
+          "conversion": 0.025500000000000002
+        },
+        {
+          "label": "Mar",
+          "current": 2600,
+          "previous": 2132,
+          "organic": 2500,
+          "referral": 1100,
+          "paid": 680,
+          "conversion": 0.027
+        },
+        {
+          "label": "Apr",
+          "current": 2200,
+          "previous": 1804,
+          "organic": 2750,
+          "referral": 1200,
+          "paid": 770,
+          "conversion": 0.0285
+        },
+        {
+          "label": "May",
+          "current": 3600,
+          "previous": 2952,
+          "organic": 3000,
+          "referral": 1300,
+          "paid": 860,
+          "conversion": 0.03
+        },
+        {
+          "label": "Jun",
+          "current": 3400,
+          "previous": 2788,
+          "organic": 3250,
+          "referral": 1400,
+          "paid": 950,
+          "conversion": 0.0315
+        },
+        {
+          "label": "Jul",
+          "current": 2700,
+          "previous": 2214,
+          "organic": 3500,
+          "referral": 1500,
+          "paid": 1040,
+          "conversion": 0.033
+        },
+        {
+          "label": "Aug",
+          "current": 4500,
+          "previous": 3690,
+          "organic": 3750,
+          "referral": 1600,
+          "paid": 1130,
+          "conversion": 0.0345
+        },
+        {
+          "label": "Sep",
+          "current": 5900,
+          "previous": 4838,
+          "organic": 4000,
+          "referral": 1700,
+          "paid": 1220,
+          "conversion": 0.036000000000000004
+        },
+        {
+          "label": "Oct",
+          "current": 5600,
+          "previous": 4592,
+          "organic": 4250,
+          "referral": 1800,
+          "paid": 1310,
+          "conversion": 0.0375
+        },
+        {
+          "label": "Nov",
+          "current": 4300,
+          "previous": 3526,
+          "organic": 4500,
+          "referral": 1900,
+          "paid": 1400,
+          "conversion": 0.039
+        },
+        {
+          "label": "Dec",
+          "current": 6600,
+          "previous": 5412,
+          "organic": 4750,
+          "referral": 2000,
+          "paid": 1490,
+          "conversion": 0.0405
+        }
+      ],
+      "series": [
+        {
+          "key": "current",
+          "label": "This year"
+        },
+        {
+          "key": "previous",
+          "label": "Last year"
+        }
+      ],
+      "format": "currency",
+      "currency": "USD",
+      "value": 49200,
+      "previous": 40344,
+      "delta": 16,
+      "type": "revenue-chart-card",
+      "source": "组件验收示例 · 非真实业务数据",
+      "timeRange": "2026-01 — 2026-12"
+    },
+    {
+      "title": "Tracked time",
+      "unit": "h",
+      "value": 86,
+      "nodes": [
+        {
+          "id": "focus",
+          "label": "Focus"
+        },
+        {
+          "id": "meetings",
+          "label": "Meetings"
+        },
+        {
+          "id": "breaks",
+          "label": "Breaks"
+        },
+        {
+          "id": "browsing",
+          "label": "Browsing"
+        },
+        {
+          "id": "writing",
+          "label": "Writing"
+        },
+        {
+          "id": "messaging",
+          "label": "Messaging"
+        },
+        {
+          "id": "productive",
+          "label": "Productivity"
+        }
+      ],
+      "links": [
+        {
+          "source": "focus",
+          "target": "browsing",
+          "value": 12
+        },
+        {
+          "source": "focus",
+          "target": "writing",
+          "value": 16
+        },
+        {
+          "source": "focus",
+          "target": "productive",
+          "value": 10
+        },
+        {
+          "source": "meetings",
+          "target": "messaging",
+          "value": 14
+        },
+        {
+          "source": "meetings",
+          "target": "writing",
+          "value": 4
+        },
+        {
+          "source": "breaks",
+          "target": "browsing",
+          "value": 8
+        },
+        {
+          "source": "breaks",
+          "target": "messaging",
+          "value": 3
+        }
+      ],
+      "type": "sankey-chart-card",
+      "source": "组件验收示例 · 非真实业务数据",
+      "timeRange": "2026-01 — 2026-12"
+    },
+    {
+      "title": "Revenue per account",
+      "delta": 6.8,
+      "data": [
+        {
+          "label": "Account 1",
+          "series": "Starter",
+          "x": 12,
+          "y": 100,
+          "size": 4
+        },
+        {
+          "label": "Account 2",
+          "series": "Starter",
+          "x": 17,
+          "y": 120,
+          "size": 4
+        },
+        {
+          "label": "Account 3",
+          "series": "Starter",
+          "x": 22,
+          "y": 156,
+          "size": 4
+        },
+        {
+          "label": "Account 4",
+          "series": "Starter",
+          "x": 27,
+          "y": 200,
+          "size": 4
+        },
+        {
+          "label": "Account 5",
+          "series": "Starter",
+          "x": 32,
+          "y": 252,
+          "size": 4
+        },
+        {
+          "label": "Account 6",
+          "series": "Starter",
+          "x": 37,
+          "y": 310,
+          "size": 4
+        },
+        {
+          "label": "Account 7",
+          "series": "Growth",
+          "x": 42,
+          "y": 374,
+          "size": 6
+        },
+        {
+          "label": "Account 8",
+          "series": "Growth",
+          "x": 47,
+          "y": 443,
+          "size": 6
+        },
+        {
+          "label": "Account 9",
+          "series": "Growth",
+          "x": 52,
+          "y": 516,
+          "size": 6
+        },
+        {
+          "label": "Account 10",
+          "series": "Growth",
+          "x": 57,
+          "y": 593,
+          "size": 6
+        },
+        {
+          "label": "Account 11",
+          "series": "Growth",
+          "x": 62,
+          "y": 675,
+          "size": 6
+        },
+        {
+          "label": "Account 12",
+          "series": "Growth",
+          "x": 67,
+          "y": 760,
+          "size": 6
+        },
+        {
+          "label": "Account 13",
+          "series": "Scale",
+          "x": 72,
+          "y": 849,
+          "size": 8
+        },
+        {
+          "label": "Account 14",
+          "series": "Scale",
+          "x": 77,
+          "y": 941,
+          "size": 8
+        },
+        {
+          "label": "Account 15",
+          "series": "Scale",
+          "x": 82,
+          "y": 1036,
+          "size": 8
+        },
+        {
+          "label": "Account 16",
+          "series": "Scale",
+          "x": 87,
+          "y": 1135,
+          "size": 8
+        },
+        {
+          "label": "Account 17",
+          "series": "Scale",
+          "x": 92,
+          "y": 1236,
+          "size": 8
+        },
+        {
+          "label": "Account 18",
+          "series": "Scale",
+          "x": 97,
+          "y": 1341,
+          "size": 8
+        }
+      ],
+      "xLabel": "Sessions",
+      "yLabel": "Revenue",
+      "type": "scatter-chart-card",
+      "source": "组件验收示例 · 非真实业务数据",
+      "timeRange": "2026-01 — 2026-12"
+    },
+    {
+      "title": "Sleep score",
+      "description": "Excellent",
+      "value": 98,
+      "max": 100,
+      "items": [
+        {
+          "label": "Duration: 7h 50m",
+          "value": 49,
+          "target": 50
+        },
+        {
+          "label": "Bedtime: 20m earlier",
+          "value": 29,
+          "target": 30
+        },
+        {
+          "label": "Interruptions: 5m wake up",
+          "value": 20,
+          "target": 20
+        }
+      ],
+      "type": "sleep-score-card",
+      "source": "组件验收示例 · 非真实业务数据",
+      "timeRange": "2026-01 — 2026-12"
+    },
+    {
+      "title": "Pipeline",
+      "value": 1180,
+      "delta": 2.4,
+      "data": [
+        {
+          "label": "Visits",
+          "value": 1180
+        },
+        {
+          "label": "Sign-up",
+          "value": 790
+        },
+        {
+          "label": "Active",
+          "value": 460
+        },
+        {
+          "label": "Pro",
+          "value": 250
+        },
+        {
+          "label": "Team",
+          "value": 120
+        },
+        {
+          "label": "Enterprise",
+          "value": 40
+        }
+      ],
+      "type": "stage-bars-card",
+      "source": "组件验收示例 · 非真实业务数据",
+      "timeRange": "2026-01 — 2026-12"
+    },
+    {
+      "title": "Steps",
+      "data": [
+        {
+          "label": "Mon",
+          "value": 5600
+        },
+        {
+          "label": "Tue",
+          "value": 2200
+        },
+        {
+          "label": "Wed",
+          "value": 6300
+        },
+        {
+          "label": "Thu",
+          "value": 7200
+        },
+        {
+          "label": "Fri",
+          "value": 5300
+        },
+        {
+          "label": "Sat",
+          "value": 4100
+        },
+        {
+          "label": "Sun",
+          "value": 3500
+        }
+      ],
+      "unit": "steps",
+      "type": "steps-card",
+      "source": "组件验收示例 · 非真实业务数据",
+      "timeRange": "2026-01 — 2026-12",
+      "periods": [
+        {
+          "label": "Weekly",
+          "data": [
+            {
+              "label": "Mon",
+              "value": 5600
+            },
+            {
+              "label": "Tue",
+              "value": 2200
+            },
+            {
+              "label": "Wed",
+              "value": 6300
+            },
+            {
+              "label": "Thu",
+              "value": 7200
+            },
+            {
+              "label": "Fri",
+              "value": 5300
+            },
+            {
+              "label": "Sat",
+              "value": 4100
+            },
+            {
+              "label": "Sun",
+              "value": 3500
+            }
+          ]
+        },
+        {
+          "label": "Monthly",
+          "data": [
+            {
+              "label": "Mon",
+              "value": 5600
+            },
+            {
+              "label": "Tue",
+              "value": 2200
+            },
+            {
+              "label": "Wed",
+              "value": 6300
+            },
+            {
+              "label": "Thu",
+              "value": 7200
+            },
+            {
+              "label": "Fri",
+              "value": 5300
+            },
+            {
+              "label": "Sat",
+              "value": 4100
+            }
+          ]
+        },
+        {
+          "label": "Yearly",
+          "data": [
+            {
+              "label": "Mon",
+              "value": 5600
+            },
+            {
+              "label": "Tue",
+              "value": 2200
+            },
+            {
+              "label": "Wed",
+              "value": 6300
+            },
+            {
+              "label": "Thu",
+              "value": 7200
+            },
+            {
+              "label": "Fri",
+              "value": 5300
+            },
+            {
+              "label": "Sat",
+              "value": 4100
+            },
+            {
+              "label": "Sun",
+              "value": 3500
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Renewals",
+      "columns": [
+        {
+          "key": "account",
+          "label": "Account",
+          "cell": "text",
+          "editable": true,
+          "width": 190
+        },
+        {
+          "key": "owner",
+          "label": "Owner",
+          "cell": "avatar",
+          "editable": true,
+          "width": 160
+        },
+        {
+          "key": "region",
+          "label": "Region",
+          "cell": "select",
+          "options": [
+            "Europe",
+            "Asia Pacific",
+            "Latin America"
+          ],
+          "editable": true,
+          "width": 160
+        },
+        {
+          "key": "stage",
+          "label": "Stage",
+          "cell": "select",
+          "options": [
+            "Won",
+            "Proposal",
+            "Discovery"
+          ],
+          "editable": true,
+          "width": 130
+        },
+        {
+          "key": "seats",
+          "label": "Seats",
+          "format": "number",
+          "editable": true,
+          "width": 100,
+          "aggregate": "sum",
+          "min": 0
+        },
+        {
+          "key": "arr",
+          "label": "ARR",
+          "format": "currency",
+          "currency": "USD",
+          "editable": true,
+          "width": 140,
+          "aggregate": "sum",
+          "min": 0
+        },
+        {
+          "key": "health",
+          "label": "Health",
+          "cell": "progress",
+          "format": "percent",
+          "width": 120,
+          "aggregate": "avg"
+        }
+      ],
+      "rows": [
+        {
+          "account": "Northwind Freight 1",
+          "owner": "Owen Park",
+          "region": "Europe",
+          "stage": "Won",
+          "seats": 40,
+          "arr": 9600,
+          "health": 0.49
+        },
+        {
+          "account": "Lumen Freight 2",
+          "owner": "Tyler Hayes",
+          "region": "Asia Pacific",
+          "stage": "Proposal",
+          "seats": 55,
+          "arr": 11400,
+          "health": 0.5
+        },
+        {
+          "account": "Cedar Freight 3",
+          "owner": "Daniel Kim",
+          "region": "Latin America",
+          "stage": "Discovery",
+          "seats": 70,
+          "arr": 13200,
+          "health": 0.51
+        },
+        {
+          "account": "Brightline Freight 4",
+          "owner": "Owen Park",
+          "region": "Europe",
+          "stage": "Won",
+          "seats": 85,
+          "arr": 15000,
+          "health": 0.52
+        },
+        {
+          "account": "Harbor Freight 5",
+          "owner": "Tyler Hayes",
+          "region": "Asia Pacific",
+          "stage": "Proposal",
+          "seats": 100,
+          "arr": 16800,
+          "health": 0.53
+        },
+        {
+          "account": "Northwind Freight 6",
+          "owner": "Daniel Kim",
+          "region": "Latin America",
+          "stage": "Discovery",
+          "seats": 115,
+          "arr": 18600,
+          "health": 0.54
+        },
+        {
+          "account": "Lumen Freight 7",
+          "owner": "Owen Park",
+          "region": "Europe",
+          "stage": "Won",
+          "seats": 130,
+          "arr": 20400,
+          "health": 0.55
+        },
+        {
+          "account": "Cedar Freight 8",
+          "owner": "Tyler Hayes",
+          "region": "Asia Pacific",
+          "stage": "Proposal",
+          "seats": 145,
+          "arr": 22200,
+          "health": 0.56
+        },
+        {
+          "account": "Brightline Freight 9",
+          "owner": "Daniel Kim",
+          "region": "Latin America",
+          "stage": "Discovery",
+          "seats": 160,
+          "arr": 24000,
+          "health": 0.57
+        },
+        {
+          "account": "Harbor Freight 10",
+          "owner": "Owen Park",
+          "region": "Europe",
+          "stage": "Won",
+          "seats": 175,
+          "arr": 25800,
+          "health": 0.58
+        },
+        {
+          "account": "Northwind Freight 11",
+          "owner": "Tyler Hayes",
+          "region": "Asia Pacific",
+          "stage": "Proposal",
+          "seats": 190,
+          "arr": 27600,
+          "health": 0.59
+        },
+        {
+          "account": "Lumen Freight 12",
+          "owner": "Daniel Kim",
+          "region": "Latin America",
+          "stage": "Discovery",
+          "seats": 205,
+          "arr": 29400,
+          "health": 0.6
+        },
+        {
+          "account": "Cedar Freight 13",
+          "owner": "Owen Park",
+          "region": "Europe",
+          "stage": "Won",
+          "seats": 220,
+          "arr": 31200,
+          "health": 0.61
+        },
+        {
+          "account": "Brightline Freight 14",
+          "owner": "Tyler Hayes",
+          "region": "Asia Pacific",
+          "stage": "Proposal",
+          "seats": 235,
+          "arr": 33000,
+          "health": 0.62
+        },
+        {
+          "account": "Harbor Freight 15",
+          "owner": "Daniel Kim",
+          "region": "Latin America",
+          "stage": "Discovery",
+          "seats": 250,
+          "arr": 34800,
+          "health": 0.63
+        },
+        {
+          "account": "Northwind Freight 16",
+          "owner": "Owen Park",
+          "region": "Europe",
+          "stage": "Won",
+          "seats": 265,
+          "arr": 36600,
+          "health": 0.64
+        },
+        {
+          "account": "Lumen Freight 17",
+          "owner": "Tyler Hayes",
+          "region": "Asia Pacific",
+          "stage": "Proposal",
+          "seats": 280,
+          "arr": 38400,
+          "health": 0.65
+        },
+        {
+          "account": "Cedar Freight 18",
+          "owner": "Daniel Kim",
+          "region": "Latin America",
+          "stage": "Discovery",
+          "seats": 295,
+          "arr": 40200,
+          "health": 0.66
+        },
+        {
+          "account": "Brightline Freight 19",
+          "owner": "Owen Park",
+          "region": "Europe",
+          "stage": "Won",
+          "seats": 310,
+          "arr": 42000,
+          "health": 0.67
+        },
+        {
+          "account": "Harbor Freight 20",
+          "owner": "Tyler Hayes",
+          "region": "Asia Pacific",
+          "stage": "Proposal",
+          "seats": 325,
+          "arr": 43800,
+          "health": 0.68
+        },
+        {
+          "account": "Northwind Freight 21",
+          "owner": "Daniel Kim",
+          "region": "Latin America",
+          "stage": "Discovery",
+          "seats": 340,
+          "arr": 45600,
+          "health": 0.69
+        },
+        {
+          "account": "Lumen Freight 22",
+          "owner": "Owen Park",
+          "region": "Europe",
+          "stage": "Won",
+          "seats": 355,
+          "arr": 47400,
+          "health": 0.7
+        },
+        {
+          "account": "Cedar Freight 23",
+          "owner": "Tyler Hayes",
+          "region": "Asia Pacific",
+          "stage": "Proposal",
+          "seats": 370,
+          "arr": 49200,
+          "health": 0.71
+        },
+        {
+          "account": "Brightline Freight 24",
+          "owner": "Daniel Kim",
+          "region": "Latin America",
+          "stage": "Discovery",
+          "seats": 385,
+          "arr": 51000,
+          "health": 0.72
+        },
+        {
+          "account": "Harbor Freight 25",
+          "owner": "Owen Park",
+          "region": "Europe",
+          "stage": "Won",
+          "seats": 400,
+          "arr": 52800,
+          "health": 0.73
+        },
+        {
+          "account": "Northwind Freight 26",
+          "owner": "Tyler Hayes",
+          "region": "Asia Pacific",
+          "stage": "Proposal",
+          "seats": 415,
+          "arr": 54600,
+          "health": 0.74
+        },
+        {
+          "account": "Lumen Freight 27",
+          "owner": "Daniel Kim",
+          "region": "Latin America",
+          "stage": "Discovery",
+          "seats": 430,
+          "arr": 56400,
+          "health": 0.75
+        },
+        {
+          "account": "Cedar Freight 28",
+          "owner": "Owen Park",
+          "region": "Europe",
+          "stage": "Won",
+          "seats": 445,
+          "arr": 58200,
+          "health": 0.76
+        },
+        {
+          "account": "Brightline Freight 29",
+          "owner": "Tyler Hayes",
+          "region": "Asia Pacific",
+          "stage": "Proposal",
+          "seats": 460,
+          "arr": 60000,
+          "health": 0.77
+        },
+        {
+          "account": "Harbor Freight 30",
+          "owner": "Daniel Kim",
+          "region": "Latin America",
+          "stage": "Discovery",
+          "seats": 475,
+          "arr": 61800,
+          "health": 0.78
+        },
+        {
+          "account": "Northwind Freight 31",
+          "owner": "Owen Park",
+          "region": "Europe",
+          "stage": "Won",
+          "seats": 490,
+          "arr": 63600,
+          "health": 0.79
+        },
+        {
+          "account": "Lumen Freight 32",
+          "owner": "Tyler Hayes",
+          "region": "Asia Pacific",
+          "stage": "Proposal",
+          "seats": 505,
+          "arr": 65400,
+          "health": 0.8
+        },
+        {
+          "account": "Cedar Freight 33",
+          "owner": "Daniel Kim",
+          "region": "Latin America",
+          "stage": "Discovery",
+          "seats": 520,
+          "arr": 67200,
+          "health": 0.81
+        },
+        {
+          "account": "Brightline Freight 34",
+          "owner": "Owen Park",
+          "region": "Europe",
+          "stage": "Won",
+          "seats": 535,
+          "arr": 69000,
+          "health": 0.82
+        },
+        {
+          "account": "Harbor Freight 35",
+          "owner": "Tyler Hayes",
+          "region": "Asia Pacific",
+          "stage": "Proposal",
+          "seats": 550,
+          "arr": 70800,
+          "health": 0.83
+        },
+        {
+          "account": "Northwind Freight 36",
+          "owner": "Daniel Kim",
+          "region": "Latin America",
+          "stage": "Discovery",
+          "seats": 565,
+          "arr": 72600,
+          "health": 0.84
+        },
+        {
+          "account": "Lumen Freight 37",
+          "owner": "Owen Park",
+          "region": "Europe",
+          "stage": "Won",
+          "seats": 580,
+          "arr": 74400,
+          "health": 0.85
+        },
+        {
+          "account": "Cedar Freight 38",
+          "owner": "Tyler Hayes",
+          "region": "Asia Pacific",
+          "stage": "Proposal",
+          "seats": 595,
+          "arr": 76200,
+          "health": 0.86
+        },
+        {
+          "account": "Brightline Freight 39",
+          "owner": "Daniel Kim",
+          "region": "Latin America",
+          "stage": "Discovery",
+          "seats": 610,
+          "arr": 78000,
+          "health": 0.87
+        },
+        {
+          "account": "Harbor Freight 40",
+          "owner": "Owen Park",
+          "region": "Europe",
+          "stage": "Won",
+          "seats": 625,
+          "arr": 79800,
+          "health": 0.88
+        },
+        {
+          "account": "Northwind Freight 41",
+          "owner": "Tyler Hayes",
+          "region": "Asia Pacific",
+          "stage": "Proposal",
+          "seats": 640,
+          "arr": 81600,
+          "health": 0.89
+        },
+        {
+          "account": "Lumen Freight 42",
+          "owner": "Daniel Kim",
+          "region": "Latin America",
+          "stage": "Discovery",
+          "seats": 655,
+          "arr": 83400,
+          "health": 0.9
+        }
+      ],
+      "pageSize": 12,
+      "type": "data-grid",
+      "source": "组件验收示例 · 非真实业务数据",
+      "timeRange": "2026-01 — 2026-12"
+    },
+    {
+      "title": "Customers",
+      "columns": [
+        {
+          "key": "account",
+          "label": "Customer name",
+          "cell": "avatar"
+        },
+        {
+          "key": "stage",
+          "label": "Purchase",
+          "cell": "select",
+          "options": [
+            "Won",
+            "Proposal",
+            "Discovery"
+          ]
+        },
+        {
+          "key": "region",
+          "label": "Region",
+          "filterable": true
+        },
+        {
+          "key": "arr",
+          "label": "Price",
+          "format": "currency",
+          "currency": "USD"
+        }
+      ],
+      "rows": [
+        {
+          "account": "Northwind Freight 1",
+          "owner": "Owen Park",
+          "region": "Europe",
+          "stage": "Won",
+          "seats": 40,
+          "arr": 9600,
+          "health": 0.49
+        },
+        {
+          "account": "Lumen Freight 2",
+          "owner": "Tyler Hayes",
+          "region": "Asia Pacific",
+          "stage": "Proposal",
+          "seats": 55,
+          "arr": 11400,
+          "health": 0.5
+        },
+        {
+          "account": "Cedar Freight 3",
+          "owner": "Daniel Kim",
+          "region": "Latin America",
+          "stage": "Discovery",
+          "seats": 70,
+          "arr": 13200,
+          "health": 0.51
+        },
+        {
+          "account": "Brightline Freight 4",
+          "owner": "Owen Park",
+          "region": "Europe",
+          "stage": "Won",
+          "seats": 85,
+          "arr": 15000,
+          "health": 0.52
+        },
+        {
+          "account": "Harbor Freight 5",
+          "owner": "Tyler Hayes",
+          "region": "Asia Pacific",
+          "stage": "Proposal",
+          "seats": 100,
+          "arr": 16800,
+          "health": 0.53
+        },
+        {
+          "account": "Northwind Freight 6",
+          "owner": "Daniel Kim",
+          "region": "Latin America",
+          "stage": "Discovery",
+          "seats": 115,
+          "arr": 18600,
+          "health": 0.54
+        },
+        {
+          "account": "Lumen Freight 7",
+          "owner": "Owen Park",
+          "region": "Europe",
+          "stage": "Won",
+          "seats": 130,
+          "arr": 20400,
+          "health": 0.55
+        },
+        {
+          "account": "Cedar Freight 8",
+          "owner": "Tyler Hayes",
+          "region": "Asia Pacific",
+          "stage": "Proposal",
+          "seats": 145,
+          "arr": 22200,
+          "health": 0.56
+        },
+        {
+          "account": "Brightline Freight 9",
+          "owner": "Daniel Kim",
+          "region": "Latin America",
+          "stage": "Discovery",
+          "seats": 160,
+          "arr": 24000,
+          "health": 0.57
+        },
+        {
+          "account": "Harbor Freight 10",
+          "owner": "Owen Park",
+          "region": "Europe",
+          "stage": "Won",
+          "seats": 175,
+          "arr": 25800,
+          "health": 0.58
+        },
+        {
+          "account": "Northwind Freight 11",
+          "owner": "Tyler Hayes",
+          "region": "Asia Pacific",
+          "stage": "Proposal",
+          "seats": 190,
+          "arr": 27600,
+          "health": 0.59
+        },
+        {
+          "account": "Lumen Freight 12",
+          "owner": "Daniel Kim",
+          "region": "Latin America",
+          "stage": "Discovery",
+          "seats": 205,
+          "arr": 29400,
+          "health": 0.6
+        },
+        {
+          "account": "Cedar Freight 13",
+          "owner": "Owen Park",
+          "region": "Europe",
+          "stage": "Won",
+          "seats": 220,
+          "arr": 31200,
+          "health": 0.61
+        },
+        {
+          "account": "Brightline Freight 14",
+          "owner": "Tyler Hayes",
+          "region": "Asia Pacific",
+          "stage": "Proposal",
+          "seats": 235,
+          "arr": 33000,
+          "health": 0.62
+        },
+        {
+          "account": "Harbor Freight 15",
+          "owner": "Daniel Kim",
+          "region": "Latin America",
+          "stage": "Discovery",
+          "seats": 250,
+          "arr": 34800,
+          "health": 0.63
+        },
+        {
+          "account": "Northwind Freight 16",
+          "owner": "Owen Park",
+          "region": "Europe",
+          "stage": "Won",
+          "seats": 265,
+          "arr": 36600,
+          "health": 0.64
+        },
+        {
+          "account": "Lumen Freight 17",
+          "owner": "Tyler Hayes",
+          "region": "Asia Pacific",
+          "stage": "Proposal",
+          "seats": 280,
+          "arr": 38400,
+          "health": 0.65
+        },
+        {
+          "account": "Cedar Freight 18",
+          "owner": "Daniel Kim",
+          "region": "Latin America",
+          "stage": "Discovery",
+          "seats": 295,
+          "arr": 40200,
+          "health": 0.66
+        },
+        {
+          "account": "Brightline Freight 19",
+          "owner": "Owen Park",
+          "region": "Europe",
+          "stage": "Won",
+          "seats": 310,
+          "arr": 42000,
+          "health": 0.67
+        },
+        {
+          "account": "Harbor Freight 20",
+          "owner": "Tyler Hayes",
+          "region": "Asia Pacific",
+          "stage": "Proposal",
+          "seats": 325,
+          "arr": 43800,
+          "health": 0.68
+        },
+        {
+          "account": "Northwind Freight 21",
+          "owner": "Daniel Kim",
+          "region": "Latin America",
+          "stage": "Discovery",
+          "seats": 340,
+          "arr": 45600,
+          "health": 0.69
+        },
+        {
+          "account": "Lumen Freight 22",
+          "owner": "Owen Park",
+          "region": "Europe",
+          "stage": "Won",
+          "seats": 355,
+          "arr": 47400,
+          "health": 0.7
+        },
+        {
+          "account": "Cedar Freight 23",
+          "owner": "Tyler Hayes",
+          "region": "Asia Pacific",
+          "stage": "Proposal",
+          "seats": 370,
+          "arr": 49200,
+          "health": 0.71
+        },
+        {
+          "account": "Brightline Freight 24",
+          "owner": "Daniel Kim",
+          "region": "Latin America",
+          "stage": "Discovery",
+          "seats": 385,
+          "arr": 51000,
+          "health": 0.72
+        },
+        {
+          "account": "Harbor Freight 25",
+          "owner": "Owen Park",
+          "region": "Europe",
+          "stage": "Won",
+          "seats": 400,
+          "arr": 52800,
+          "health": 0.73
+        },
+        {
+          "account": "Northwind Freight 26",
+          "owner": "Tyler Hayes",
+          "region": "Asia Pacific",
+          "stage": "Proposal",
+          "seats": 415,
+          "arr": 54600,
+          "health": 0.74
+        },
+        {
+          "account": "Lumen Freight 27",
+          "owner": "Daniel Kim",
+          "region": "Latin America",
+          "stage": "Discovery",
+          "seats": 430,
+          "arr": 56400,
+          "health": 0.75
+        },
+        {
+          "account": "Cedar Freight 28",
+          "owner": "Owen Park",
+          "region": "Europe",
+          "stage": "Won",
+          "seats": 445,
+          "arr": 58200,
+          "health": 0.76
+        },
+        {
+          "account": "Brightline Freight 29",
+          "owner": "Tyler Hayes",
+          "region": "Asia Pacific",
+          "stage": "Proposal",
+          "seats": 460,
+          "arr": 60000,
+          "health": 0.77
+        },
+        {
+          "account": "Harbor Freight 30",
+          "owner": "Daniel Kim",
+          "region": "Latin America",
+          "stage": "Discovery",
+          "seats": 475,
+          "arr": 61800,
+          "health": 0.78
+        },
+        {
+          "account": "Northwind Freight 31",
+          "owner": "Owen Park",
+          "region": "Europe",
+          "stage": "Won",
+          "seats": 490,
+          "arr": 63600,
+          "health": 0.79
+        },
+        {
+          "account": "Lumen Freight 32",
+          "owner": "Tyler Hayes",
+          "region": "Asia Pacific",
+          "stage": "Proposal",
+          "seats": 505,
+          "arr": 65400,
+          "health": 0.8
+        },
+        {
+          "account": "Cedar Freight 33",
+          "owner": "Daniel Kim",
+          "region": "Latin America",
+          "stage": "Discovery",
+          "seats": 520,
+          "arr": 67200,
+          "health": 0.81
+        },
+        {
+          "account": "Brightline Freight 34",
+          "owner": "Owen Park",
+          "region": "Europe",
+          "stage": "Won",
+          "seats": 535,
+          "arr": 69000,
+          "health": 0.82
+        },
+        {
+          "account": "Harbor Freight 35",
+          "owner": "Tyler Hayes",
+          "region": "Asia Pacific",
+          "stage": "Proposal",
+          "seats": 550,
+          "arr": 70800,
+          "health": 0.83
+        },
+        {
+          "account": "Northwind Freight 36",
+          "owner": "Daniel Kim",
+          "region": "Latin America",
+          "stage": "Discovery",
+          "seats": 565,
+          "arr": 72600,
+          "health": 0.84
+        },
+        {
+          "account": "Lumen Freight 37",
+          "owner": "Owen Park",
+          "region": "Europe",
+          "stage": "Won",
+          "seats": 580,
+          "arr": 74400,
+          "health": 0.85
+        },
+        {
+          "account": "Cedar Freight 38",
+          "owner": "Tyler Hayes",
+          "region": "Asia Pacific",
+          "stage": "Proposal",
+          "seats": 595,
+          "arr": 76200,
+          "health": 0.86
+        },
+        {
+          "account": "Brightline Freight 39",
+          "owner": "Daniel Kim",
+          "region": "Latin America",
+          "stage": "Discovery",
+          "seats": 610,
+          "arr": 78000,
+          "health": 0.87
+        },
+        {
+          "account": "Harbor Freight 40",
+          "owner": "Owen Park",
+          "region": "Europe",
+          "stage": "Won",
+          "seats": 625,
+          "arr": 79800,
+          "health": 0.88
+        },
+        {
+          "account": "Northwind Freight 41",
+          "owner": "Tyler Hayes",
+          "region": "Asia Pacific",
+          "stage": "Proposal",
+          "seats": 640,
+          "arr": 81600,
+          "health": 0.89
+        },
+        {
+          "account": "Lumen Freight 42",
+          "owner": "Daniel Kim",
+          "region": "Latin America",
+          "stage": "Discovery",
+          "seats": 655,
+          "arr": 83400,
+          "health": 0.9
+        }
+      ],
+      "pageSize": 8,
+      "type": "data-table",
+      "source": "组件验收示例 · 非真实业务数据",
+      "timeRange": "2026-01 — 2026-12"
+    },
+    {
+      "title": "核心指标总览",
+      "items": [
+        {
+          "label": "总访问量",
+          "value": 186000,
+          "delta": 12.4
+        },
+        {
+          "label": "新增用户",
+          "value": 8420,
+          "delta": 5.6
+        },
+        {
+          "label": "订单数",
+          "value": 3120,
+          "delta": -3.2
+        },
+        {
+          "label": "营收",
+          "value": 486000,
+          "format": "currency",
+          "currency": "CNY",
+          "delta": 8.1
+        }
+      ],
+      "type": "stat-cards",
+      "source": "组件验收示例 · 非真实业务数据",
+      "timeRange": "2026-01 — 2026-12"
+    }
+  ]
+}

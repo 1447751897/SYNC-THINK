@@ -5,15 +5,18 @@ export interface ScheduledTaskSummaryBlock {
 
 export interface ScheduledTaskSummaryMessage {
   role: string;
+  runId?: string;
   blocks: readonly ScheduledTaskSummaryBlock[];
 }
 
-/** Messages must be ordered newest first, matching MessageStore.listMessages. */
+/** Messages are ordered oldest first within each MessageStore.listMessages page. */
 export function selectScheduledTaskHistorySummary(
   messages: readonly ScheduledTaskSummaryMessage[],
+  runId?: string,
 ): string | undefined {
-  for (const message of messages) {
-    if (message.role !== 'assistant') continue;
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index]!;
+    if (message.role !== 'assistant' || (runId !== undefined && message.runId !== runId)) continue;
     const text = message.blocks
       .filter((block) => block.type === 'text' && block.text?.trim())
       .map((block) => block.text!.trim())

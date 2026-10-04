@@ -276,6 +276,10 @@ async function openLegacyConflictStore() {
       '0061_task_plan_projection_run_scope',
       '0062_browser_workflow_runs_and_schedules',
       '0063_browser_workflow_workspace',
+      '0064_agent_default_kernel',
+      '0065_browser_schedule_variables',
+      '0066_scheduled_task_automation',
+      '0067_scheduled_task_history_lifecycle',
     ]);
     await runMigrations(dbPath);
   } finally {

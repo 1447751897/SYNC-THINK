@@ -1,3 +1,4 @@
+@import "./ConnectionProviders.css";
 @import 'tailwindcss';
 @import './assets/fonts/inter.css';
 @import './assets/fonts/noto-sans-sc.css';
@@ -7,7 +8,12 @@
 @import './task-calendar.css';
 @import './task-calendar-board.css';
 @import './task-surfaces.css';
+@import './Automation.css';
+@import './TaskExperience.css';
 @import './browser-dashboard.css';
+@import './browser-profile-info.css';
+@import './browser-data-manager.css';
+@import './task-conversation-picker.css';
 @import './code-block.css';
 @import './file-diff.css';
 @import './git-panel.css';
@@ -16,15 +22,31 @@
 @import './tool-approval.css';
 @import './citations.css';
 @import './agent-activity.css';
+@import './agent-thinking.css';
 @import './context-menu.css';
 @import './inbox-agent-workbench.css';
 @import './model-picker.css';
 @import './composer-attachments.css';
 @import './collaboration-chat.css';
 @import './agent-workspace.css';
+@import './AgentAppearanceEditor.css';
+@import './host-system-avatar.css';
+@import "./chat-folders.css";
 @import './workbench-design.css';
+@import './wallpaper-settings.css';
+@import './sidebar-chat-actions.css';
+@import './tool-image-preview.css';
+@import './sidebar-navigation-rail.css';
+@import './sidebar-thinking-indicator.css';
 @import './board-chat.css';
+@import './board-composer.css';
+@import './conversation-attention.css';
+@import './BoardDataBlocks.css';
+@import './agent-limits-card.css';
+@import './web-search.css';
 @import './workbench-typography.css';
+@import './task-list.css';
+@import './workbench-pages.css';
 
 /*
  * NewMax-style design tokens (2026-07-22 renderer rewrite).
@@ -51,6 +73,8 @@ body,
  * panes. An auto-sized block here lets long histories push the composer below
  * the window. Keep this geometry in the core shell, not a feature stylesheet. */
 .shell-normal-workspace,
+.shell-workbench-surface,
+.shell-agent-content-host,
 .shell-agent-chat-mode {
   display: flex;
   flex: 1;
@@ -1853,7 +1877,9 @@ body {
   box-shadow: 0 12px 34px color-mix(in srgb, var(--color-text) 20%, transparent);
 }
 
-.shell-browser__more-menu > button {
+/* Submenu triggers are nested, but share the same row layout and states. */
+.shell-browser__more-menu > button,
+.shell-browser__submenu-row > button {
   display: flex;
   min-height: 30px;
   align-items: center;
@@ -1869,20 +1895,24 @@ body {
   text-align: left;
 }
 
-.shell-browser__more-menu > button:hover:not(:disabled) {
+.shell-browser__more-menu > button:hover:not(:disabled),
+.shell-browser__submenu-row > button:hover:not(:disabled) {
   background: var(--color-hover);
   color: var(--color-text);
 }
-.shell-browser__more-menu > button:disabled {
+.shell-browser__more-menu > button:disabled,
+.shell-browser__submenu-row > button:disabled {
   cursor: default;
   opacity: 0.4;
 }
-.shell-browser__more-menu > button small {
+.shell-browser__more-menu > button small,
+.shell-browser__submenu-row > button small {
   margin-left: auto;
   color: var(--color-text-faint);
   font-size: 10px;
 }
-.shell-browser__more-menu > button svg {
+.shell-browser__more-menu > button svg,
+.shell-browser__submenu-row > button svg {
   flex: none;
   color: var(--color-text-faint);
 }
@@ -1890,6 +1920,101 @@ body {
   height: 1px;
   margin: 4px 2px;
   background: var(--color-border);
+}
+
+.shell-browser__switch-row {
+  display: flex;
+  min-height: 30px;
+  align-items: center;
+  gap: 9px;
+  padding: 0 8px;
+  color: var(--color-text-secondary);
+  font-size: 11.5px;
+}
+
+.shell-browser__switch-row > span {
+  margin-right: auto;
+}
+
+.shell-browser__switch {
+  position: relative;
+  flex: none;
+  width: 30px;
+  height: 17px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: var(--color-border);
+  cursor: pointer;
+  transition: background 0.16s ease;
+}
+
+.shell-browser__switch.is-checked {
+  background: var(--color-accent, var(--color-text));
+}
+
+.shell-browser__switch:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.shell-browser__switch-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 13px;
+  height: 13px;
+  border-radius: 999px;
+  background: var(--color-surface);
+  transition: transform 0.16s ease;
+}
+
+.shell-browser__switch.is-checked .shell-browser__switch-thumb {
+  transform: translateX(13px);
+}
+
+.shell-browser__submenu-row {
+  position: relative;
+}
+
+.shell-browser__submenu-row > button {
+  width: 100%;
+}
+
+.shell-browser__submenu-row > button svg:last-child {
+  margin-left: auto;
+}
+
+.shell-browser__submenu {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 2px 0 2px 12px;
+  padding: 4px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-chat);
+}
+
+.shell-browser__submenu > button {
+  display: flex;
+  min-height: 28px;
+  align-items: center;
+  gap: 8px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11.5px;
+  text-align: left;
+}
+
+.shell-browser__submenu > button:hover {
+  background: var(--color-hover);
+  color: var(--color-text);
 }
 
 .shell-browser__zoom-row {
@@ -10055,6 +10180,18 @@ body {
   padding-left: 44px;
 }
 
+/* The chat pane can be narrow even in a large window with a workbench open.
+   Hide secondary navigation first and return its gutter to the conversation. */
+@container shell-chat (max-width: 640px) {
+  .shell-conversation-minimap {
+    display: none;
+  }
+
+  .shell-chat-column:has(> .shell-conversation-minimap) .shell-chat-content-wrap {
+    padding-left: 16px;
+  }
+}
+
 /* ─── Beautiful UI Prompt Bar geometry with SYNC-THINK controls ──────────── */
 .shell-compose {
   min-width: 0;
@@ -11260,7 +11397,11 @@ body {
  * 色板沿用 v6 的 --task-* 主题 token；编辑器与执行历史弹层样式在下方独立段。
  * ======================================================================== */
 
-.task-panel {
+.task-panel,
+.task-sheet,
+.task-select-menu,
+.task-temporal,
+.task-weekly__menu {
   /* 统一到主 token：背景/文字/accent/状态色全部跟随 --color-* 主题契约，
      换肤只需改 @theme 与 .dark 两处即可全局生效。 */
   --task-page: var(--color-panel);
@@ -11286,7 +11427,9 @@ body {
   --task-shadow-modal: 0 24px 64px rgba(30, 30, 26, 0.24);
   --task-primary-text: var(--color-accent-fg);
   --task-mask: rgba(24, 24, 20, 0.45);
+}
 
+.task-panel {
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -11890,8 +12033,14 @@ body {
   }
 }
 
-.shell-context-tab {
+/* Context labels are flex siblings of the sidebar opener, not draggable tabs. */
+.shell-context-tab.shell-workspace-tab {
+  position: relative;
+  top: auto;
+  left: auto;
   margin-left: 16px;
+  cursor: default;
+  will-change: auto;
 }
 
 /*
@@ -12691,6 +12840,7 @@ body {
 }
 
 .task-editor__switch-wrap {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 7px;
@@ -12700,6 +12850,9 @@ body {
 
 .task-editor__switch-input {
   position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: 0;
   opacity: 0;
   pointer-events: none;
 }
@@ -12725,6 +12878,11 @@ body {
   left: 2px;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
   transition: left 0.15s;
+}
+
+.task-editor__switch-input:focus-visible + .task-editor__switch {
+  outline: 2px solid var(--task-accent);
+  outline-offset: 3px;
 }
 
 .task-editor__switch[data-on='1'] {
@@ -13495,13 +13653,13 @@ body {
 /* Context ring hover card */
 .shell-ctx-tooltip {
   min-width: min(240px, calc(100vw - 16px));
-  max-width: min(304px, calc(100vw - 16px));
+  max-width: min(380px, calc(100vw - 16px));
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: 12px 14px;
+  padding: 16px;
   border: 1px solid var(--color-border);
-  border-radius: 12px;
+  border-radius: 16px;
   background: var(--color-overlay, var(--color-elevated));
   box-shadow: 0 10px 32px color-mix(in srgb, #000 20%, transparent);
   color: var(--color-text);
@@ -13760,115 +13918,6 @@ body {
   background: color-mix(in srgb, var(--color-warning) 86%, var(--color-text));
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-surface) 75%, transparent);
   transform: translateX(-50%);
-}
-
-/* Agent limits card — hover panel body: window bar + collapsible breakdown + quotas */
-.shell-agent-limits {
-  display: flex;
-  flex-direction: column;
-}
-.shell-agent-limits__divider {
-  height: 1px;
-  margin: 10px 0 2px;
-  background: var(--color-border);
-}
-.shell-agent-limits__section-title {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  margin-top: 9px;
-  margin-bottom: 2px;
-  color: var(--color-text-secondary);
-  font-size: 11px;
-  font-weight: 650;
-}
-.shell-agent-limits__placeholder {
-  padding: 1px 6px;
-  border: 1px dashed color-mix(in srgb, var(--color-warning) 55%, transparent);
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--color-warning) 12%, transparent);
-  color: var(--color-warning);
-  font-size: 9.5px;
-  font-weight: 600;
-}
-.shell-agent-limits__group-toggle {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  width: 100%;
-  margin-top: 6px;
-  padding: 4px 0;
-  border: 0;
-  background: none;
-  color: var(--color-text-secondary);
-  font-size: 11.5px;
-  font-weight: 600;
-  text-align: left;
-  cursor: pointer;
-}
-.shell-agent-limits__group-toggle:hover {
-  color: var(--color-text);
-}
-.shell-agent-limits__group-toggle strong {
-  margin-left: auto;
-  color: var(--color-text);
-  font-size: 11.5px;
-  font-variant-numeric: tabular-nums;
-}
-.shell-agent-limits__chevron {
-  flex-shrink: 0;
-  transition: transform 0.14s ease;
-}
-.shell-agent-limits__chevron[data-open='true'] {
-  transform: rotate(90deg);
-}
-.shell-agent-limits__group-body {
-  display: flex;
-  flex-direction: column;
-}
-.shell-agent-limits__quota {
-  margin-top: 8px;
-}
-.shell-agent-limits__quota-row {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
-  color: var(--color-text-secondary);
-  font-size: 11.5px;
-}
-.shell-agent-limits__quota-row strong {
-  color: var(--color-text);
-  font-size: 11.5px;
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-.shell-agent-limits__quota-bar {
-  position: relative;
-  height: 3px;
-  margin-top: 5px;
-  overflow: hidden;
-  border-radius: 999px;
-  background: var(--color-border);
-}
-.shell-agent-limits__quota-bar-fill {
-  height: 100%;
-  border-radius: inherit;
-  background: var(--color-accent);
-  transition: width 0.15s ease;
-}
-.shell-agent-limits__quota-bar-fill[data-state='warning'] {
-  background: var(--color-warning);
-}
-.shell-agent-limits__quota-bar-fill[data-state='exhausted'] {
-  background: var(--color-error);
-}
-.shell-agent-limits__quota-reset {
-  margin-top: 4px;
-  color: var(--color-text-faint);
-  font-size: 10px;
 }
 
 /* Floating menus (permission / reasoning / model) — portal + fixed by default */
@@ -16804,6 +16853,10 @@ body {
   color: var(--color-text-secondary);
   text-align: center;
 }
+
+.shell-inline-vis__fallback { margin-top: 12px; }
+.shell-inline-vis__fallback > summary { padding: 6px 0; cursor: pointer; color: var(--color-text-secondary); font-size: 13px; }
+.shell-inline-vis__fallback-note { margin: 6px 0 12px; color: var(--color-text-secondary); font-size: 12px; line-height: 1.5; }
 
 .shell-inline-vis__error > svg {
   color: var(--color-error);
@@ -32185,19 +32238,20 @@ html[data-app-hidden='true'] .animate-spin {
   flex: 0 0 auto;
   flex-wrap: wrap;
   align-items: center;
+  justify-content: center;
   gap: 2px;
   width: 100%;
   max-width: 56rem;
   margin: 0 auto;
-  padding: 6px 12px;
+  padding: 4px 10px;
   border-bottom: 1px solid var(--color-hover);
   background: var(--color-chat);
 }
 
 .shell-markdown-document__divider {
   width: 1px;
-  height: 20px;
-  margin: 0 4px;
+  height: 16px;
+  margin: 0 3px;
   background: var(--color-hover);
 }
 
@@ -32205,11 +32259,16 @@ html[data-app-hidden='true'] .animate-spin {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 6px;
+  padding: 5px;
   border: 0;
   border-radius: var(--radius-row, 8px);
   color: var(--color-icon);
   background: transparent;
+}
+
+.shell-markdown-document__toolbar > button > svg {
+  width: 16px;
+  height: 16px;
 }
 
 .shell-markdown-document__toolbar > button:hover,
@@ -41156,6 +41215,14 @@ html[data-app-hidden='true'] .animate-spin {
 }
 
 .shell-workbench--right {
+  /* Both side panels share one theme surface. Keep these aliases local: file
+     viewers consume --color-chat too, but the center chat and bottom workbench
+     retain their own canvas colors. Named and wallpaper palettes still own
+     --color-sidebar, so theme changes cannot split the two side-panel ramps. */
+  --color-workbench: var(--color-sidebar);
+  --color-workbench-content: var(--color-sidebar);
+  --color-tab-strip: var(--color-sidebar);
+  --color-chat: var(--color-sidebar);
   max-width: calc(100% - 320px);
   overflow: hidden;
   border-top-right-radius: var(--radius-shell);
@@ -42450,7 +42517,7 @@ html[data-app-hidden='true'] .animate-spin {
   right: 0;
   left: 0;
   height: 320px;
-  background: var(--color-tab-strip);
+  background: var(--shell-wallpaper-transition-surface, var(--color-tab-strip));
   mask-image: var(--shell-wallpaper-top-transition-mask);
   -webkit-mask-image: var(--shell-wallpaper-top-transition-mask);
   pointer-events: none;
@@ -42522,7 +42589,7 @@ html[data-app-hidden='true'] .animate-spin {
 
 :root[data-image-theme='active']
   .shell-workspace-primary-content:has(.shell-chat-column--empty-newmax)::after {
-  background: color-mix(in srgb, var(--color-overlay) 18%, transparent);
+  background: var(--shell-wallpaper-empty-scrim, color-mix(in srgb, var(--color-overlay) 18%, transparent));
   mask-image: none;
   -webkit-mask-image: none;
 }
@@ -42549,11 +42616,6 @@ html[data-app-hidden='true'] .animate-spin {
 
 :root[data-image-theme='active'] .shell-workbench__content {
   background: var(--color-workbench-content);
-}
-
-:root[data-image-theme='active'] .shell-workbench--right {
-  --color-workbench: var(--color-tab-strip);
-  --color-workbench-content: var(--color-tab-strip);
 }
 
 :root[data-image-theme='active'] .shell-chat-column::before,
@@ -45551,7 +45613,7 @@ html[data-app-hidden='true'] .animate-spin {
 
 .agent-reasoning-grid {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 5px;
 }
 .agent-reasoning-grid button {
@@ -46664,3 +46726,12 @@ html[data-app-hidden='true'] .animate-spin {
     opacity: 1;
   }
 }
+
+/* Group and legacy agent conversations share the same quiet, themed message scrollbar. */
+.shell-chat-message-scroller, .collab-chat__messages { scrollbar-width: auto; scrollbar-color: auto; }
+.collab-chat__messages::-webkit-scrollbar { width: 4px; }
+.collab-chat__messages::-webkit-scrollbar-track { background: transparent; }
+.collab-chat__messages::-webkit-scrollbar-thumb { border-radius: 999px; background: color-mix(in srgb, var(--color-border-strong) 58%, transparent); }
+.shell-chat-message-scroller::-webkit-scrollbar-button, .collab-chat__messages::-webkit-scrollbar-button { display: none; height: 0; width: 0; }
+.collab-message__attachments { margin: 8px 0; }
+.collab-attachment-notice { color: var(--color-danger, #ef8888); font-size: 12px; margin: 4px 0; }

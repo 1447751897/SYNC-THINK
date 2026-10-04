@@ -1,6 +1,6 @@
 import type { Message, MessageId, ThreadId } from '@sync-think/shared';
 import { describe, expect, it } from 'vitest';
-import { buildProviderMessagesFromDurableMessages, formatDelegatedAgentRuntimeContext } from './context-message-history.js';
+import { buildProviderMessagesFromDurableMessages, collectDurableCompactHistory, formatDelegatedAgentRuntimeContext } from './context-message-history.js';
 
 function message(
   sequence: number,
@@ -288,4 +288,43 @@ describe('buildProviderMessagesFromDurableMessages', () => {
       { role: 'user', content: '继续任务' },
     ]);
   });
+});
+
+
+describe('exact compact coverage', () => {
+  it('replaces only the summarized prefix and retains all eight recent messages despite equal timestamps', () => {
+    const at = '2026-10-02T00:00:00.000Z';
+    const history = Array.from({ length: 12 }, (_, index) => message(index + 1,
+      index % 2 === 0 ? 'user' : 'assistant', 'turn-' + (index + 1), at));
+    const result = buildProviderMessagesFromDurableMessages({
+      messages: [...history, message(13, 'user', 'continue', at)],
+      compact: { summaryText: 'first four summarized', compactedAt: at,
+        coveredThroughMessageSequence: 4 },
+      currentUserText: 'continue',
+    });
+    expect(result.compactSummary).toBe('first four summarized');
+    expect(result.messages.map(item => item.content)).toEqual([
+      'turn-5', 'turn-6', 'turn-7', 'turn-8', 'turn-9', 'turn-10', 'turn-11', 'turn-12', 'continue',
+    ]);
+  });
+});
+
+
+it('recovers the promised recent tail from a legacy keepRecent boundary', () => {
+ const at = '2026-10-02T00:00:00.000Z';
+ const result = buildProviderMessagesFromDurableMessages({
+  messages: Array.from({ length: 12 }, (_, index) => message(index + 1, index % 2 ? 'assistant' : 'user', 'turn-' + (index + 1), at)),
+  compact: { summaryText: 'old checkpoint', compactedAt: at, keepRecent: 8 }, currentUserText: 'next',
+ });
+ expect(result.messages.map(item => item.content)).toEqual(['turn-5','turn-6','turn-7','turn-8','turn-9','turn-10','turn-11','turn-12','next']);
+});
+
+it('keeps the previous checkpoint as input when compacting again and separates it from canonical message sequences', () => {
+ const history = collectDurableCompactHistory([
+  message(7, 'user', 'new constraint', '2026-01-01T00:00:00Z'),
+  message(8, 'assistant', 'current work', '2026-01-01T00:00:00Z'),
+ ], { summaryText: 'earlier hard constraint', compactedAt: '2026-10-02T00:00:00Z', coveredThroughMessageSequence: 6 });
+ expect(history.map(item => item.content)).toEqual(['earlier hard constraint', 'new constraint', 'current work']);
+ expect(history[0]).toMatchObject({ checkpoint: true, sequence: -1 });
+ expect(history[1]).toMatchObject({ sequence: 7, messageId: 'm-7' });
 });

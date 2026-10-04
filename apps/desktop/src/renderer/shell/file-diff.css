@@ -51,49 +51,274 @@ SOFTWARE.
   --diff-focus: #60a5fa;
 }
 .shell-changes-card.shell-beui-changes {
-  border: 0;
-  border-radius: 12px;
+  container: file-changes-card / inline-size;
+  min-width: 0;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
   overflow: hidden;
-  background: transparent;
+  background: var(--color-surface);
   box-shadow: none;
 }
-.shell-beui-changes .shell-changes-card__item {
+.shell-beui-changes .shell-changes-card__header {
+  display: flex;
+  min-height: 44px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 16px;
   border: 0;
   background: transparent;
-  margin: 0;
 }
-.shell-beui-changes .shell-changes-card__item + .shell-changes-card__item {
+.shell-beui-changes .shell-changes-card__summary {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+.shell-beui-changes .shell-changes-card__title {
+  color: var(--color-text);
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.shell-beui-changes .shell-changes-card__count {
+  padding: 0 5px;
+  border: 1px solid var(--color-border);
+  border-radius: 5px;
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  line-height: 18px;
+}
+.shell-beui-changes .shell-changes-card__review,
+.shell-beui-changes .shell-changes-card__open-file {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-height: 32px;
+  padding: 4px 6px;
   border: 0;
-  margin-top: 4px;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  line-height: 20px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background-color 140ms ease,
+    color 140ms ease;
+}
+.shell-beui-changes .shell-changes-card__review:hover:not(:disabled),
+.shell-beui-changes .shell-changes-card__open-file:hover:not(:disabled) {
+  background: var(--color-hover);
+  color: var(--color-text);
+}
+.shell-beui-changes .shell-changes-card__review:disabled,
+.shell-beui-changes .shell-changes-card__open-file:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.shell-beui-changes .shell-changes-card__item,
+.shell-beui-changes .shell-changes-card__item + .shell-changes-card__item {
+  margin: 0;
+  border: 0;
+  border-top: 1px solid var(--color-border);
+  border-radius: 0;
+  background: transparent;
+}
+.shell-beui-changes .shell-changes-card__list {
+  margin: 0;
+  padding: 0;
 }
 .shell-beui-changes .shell-changes-card__row {
-  min-height: 36px;
-  border-radius: 8px;
+  display: flex;
+  min-width: 0;
+  min-height: 60px;
+  align-items: center;
+  gap: 0;
+  padding: 0 8px 0 0;
+  border-radius: 0;
+  transition: background-color 140ms ease;
 }
-.shell-beui-changes .shell-changes-card__row:hover {
-  background: var(--diff-hover);
+.shell-beui-changes .shell-changes-card__row:hover,
+.shell-beui-changes .shell-changes-card__item.is-open .shell-changes-card__row {
+  background: var(--color-hover);
 }
 .shell-beui-changes .shell-changes-card__file,
 .shell-beui-changes .shell-changes-card__item.is-open .shell-changes-card__file {
+  display: grid;
+  grid-template-columns: 12px 28px minmax(0, 1fr) auto;
+  flex: 1;
+  min-width: 0;
+  min-height: 60px;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px 10px 16px;
+  border: 0;
+  border-radius: 0;
   background: transparent;
-  font-size: 12px;
+  color: var(--color-text);
+  text-align: left;
+  cursor: pointer;
+  box-shadow: none;
+}
+.shell-beui-changes .shell-changes-card__file:hover {
+  background: transparent;
+}
+.shell-beui-changes .shell-changes-card__file[aria-disabled='true'] {
+  cursor: default;
+}
+.shell-beui-changes .shell-changes-card__file:focus-visible,
+.shell-beui-changes .shell-changes-card__open-file:focus-visible,
+.shell-beui-changes .shell-changes-card__review:focus-visible,
+.shell-beui-changes .shell-changes-card__more:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -3px;
+  box-shadow: none;
+}
+.shell-beui-changes .shell-changes-card__chevron {
+  color: var(--color-text-secondary);
+  transform: rotate(-90deg);
+  transition: transform 160ms ease;
+}
+.shell-beui-changes .shell-changes-card__chevron.is-open {
+  transform: rotate(0deg);
+}
+.shell-beui-changes .shell-changes-card__file[aria-disabled='true'] .shell-changes-card__chevron {
+  visibility: hidden;
+}
+.shell-beui-changes .shell-changes-card__file-type {
+  display: grid;
+  width: 28px;
+  height: 30px;
+  place-items: center;
+  border: 1px solid var(--color-border);
+  border-radius: 5px;
+  color: var(--color-text-secondary);
+}
+.shell-beui-changes .shell-changes-card__identity {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
 }
 .shell-beui-changes .shell-changes-card__name {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  overflow: visible;
   font-family: var(--font-mono);
-  font-weight: 400;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 20px;
 }
-.shell-beui-changes .shell-changes-card__expand {
-  min-width: 28px;
-  min-height: 28px;
+.shell-beui-changes .shell-changes-card__name-stem {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
+.shell-beui-changes .shell-changes-card__name-extension {
+  flex: none;
+}
+.shell-beui-changes .shell-changes-card__dir {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-text-secondary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 16px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.shell-beui-changes .shell-changes-card__file-meta {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 12px;
+}
+.shell-beui-changes .shell-changes-card__action-label {
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.shell-beui-changes .shell-changes-card__lines,
 .shell-beui-changes .shell-changes-card__file-lines {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0;
   font-family: var(--font-mono);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
-.shell-beui-changes .is-add {
+.shell-beui-changes .shell-changes-card__lines .is-add,
+.shell-beui-changes .shell-changes-card__file-lines .is-add {
   color: var(--diff-add);
 }
-.shell-beui-changes .is-del {
+.shell-beui-changes .shell-changes-card__lines .is-del,
+.shell-beui-changes .shell-changes-card__file-lines .is-del {
   color: var(--diff-remove);
+}
+.shell-beui-changes .shell-changes-card__overflow[hidden] {
+  display: none;
+}
+.shell-beui-changes .shell-changes-card__more {
+  display: flex;
+  width: 100%;
+  min-height: 38px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border: 0;
+  border-top: 1px solid var(--color-border);
+  border-radius: 0;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+}
+.shell-beui-changes .shell-beui-diff-disclosure {
+  padding: 0;
+  border-top: 1px solid var(--color-border);
+}
+.shell-beui-changes .shell-deferred-file-diff {
+  border: 0;
+}
+@container file-changes-card (max-width: 520px) {
+  .shell-beui-changes .shell-changes-card__open-label {
+    display: none;
+  }
+  .shell-beui-changes .shell-changes-card__file {
+    gap: 9px;
+    padding-left: 12px;
+  }
+  .shell-beui-changes .shell-changes-card__file-meta {
+    gap: 7px;
+  }
+  .shell-beui-changes .shell-changes-card__open-file {
+    min-width: 32px;
+  }
+}
+@container file-changes-card (max-width: 400px) {
+  .shell-beui-changes .shell-changes-card__header {
+    gap: 8px;
+    padding: 8px 12px;
+  }
+  .shell-beui-changes .shell-changes-card__summary {
+    gap: 6px;
+  }
+  .shell-beui-changes .shell-changes-card__file {
+    grid-template-columns: 12px 28px minmax(0, 1fr);
+  }
+  .shell-beui-changes .shell-changes-card__file-meta {
+    grid-column: 3;
+  }
 }
 .shell-beui-diff-disclosure {
   padding: 4px 0 8px;
@@ -378,6 +603,11 @@ SOFTWARE.
   .shell-beui-diff-disclosure:not([hidden]) {
     animation: none;
   }
+  .shell-beui-changes .shell-changes-card__chevron,
+  .shell-beui-changes .shell-changes-card__row,
+  .shell-beui-changes .shell-changes-card__file,
+  .shell-beui-changes .shell-changes-card__review,
+  .shell-beui-changes .shell-changes-card__open-file,
   .shell-beui-diff *,
   .shell-beui-changes * {
     transition: none;

@@ -1,7 +1,8 @@
-import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { LOCAL_WEB_PAGE_SCHEMES } from '../local-web-page-contract.js';
 import {
   LOCAL_WEB_PAGE_SCHEME,
   LocalWebPageRegistry,
@@ -41,25 +42,31 @@ describe('LocalWebPageRegistry', () => {
     });
   });
 
-  it('rejects non-HTML entries, unknown tokens, traversal, and unsupported MIME types', async () => {
-    await withTempDirectory(async (root) => {
-      await writeFile(path.join(root, 'index.html'), '<main>ok</main>');
-      await writeFile(path.join(root, 'secret.bin'), 'secret');
-      const registry = new LocalWebPageRegistry();
-      expect(await registry.createUrl(path.join(root, 'secret.bin'))).toBeNull();
-      const url = await registry.createUrl(path.join(root, 'index.html'));
-      expect(
-        (await registry.handle(new Request('newmax-local-web://unknown/index.html'))).status,
-      ).toBe(404);
-      expect(
-        (await registry.handle(new Request(`${url!.replace(/\/[^/]+$/, '')}/%2e%2e/secret.bin`)))
-          .status,
-      ).toBe(404);
-      expect(
-        (await registry.handle(new Request(`${url!.replace(/\/[^/]+$/, '')}/secret.bin`))).status,
-      ).toBe(404);
-    });
-  });
+  it.each(LOCAL_WEB_PAGE_SCHEMES)(
+    'rejects non-HTML entries, unknown tokens, traversal, and unsupported MIME types on %s',
+    async (scheme) => {
+      await withTempDirectory(async (root) => {
+        await writeFile(path.join(root, 'index.html'), '<main>ok</main>');
+        await writeFile(path.join(root, 'secret.bin'), 'secret');
+        const registry = new LocalWebPageRegistry();
+        expect(await registry.createUrl(path.join(root, 'secret.bin'))).toBeNull();
+        const url = (await registry.createUrl(path.join(root, 'index.html')))!.replace(
+          LOCAL_WEB_PAGE_SCHEME,
+          scheme,
+        );
+        expect((await registry.handle(new Request(`${scheme}://unknown/index.html`))).status).toBe(
+          404,
+        );
+        expect(
+          (await registry.handle(new Request(`${url!.replace(/\/[^/]+$/, '')}/%2e%2e/secret.bin`)))
+            .status,
+        ).toBe(404);
+        expect(
+          (await registry.handle(new Request(`${url!.replace(/\/[^/]+$/, '')}/secret.bin`))).status,
+        ).toBe(404);
+      });
+    },
+  );
 
   it('does not serve a symlink that leaves the entry directory', async () => {
     await withTempDirectory(async (root) => {
@@ -96,9 +103,37 @@ describe('LocalWebPageRegistry', () => {
       },
       registry,
     );
-    expect(calls).toHaveLength(1);
-    expect(calls[0]?.scheme).toBe(LOCAL_WEB_PAGE_SCHEME);
-    expect(typeof calls[0]?.handler).toBe('function');
+    expect(calls.map((call) => call.scheme)).toEqual(LOCAL_WEB_PAGE_SCHEMES);
+    for (const call of calls) expect(typeof call.handler).toBe('function');
+  });
+
+  it('restores legacy URLs from the existing index and generates only branded URLs', async () => {
+    await withTempDirectory(async (root) => {
+      const token = '12345678-1234-1234-1234-123456789012';
+      const entryPath = path.join(root, 'index.html');
+      const statePath = path.join(root, 'state.json');
+      await writeFile(entryPath, '<main>legacy page</main>');
+      await mkdir(path.join(root, 'assets'));
+      await writeFile(path.join(root, 'assets', 'icon.svg'), '<svg></svg>');
+      await writeFile(
+        statePath,
+        JSON.stringify({
+          schemaVersion: 1,
+          entries: [{ token, entryPath: await realpath(entryPath) }],
+        }),
+      );
+      const restored = new LocalWebPageRegistry({ persistencePath: statePath });
+      const canonicalUrl = `sync-think-local-web://${token}/index.html`;
+      expect(await restored.createUrl(entryPath)).toBe(canonicalUrl);
+      for (const scheme of LOCAL_WEB_PAGE_SCHEMES) {
+        const page = await restored.handle(new Request(`${scheme}://${token}/index.html`));
+        expect(page.status).toBe(200);
+        expect(await page.text()).toContain('legacy page');
+        const asset = await restored.handle(new Request(`${scheme}://${token}/assets/icon.svg`));
+        expect(asset.status).toBe(200);
+        expect(await asset.text()).toBe('<svg></svg>');
+      }
+    });
   });
 
   it('persists token mappings so a fresh registry serves a restored page', async () => {

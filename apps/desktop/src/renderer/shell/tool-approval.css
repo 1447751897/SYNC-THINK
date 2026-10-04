@@ -383,3 +383,16 @@ SOFTWARE.
   padding: 9px 14px;
   border-top: 1px solid var(--color-border);
 }
+
+/* Declarations describe a Skill, not an application permission grant. */
+.shell-beui-approval__declarations { display: grid; gap: 6px; margin-top: 8px; }
+.shell-beui-approval__tool-chips { display: flex; flex-wrap: wrap; gap: 5px; }
+.shell-beui-approval__tool-chip { display: inline-flex; align-items: center; gap: 4px; padding: 3px 5px 3px 8px; border: 1px solid var(--color-border); border-radius: 6px; background: var(--color-surface); font-size: 11px; }
+.shell-beui-approval__tool-chip { max-width: 100%; }
+.shell-beui-approval__tool-chip code { font: inherit; min-width: 0; overflow-wrap: anywhere; }
+.shell-beui-approval__tool-chip button { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; flex-shrink: 0; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--color-text); opacity: 0; cursor: pointer; }
+.shell-beui-approval__tool-chip:hover button, .shell-beui-approval__tool-chip:focus-within button { opacity: 1; }
+.shell-beui-approval__tool-chip button:hover, .shell-beui-approval__tool-chip button:focus-visible { background: var(--color-surface-hover); }
+.shell-beui-approval__declarations small { color: var(--color-text-secondary); font-size: 11px; }
+.shell-beui-approval__reset-tools { margin-left: 6px; border: 0; padding: 0; background: transparent; color: var(--color-text); cursor: pointer; text-decoration: underline; }
+@media (hover: none) { .shell-beui-approval__tool-chip button { opacity: 1; } }

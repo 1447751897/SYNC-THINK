@@ -1,3 +1,5 @@
+import { TASK_SCHEDULE_TOOL_DESCRIPTION, TASK_SCHEDULE_TOOL_INPUT_SCHEMA } from '../../scheduled-task-tool.js';
+
 /**
  * `platform` server — host infrastructure tools every kernel sees.
  *
@@ -132,6 +134,7 @@ export const platformServer: KernelMcpServerDefinition = {
   version: '1.0.0',
   alwaysLoad: true,
   tools: [
+
     {
       name: 'platform_context',
       description:
@@ -155,60 +158,10 @@ export const platformServer: KernelMcpServerDefinition = {
     },
     {
       name: 'task_schedule',
-      description:
-        'Manage scheduled tasks (定时任务). Actions: "create" (name, instruction, target {kind:"agent",agentId} or {kind:"model",modelId}, rule {kind:"at",runAt} | {kind:"every",intervalMinutes≥5,firstRunAt?} | {kind:"random",windowStart,windowEnd,minTimes,maxTimes} | {kind:"weekly",selection:{mode:"days",days:[1,3]} or {mode:"range",start:1,end:5},time:"09:00",startDate:"YYYY-MM-DD"} (Monday=1, Sunday=7; inclusive ranges may wrap) | {kind:"cron",expression}, timeZone?) creates a task that fires by injecting the instruction into its own conversation; "list" returns all tasks; "cancel" (taskId) disables a task. Creating or cancelling requires approval outside full-access mode.',
+      description: TASK_SCHEDULE_TOOL_DESCRIPTION,
       approval: 'never',
       planningDenied: true,
-      inputSchema: {
-        type: 'object',
-        additionalProperties: false,
-        required: ['action'],
-        properties: {
-          action: { type: 'string', enum: ['create', 'list', 'cancel'] },
-          name: { type: 'string', description: 'Task name (create).' },
-          instruction: {
-            type: 'string',
-            description: 'Instruction injected to the task conversation when it fires (create).',
-          },
-          target: {
-            type: 'object',
-            additionalProperties: false,
-            properties: {
-              kind: { type: 'string', enum: ['agent', 'model'] },
-              agentId: { type: 'string' },
-              modelId: { type: 'string' },
-            },
-          },
-          rule: {
-            type: 'object',
-            additionalProperties: false,
-            properties: {
-              kind: { type: 'string', enum: ['at', 'every', 'weekly', 'random', 'cron'] },
-              runAt: { type: 'string' },
-              intervalMinutes: { type: 'number' },
-              firstRunAt: { type: 'string' },
-              windowStart: { type: 'string' },
-              windowEnd: { type: 'string' },
-              minTimes: { type: 'number' },
-              maxTimes: { type: 'number' },
-              expression: { type: 'string' },
-            time: { type: 'string', description: 'Weekly start time, HH:mm in task timeZone.' },
-            startDate: { type: 'string', description: 'Weekly effective date, YYYY-MM-DD in task timeZone.' },
-            selection: {
-              type: 'object', additionalProperties: false,
-              properties: {
-                mode: { type: 'string', enum: ['days', 'range'] },
-                days: { type: 'array', items: { type: 'integer', minimum: 1, maximum: 7 }, minItems: 1, maxItems: 7 },
-                start: { type: 'integer', minimum: 1, maximum: 7 },
-                end: { type: 'integer', minimum: 1, maximum: 7 },
-              },
-            },
-            },
-          },
-          timeZone: { type: 'string', description: 'IANA time zone, default UTC.' },
-          taskId: { type: 'string', description: 'Task id to cancel.' },
-        },
-      },
+      inputSchema: TASK_SCHEDULE_TOOL_INPUT_SCHEMA,
     },
     {
       name: 'goal_manage',

@@ -1180,6 +1180,7 @@ describe('BrowserStage Runtime Profiles', () => {
         enabled: true,
         intervalMinutes: 30,
         expectedRevision: 0,
+        variables: {},
       }),
     );
   });

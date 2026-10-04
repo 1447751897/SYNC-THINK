@@ -1,3 +1,4 @@
+
 // Preload runs in the renderer with contextIsolation: true. Bridge exposes a
 // narrow window.api so the renderer never touches Node directly (搂19).
 import type {
@@ -9,6 +10,7 @@ import type {
   ConversationReadFileDiffResponse,
 } from '@sync-think/protocol';
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
+import { isConversationNotice, type ConversationNotice, type ConversationNotificationPreferences } from '../conversation-notification-contract.js';
 import type {
   ExportDesktopDiagnosticsPayload,
   ExportDesktopDiagnosticsResponse,
@@ -475,6 +477,7 @@ import type {
 } from '../kernel-update-contract.js';
 
 const api = {
+
   editing: {
     execute: (command: import('../context-menu-contract.js').EditCommand) => ipcRenderer.invoke('desktop:editing-command', command) as Promise<void>,
     readText: () => ipcRenderer.invoke('desktop:clipboard-read-text') as Promise<string>,
@@ -1162,6 +1165,23 @@ const api = {
         ok: boolean;
         error?: string;
       }>,
+    getEmbeddedBrowserSessionInfo: (payload: { webContentsId: number }) =>
+      ipcRenderer.invoke('desktop:browser-session-info', payload) as Promise<import('../browser-session-info.js').EmbeddedBrowserSessionInfo>,
+    manageEmbeddedBrowserData: (payload: import('../browser-data.js').BrowserDataRequest) =>
+      ipcRenderer.invoke('desktop:browser-data', payload) as Promise<import('../browser-data.js').BrowserDataResult>,
+    configureEmbeddedBrowserContentBlocking: (
+      payload: import('../browser-content-blocking.js').EmbeddedBrowserContentBlockingRequest,
+    ) =>
+      ipcRenderer.invoke(
+        'desktop:browser-content-blocking',
+        payload,
+      ) as Promise<import('../browser-content-blocking.js').EmbeddedBrowserContentBlockingResult>,
+    openBrowserDownloads: () =>
+      ipcRenderer.invoke('desktop:browser-open-downloads') as Promise<{
+        ok: boolean;
+        path?: string;
+        error?: string;
+      }>,
     /** NewMax-compatible token URL for a saved local HTML page. */
     createLocalPageUrl: (payload: { filePath: string; partition?: string }) =>
       ipcRenderer.invoke('desktop:create-local-page-url', payload) as Promise<{
@@ -1232,6 +1252,7 @@ const api = {
       ipcRenderer.invoke('runtime:skill-get', payload) as Promise<GetSkillResponse>,
     setSkillEnabled: (payload: SetSkillEnabledPayload) =>
       ipcRenderer.invoke('runtime:skill-set-enabled', payload) as Promise<SetSkillEnabledResponse>,
+
     registerMcpServer: (payload: RegisterMcpServerPayload) =>
       ipcRenderer.invoke('runtime:mcp-register', payload) as Promise<RegisterMcpServerResponse>,
     registerRemoteMcpServer: (payload: RegisterRemoteMcpPayload) =>
@@ -1580,6 +1601,8 @@ const api = {
       return () => ipcRenderer.removeListener(channel, handler);
     },
     /** 文件 Pane：读取文本及乐观并发元数据。 */
+    readProjectImage: (payload: { root: string; path: string }) =>
+      ipcRenderer.invoke('desktop:read-project-image', payload) as Promise<{ dataUrl?: string; error?: string }>,
     readProjectFile: (payload: { root: string; path: string }) =>
       ipcRenderer.invoke('desktop:read-project-file', payload) as Promise<{
         path: string;
@@ -1847,6 +1870,15 @@ const api = {
       ipcRenderer.on('desktop:browser-new-tab', handler);
       return () => ipcRenderer.removeListener('desktop:browser-new-tab', handler);
     },
+    onConversationNotice: (listener: (notice: ConversationNotice) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, value: unknown) => {
+        if (isConversationNotice(value)) listener(value);
+      };
+      ipcRenderer.on('desktop:conversation-notice', handler);
+      return () => ipcRenderer.removeListener('desktop:conversation-notice', handler);
+    },
+    setConversationNotificationPreferences: (preferences: ConversationNotificationPreferences) =>
+      ipcRenderer.invoke('desktop:conversation-notification-preferences', preferences) as Promise<void>,
     notifyRendererReady: () => {
       ipcRenderer.send('desktop:renderer-ready');
     },

@@ -120,3 +120,31 @@ it('omits the Git status for non-repository folders', async () => {
   await waitFor(() => expect(screen.queryByTestId('composer-git-bar')).toBeNull());
   expect(screen.queryByText('读取仓库…')).toBeNull();
 });
+
+
+it.each(['empty', 'conversation'] as const)('keeps the %s attachment backplate outside the input and its menus interactive', async (variant) => {
+  install();
+  const open = vi.fn();
+  render(
+    <NewMaxComposerFrame
+      variant={variant}
+      presentation="attachments"
+      contextBar={<ComposerGitBar projectFolder="D:/repo" onOpenGit={open} />}
+      input={<textarea aria-label="消息" />}
+    />,
+  );
+  const header = screen.getByTestId('composer-git-bar');
+  const frame = screen.getByTestId('newmax-composer-frame');
+  expect(frame.firstElementChild).toBe(header);
+  expect(header.closest('.shell-compose')).toBeNull();
+  expect(frame.getAttribute('data-presentation')).toBe('attachments');
+  expect(screen.queryByTestId('composer-status-bar')).toBeNull();
+  fireEvent.click(await screen.findByText('main'));
+  expect(await screen.findByRole('dialog', { name: '选择分支' })).toBeTruthy();
+  fireEvent.keyDown(document, { key: 'Escape' });
+  fireEvent.click(screen.getByText('Local'));
+  expect(await screen.findByRole('dialog', { name: '工作在' })).toBeTruthy();
+  fireEvent.keyDown(document, { key: 'Escape' });
+  fireEvent.click(screen.getByText('2 个未提交'));
+  expect(open).toHaveBeenCalledWith('D:/repo', 'changes');
+});

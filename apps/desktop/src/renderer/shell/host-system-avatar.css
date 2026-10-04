@@ -1,0 +1,53 @@
+/* Keep the original transparent portrait. Nested layers separate a user-triggered
+   turn from the live task's body/gaze motion; neither animation reflows chat. */
+.shell-host-avatar { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; vertical-align: middle; }
+button.shell-host-avatar { appearance: none; padding: 0; margin: 0; border: 0; border-radius: 6px; background: transparent; color: inherit; cursor: pointer; }
+button.shell-host-avatar:focus-visible { outline: 2px solid var(--color-focus-ring, var(--color-accent)); outline-offset: 3px; }
+.shell-host-turn, .shell-host-body { display: block; width: 100%; height: 100%; }
+.shell-host-turn { position: relative; }
+.shell-host-3d { position: absolute; inset: 0; display: block; width: 100%; height: 100%; pointer-events: none; }
+.shell-host-avatar .shell-host-turn[data-renderer-ready='true'] > .shell-host-body { opacity: 0; }
+.shell-host-body { position: relative; transform-origin: 50% 65%; }
+.shell-host-body > img { display: block; width: 100%; height: 100%; object-fit: contain; user-select: none; }
+.shell-host-eyes { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
+.shell-host-gaze { animation: shell-host-look 4.8s ease-in-out infinite; }
+.shell-host-blink { transform-box: view-box; animation: shell-host-blink 5.3s ease-in-out infinite; }
+.shell-host-avatar[data-state='working'] .shell-host-gaze { animation-duration: 3.2s; }
+.shell-host-avatar[data-state='waiting'] .shell-host-gaze { animation-duration: 6.8s; }
+.shell-host-avatar[data-state='happy'] .shell-host-gaze { animation: none; }
+.shell-host-avatar[data-animated='true'] .shell-host-body { animation: shell-host-breathe 4.8s ease-in-out infinite; }
+.shell-host-avatar[data-animated='true'][data-state='thinking'] .shell-host-body { animation: shell-host-think 2.6s ease-in-out infinite; }
+.shell-host-avatar[data-animated='true'][data-state='working'] .shell-host-body { animation: shell-host-work 1.8s ease-in-out infinite; }
+.shell-host-avatar[data-animated='true'][data-state='waiting'] .shell-host-body { animation: shell-host-think 5s ease-in-out infinite; }
+.shell-host-avatar[data-animated='true'][data-state='happy'] .shell-host-body { animation: shell-host-finish .6s ease-out 1; }
+.shell-host-avatar[data-state='inactive'] .shell-host-body { opacity: .65; }
+.shell-host-message-content { display: grid; grid-template-columns: 26px minmax(0, 1fr); column-gap: 10px; }
+.shell-host-message-content > * { grid-column: 2; min-width: 0; }
+.shell-host-message-content > .shell-host-identity { grid-column: 1 / -1; }
+.shell-host-identity { display: flex; align-items: center; gap: 10px; min-height: 26px; margin-bottom: 4px; }
+.shell-host-identity .shell-msg-avatar { display: inline-flex; align-items: center; }
+.shell-host-name { margin: 0; color: var(--color-text-secondary); font-size: 12px; line-height: 18px; font-weight: 500; }
+@keyframes shell-host-breathe { 0%, 100% { transform: scale(.98); } 50% { transform: translateY(-.6px) scale(1.02); } }
+@keyframes shell-host-think { 0%, 100% { transform: rotate(-3deg) translateY(0); } 50% { transform: rotate(3deg) translateY(-1px); } }
+@keyframes shell-host-work { 0%, 100% { transform: scale(1) translateY(0); } 50% { transform: scale(1.04) translateY(-1.5px); } }
+@keyframes shell-host-finish { 0%, 100% { transform: translateY(0); } 40% { transform: translateY(-3px) rotate(-3deg); } 70% { transform: translateY(-1px) rotate(2deg); } }
+@keyframes shell-host-look {
+  0%, 16%, 100% { transform: translate(0, 0); }
+  24%, 40% { transform: translate(-9px, -2px); }
+  48%, 62% { transform: translate(8px, 1px); }
+  72%, 86% { transform: translate(0, -5px); }
+}
+@keyframes shell-host-blink {
+  0%, 37%, 43%, 70%, 76%, 100% { transform: scaleY(1); }
+  40%, 73% { transform: scaleY(.08); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .shell-host-avatar :is(.shell-host-turn, .shell-host-body, .shell-host-gaze, .shell-host-blink) { animation: none !important; transform: none !important; }
+  .shell-host-eyes, .shell-host-3d { display: none; }
+  .shell-host-avatar .shell-host-turn[data-renderer-ready='true'] > .shell-host-body { opacity: 1; }
+}
+:root[data-reduced-motion] .shell-host-avatar :is(.shell-host-turn, .shell-host-body, .shell-host-gaze, .shell-host-blink) { animation: none !important; transform: none !important; }
+:root[data-reduced-motion] .shell-host-eyes { display: none; }
+
+:root[data-reduced-motion] .shell-host-3d { display: none; }
+:root[data-reduced-motion] .shell-host-avatar .shell-host-turn[data-renderer-ready='true'] > .shell-host-body { opacity: 1; }

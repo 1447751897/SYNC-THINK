@@ -217,6 +217,7 @@ export interface BrowserWorkflowRunRecord {
 }
 
 export interface BrowserWorkflowScheduleRecord {
+  variables: Record<string, string>;
   taskId: string;
   enabled: boolean;
   intervalMinutes: number;
@@ -405,6 +406,7 @@ interface BrowserWorkflowRunStepRow {
 }
 
 interface BrowserWorkflowScheduleRow {
+  variables_json: string;
   task_id: string;
   enabled: number;
   interval_minutes: number;
@@ -1760,6 +1762,7 @@ export class SqliteBrowserStore {
   }
 
   upsertWorkflowSchedule(input: {
+    variables?: Record<string, string>;
     taskId: string;
     enabled: boolean;
     intervalMinutes: number;
@@ -1780,6 +1783,9 @@ export class SqliteBrowserStore {
       throw new Error('browser.workflow_schedule_task_not_ready');
     }
     const current = this.getWorkflowSchedule(taskId);
+    const variables = input.variables ?? current?.variables ?? {};
+    if (Object.keys(variables).length > 50 || Object.entries(variables).some(([key, value]) => !key || key.length > 128 || typeof value !== 'string' || value.length > 4000 || /password|cookie|token|secret/i.test(key))) throw new Error('browser.workflow_schedule_variables_invalid');
+    const variablesJson = JSON.stringify(variables);
     if (current) {
       if (input.expectedRevision !== undefined && current.revision !== input.expectedRevision) {
         throw new Error('browser.workflow_schedule_revision_conflict');
@@ -1790,12 +1796,13 @@ export class SqliteBrowserStore {
       this.raw
         .prepare(
           `UPDATE browser_workflow_schedule
-         SET enabled = ?, interval_minutes = ?, next_run_at = ?, revision = revision + 1, updated_at = ?
+         SET enabled = ?, interval_minutes = ?, variables_json = ?, next_run_at = ?, revision = revision + 1, updated_at = ?
          WHERE task_id = ? AND revision = ?`,
         )
         .run(
           input.enabled ? 1 : 0,
           input.intervalMinutes,
+          variablesJson,
           nextRunAt ?? null,
           now,
           taskId,
@@ -1810,11 +1817,11 @@ export class SqliteBrowserStore {
       this.raw
         .prepare(
           `INSERT INTO browser_workflow_schedule (
-           task_id, enabled, interval_minutes, next_run_at, last_run_at,
+           task_id, enabled, interval_minutes, variables_json, next_run_at, last_run_at,
            revision, created_at, updated_at
-         ) VALUES (?, ?, ?, ?, NULL, 1, ?, ?)`,
+         ) VALUES (?, ?, ?, ?, ?, NULL, 1, ?, ?)`,
         )
-        .run(taskId, input.enabled ? 1 : 0, input.intervalMinutes, nextRunAt ?? null, now, now);
+        .run(taskId, input.enabled ? 1 : 0, input.intervalMinutes, variablesJson, nextRunAt ?? null, now, now);
     }
     return this.getWorkflowSchedule(taskId)!;
   }
@@ -2972,7 +2979,7 @@ function workflowRunStepSelect(): string {
 }
 
 function workflowScheduleSelect(): string {
-  return `SELECT task_id, enabled, interval_minutes, next_run_at, last_run_at,
+  return `SELECT task_id, enabled, interval_minutes, variables_json, next_run_at, last_run_at,
     revision, created_at, updated_at FROM browser_workflow_schedule`;
 }
 
@@ -3182,6 +3189,7 @@ function mapWorkflowRunStep(row: BrowserWorkflowRunStepRow): BrowserWorkflowRunS
 
 function mapWorkflowSchedule(row: BrowserWorkflowScheduleRow): BrowserWorkflowScheduleRecord {
   return {
+    variables: JSON.parse(row.variables_json),
     taskId: row.task_id,
     enabled: row.enabled === 1,
     intervalMinutes: row.interval_minutes,

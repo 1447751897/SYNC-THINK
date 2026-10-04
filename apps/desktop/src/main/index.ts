@@ -1,3 +1,7 @@
+
+
+
+
 import { registerContextMenuHandlers } from './context-menu-handlers.js';
 // Electron main entry. UI lifecycle is decoupled from the Runtime by design — the Runtime runs as a separate process and survives UI restarts (ADR-006).
 // The main process owns the safe-storage-based credential broker (TD-005).
@@ -18,6 +22,9 @@ import { registerConversationManagementHandlers } from './conversation-managemen
 import { registerConversationRoutingHandlers } from './conversation-routing-handlers.js';
 import { registerConversationPlanHandlers } from './conversation-plan-handlers.js';
 import { registerConversationAskHandlers } from './conversation-ask-handlers.js';
+import { ConversationNotifications } from './conversation-notifications.js';
+import { parseConversationNotificationPreferences } from '../conversation-notification-contract.js';
+import { createConversationNotificationDriver } from './electron-conversation-notification-driver.js';
 import { registerScheduledTaskHandlers } from './scheduled-task-handlers.js';
 import { registerActivityHandlers } from './activity-handlers.js';
 import { registerGoalHandlers } from './goal-handlers.js';
@@ -44,6 +51,8 @@ import { registerProviderCcSwitchHandlers } from './provider-cc-switch-handlers.
 import { registerWebSearchProviderHandlers } from './web-search-provider-handlers.js';
 import { registerDataManagementHandlers } from './data-management-handlers.js';
 import { registerBrowserProfileHandlers } from './browser-profile-handlers.js';
+import { embeddedBrowserSessionInfo } from './browser-session-info.js';
+import { BrowserDataService } from './browser-data-service.js';
 import { registerBrowserRecordingHandlers } from './browser-recording-handlers.js';
 import { registerBrowserWorkflowHandlers } from './browser-workflow-handlers.js';
 import { registerBrowserHandoffHandlers } from './browser-handoff-handlers.js';
@@ -72,6 +81,7 @@ import {
   nativeTheme,
   protocol,
   safeStorage,
+  webContents,
   session,
   shell,
 } from 'electron';
@@ -120,11 +130,16 @@ import {
   type ProjectTerminalReservation,
 } from './project-terminal-registry.js';
 import {
-  LOCAL_WEB_PAGE_SCHEME,
   LocalWebPageRegistry,
   registerLocalWebPageProtocol,
 } from './local-web-page-registry.js';
+import { LOCAL_WEB_PAGE_SCHEMES, isLocalWebPageUrl } from '../local-web-page-contract.js';
 import { installBrowserWebviewPopupHandler } from './browser-webview-popup.js';
+import {
+  createContentBlockingService,
+  type ContentBlockingSession,
+} from './browser-content-blocking-service.js';
+import { parseEmbeddedBrowserContentBlockingRequest } from '../browser-content-blocking.js';
 import {
   readProjectFile,
   watchProjectFile,
@@ -132,6 +147,7 @@ import {
   type ProjectFileChange,
 } from './project-file-editor.js';
 import { findDeepLinkInArgv, parseDeepLinkUrl } from './deep-link.js';
+import { readProjectImage } from './project-image-preview.js';
 import { listDogfoodDayReports } from './m1-exit-evidence-load.js';
 import { parseHandtestDocMarkdown } from '../m1-handtest-doc-parse.js';
 import { fileURLToPath } from 'node:url';
@@ -238,10 +254,10 @@ protocol.registerSchemesAsPrivileged([
     scheme: 'sync-think-image',
     privileges: { standard: true, secure: true, supportFetchAPI: true },
   },
-  {
-    scheme: LOCAL_WEB_PAGE_SCHEME,
+  ...LOCAL_WEB_PAGE_SCHEMES.map((scheme) => ({
+    scheme,
     privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true },
-  },
+  })),
 ]);
 
 const defaultDesktopUserDataPath = app.getPath('userData');
@@ -270,7 +286,31 @@ const desktopCrashJournal = new DesktopCrashJournal({
   homeDirectory: app.getPath('home'),
 });
 
+if (process.platform === 'win32') app.setAppUserModelId('com.syncthink.desktop');
+
 let mainWindow: BrowserWindow | null = null;
+// Native notifications are driven in the main process, including while the
+// renderer is minimized, hidden to the tray, or frame-throttled.
+const conversationNotifications = new ConversationNotifications({
+  listConversations: async () => (await getRuntimeClient().requestConversation('conversation.list', { includeArchived: false })).conversations,
+  isFocused: () => Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible() && mainWindow.isFocused()),
+  publish: (notice) => {
+    const window = mainWindow;
+    const location = trustedRendererLocation;
+    if (window && !window.isDestroyed() && location && !window.webContents.isDestroyed() &&
+        isTrustedRendererUrl(window.webContents.getURL(), location)) {
+      window.webContents.send('desktop:conversation-notice', notice);
+    }
+  },
+  show: createConversationNotificationDriver({
+    openConversation: (id) => {
+      revealMainWindow();
+      if (!sendOpenConversationToRenderer(id)) pendingDeepLinkConversationId = id;
+    },
+    flashFrame: () => mainWindow?.flashFrame(true),
+    onFailed: () => console.warn('[desktop] conversation notification not delivered; in-app status retained'),
+  }),
+});
 let registeredQuickWindowShortcut: string | null = null;
 /**
  * Set once a real quit is under way, so `close` stops diverting the window to
@@ -769,6 +809,7 @@ function createWindow(): void {
     },
   });
   mainWindow = window;
+  window.on('focus', () => window.flashFrame(false));
   trustedRendererLocation = nextTrustedRendererLocation;
   installNavigationGuards(window.webContents, nextTrustedRendererLocation);
   // Harden every embedded webview before Electron creates its guest contents.
@@ -801,7 +842,7 @@ function createWindow(): void {
       }
     }
     const src = String(params.src ?? '');
-    if (new RegExp(`^${LOCAL_WEB_PAGE_SCHEME}://[^/]+/`, 'i').test(src)) {
+    if (isLocalWebPageUrl(src)) {
       try {
         // A restored Browser tab can hit the protocol before the renderer has
         // had a chance to call createLocalPageUrl again. Hydrate its registry
@@ -819,7 +860,7 @@ function createWindow(): void {
       !/^https?:\/\//i.test(src) &&
       src !== 'about:blank' &&
       !/^data:text\/html(;|,)/i.test(src) &&
-      !new RegExp(`^${LOCAL_WEB_PAGE_SCHEME}://[^/]+/`, 'i').test(src)
+      !isLocalWebPageUrl(src)
     ) {
       event.preventDefault();
     }
@@ -899,6 +940,8 @@ function getDesktopRuntimeIdentity(): DesktopRuntimeIdentity {
   return desktopRuntimeIdentity;
 }
 
+
+
 async function initializeDesktopRuntimeIdentity(): Promise<void> {
   const userDataPath = app.getPath('userData');
   const secretStore = app.isPackaged
@@ -940,6 +983,7 @@ function sendRuntimeEventToRenderer(event: Event): void {
 
 function sendRuntimeEventsToRenderer(events: readonly Event[]): void {
   if (events.length === 0) return;
+  conversationNotifications.ingest(events);
   const window = mainWindow;
   const location = trustedRendererLocation;
   if (!window || !location || window.isDestroyed()) return;
@@ -1259,6 +1303,7 @@ function stageAppendMessageImages(value: unknown): StagedAppendMessagePayload {
     };
     if (typeof image.stagingPath === 'string' && image.stagingPath.length > 0) {
       const next = {
+        id: image.id,
         name: image.name || 'image',
         mimeType: image.mimeType || 'image/png',
         stagingPath: image.stagingPath,
@@ -1287,6 +1332,7 @@ function stageAppendMessageImages(value: unknown): StagedAppendMessagePayload {
         stagingPath: staged.stagingPath,
       });
       const next = {
+        id: image.id,
         name: staged.name,
         mimeType: staged.mimeType,
         stagingPath: staged.stagingPath,
@@ -1339,6 +1385,10 @@ function installPiKernel(): Promise<KernelInstallResult> {
 
 function setupRuntimeBridge(): void {
   registerContextMenuHandlers({ ipcMain, assertSource: assertRuntimeIpcSource, clipboard });
+  ipcMain.handle('desktop:conversation-notification-preferences', (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    conversationNotifications.setPreferences(parseConversationNotificationPreferences(value));
+  });
   ipcMain.handle('desktop:update-get-state', (event) => {
     assertRuntimeIpcSource(event);
     return getDesktopUpdateController().getSnapshot();
@@ -1406,7 +1456,7 @@ function setupRuntimeBridge(): void {
     }
   });
 
-  // Create a NewMax-compatible token URL for a saved project HTML document.
+  // Create a branded token URL for a saved project HTML document.
   // The handler is installed on the same partition as the eventual BrowserPanel
   // so relative assets stay available without exposing arbitrary file:// paths.
   ipcMain.handle('desktop:create-local-page-url', async (event, value: unknown) => {
@@ -1437,7 +1487,8 @@ function setupRuntimeBridge(): void {
   ipcMain.handle('runtime:collaboration-command', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);
     await ensureRuntimeConnection();
-    return getRuntimeClient().requestCollaboration(value as import('@sync-think/shared').CollaborationCommand);
+    const staged = stageAppendMessageImages(value);
+    return getRuntimeClient().requestCollaboration(staged.payload as import('@sync-think/shared').CollaborationCommand);
   });
   registerPolicyHandlers({
     handle: (channel, listener) => ipcMain.handle(channel, listener),
@@ -1917,6 +1968,61 @@ function setupRuntimeBridge(): void {
       };
     }
   });
+  const browserDataService = new BrowserDataService({
+    vaultPath: path.join(app.getPath('userData'), 'browser', 'passwords.encrypted'),
+    encryption: safeStorage,
+    getGuest: id => webContents.fromId(id),
+    chooseImportFile: async () => {
+      const result = await dialog.showOpenDialog({
+        title: '导入 Cookie 和密码', properties: ['openFile'],
+        filters: [{ name: '密码 CSV / Cookie JSON', extensions: ['csv', 'json'] }],
+      });
+      return result.canceled ? undefined : result.filePaths[0];
+    },
+  });
+  ipcMain.handle('desktop:browser-data', (event, value: import('../browser-data.js').BrowserDataRequest) => {
+    assertRuntimeIpcSource(event);
+    return browserDataService.handle(event.sender.id, value);
+  });
+  // Ad / tracker blocking for the embedded browser profile. NewMax resolves the
+  // config in the Renderer and sends it here, where one onBeforeRequest
+  // listener per session enforces it.
+  const browserContentBlocking = createContentBlockingService();
+  ipcMain.handle('desktop:browser-content-blocking', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    let request: import('../browser-content-blocking.js').EmbeddedBrowserContentBlockingRequest;
+    try {
+      request = parseEmbeddedBrowserContentBlockingRequest(value);
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : '浏览器内容拦截参数无效' };
+    }
+    const { webContents: webContentsModule } = await import('electron');
+    const guest = webContentsModule.fromId(request.webContentsId);
+    if (!guest || guest.isDestroyed()) return { ok: false, error: '浏览器页面已关闭' };
+    if (guest.getType() !== 'webview' || guest.hostWebContents !== event.sender) {
+      return { ok: false, error: '浏览器页面不属于当前窗口' };
+    }
+    const config = { enabled: request.enabled, allowedHosts: request.allowedHosts };
+    browserContentBlocking.configure(guest.session as unknown as ContentBlockingSession, config);
+    return { ok: true, config };
+  });
+  // Open the shared downloads directory; NewMax exposes the same action in the
+  // embedded browser menu.
+  ipcMain.handle('desktop:browser-open-downloads', async (event) => {
+    assertRuntimeIpcSource(event);
+    const downloads = app.getPath('downloads');
+    const error = await shell.openPath(downloads);
+    return error ? { ok: false, error } : { ok: true, path: downloads };
+  });
+  ipcMain.handle('desktop:browser-session-info', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    const id = (value as { webContentsId?: unknown } | null)?.webContentsId;
+    if (typeof id !== 'number' || !Number.isInteger(id)) throw new Error('Invalid browser guest id');
+    const { webContents } = await import('electron');
+    const guest = webContents.fromId(id);
+    if (!guest || guest.isDestroyed()) throw new Error('Browser guest is not ready');
+    return embeddedBrowserSessionInfo(guest, event.sender.id);
+  });
   registerSkillHandlers({
     handle: (channel, listener) => ipcMain.handle(channel, listener),
     assertSource: assertRuntimeIpcSource,
@@ -1924,6 +2030,7 @@ function setupRuntimeBridge(): void {
     requestSkill: (command, payload, options) =>
       getRuntimeClient().requestSkill(command, payload, options),
   });
+
   registerMcpRegistryHandlers({
     handle: (channel, listener) => ipcMain.handle(channel, listener),
     assertSource: assertRuntimeIpcSource,
@@ -2692,6 +2799,11 @@ function setupRuntimeBridge(): void {
     return readProjectFile({ root: payload.root, path: payload.path });
   });
 
+  ipcMain.handle('desktop:read-project-image', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    return readProjectImage(value);
+  });
+
   ipcMain.handle('desktop:write-project-file', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);
     if (value === null || typeof value !== 'object' || Array.isArray(value)) {
@@ -2866,6 +2978,10 @@ void app
   .whenReady()
   .then(async () => {
     await initializeDesktopRuntimeIdentity();
+
+
+
+
     prepareDesktopUpdateInstallProbeCertificate();
     initializeDesktopUpdater();
     protocol.handle('sync-think-image', async (request) => {
@@ -3045,6 +3161,7 @@ function shutdownDesktopServices(reason: DesktopShutdownReason = 'desktop-exit')
 }
 
 app.on('before-quit', (event) => {
+
   // Mark the quit as real before anything can re-enter the close handler.
   isQuitting = true;
   if (registeredQuickWindowShortcut) {

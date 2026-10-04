@@ -310,6 +310,8 @@ export function selectLatestRunConnectionStatus(input: {
     if (event.type === 'run.retrying' || event.type === 'run.fallback.selected') {
       if (!event.runId || (input.activeRunId && event.runId !== input.activeRunId)) continue;
 
+      const failurePrefix = event.payload.failureClass === 'timeout' || /provider\.timeout/i.test(String(event.payload.errorMessage ?? ''))
+        ? '模型请求超时；' : '';
       if (event.type === 'run.retrying') {
         const attempt =
           typeof event.payload.attempt === 'number' && Number.isFinite(event.payload.attempt)
@@ -323,7 +325,7 @@ export function selectLatestRunConnectionStatus(input: {
         status = {
           id: `run-connection-${String(event.id)}`,
           runId: event.runId,
-          text: `正在重新连接 ${attempt}/${maxAttempts}`,
+          text: `${failurePrefix}正在重新连接 ${attempt}/${maxAttempts}`,
           timestamp: event.occurredAt,
           sequence: event.sequence,
         };
@@ -347,7 +349,7 @@ export function selectLatestRunConnectionStatus(input: {
       status = {
         id: `run-connection-${String(event.id)}`,
         runId: event.runId,
-        text: `正在切换备用模型：${fromModel} → ${toModel}`,
+        text: `${failurePrefix}正在切换备用模型：${fromModel} → ${toModel}`,
         timestamp: event.occurredAt,
         sequence: event.sequence,
       };

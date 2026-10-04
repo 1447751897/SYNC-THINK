@@ -3854,7 +3854,14 @@ export interface ConversationGetContextStatusResponse {
   contextWindowEstimated?: boolean;
   estimatedUsedTokens: number;
   usageRatio: number;
-  compactThreshold: 0.7;
+  /** Effective soft trigger; capped by output/safety reserves. */
+  compactThreshold: number;
+  measurement?: { source: 'estimate' | 'provider-calibrated'; estimatedTokens: number; providerInputTokens?: number };
+  budget?: {
+    contextWindow: number; reservedOutputTokens: number; safetyMarginTokens: number;
+    fixedInputTokens: number; availableInputTokens: number; availableHistoryTokens: number;
+    compactTriggerTokens: number; retainedTailTokens: number;
+  };
   compactedAt?: string;
   sections: ContextStatusSection[];
 }
@@ -4338,6 +4345,8 @@ export interface ConversationDecideToolApprovalPayload {
   decision: 'approve' | 'deny';
   /** Omitted by legacy clients and normalized to once by Runtime. */
   scope?: ToolApprovalScope;
+  /** Human-only narrowing of create_skill/update_skill, validated against the pending source. */
+  excludedSkillTools?: string[];
 }
 
 export interface ConversationDecideToolApprovalResponse {
@@ -4779,6 +4788,7 @@ export interface BrowserWorkflowRunSummary {
 }
 
 export interface BrowserWorkflowScheduleSummary {
+  variables?: Record<string, string>;
   taskId: string;
   enabled: boolean;
   intervalMinutes: number;
@@ -4789,6 +4799,7 @@ export interface BrowserWorkflowScheduleSummary {
 }
 
 export interface UpdateBrowserWorkflowSchedulePayload {
+  variables?: Record<string, string>;
   taskId: string;
   enabled: boolean;
   intervalMinutes: number;
@@ -4810,6 +4821,10 @@ export type BrowserHandoffReason =
   'login' | 'captcha' | 'payment' | 'device-confirmation' | 'manual';
 
 export interface BrowserHandoffSummary {
+  /** Scheduled model/agent login yield; group handoffs use conversationId. */
+  scheduledTaskId?: string;
+  profileId?: string;
+  conversationId?: string;
   handoffId: string;
   revision: 1;
   workspaceId: WorkspaceId;
@@ -4829,6 +4844,7 @@ export interface BrowserHandoffSummary {
 }
 
 export interface ListWaitingBrowserHandoffsPayload {
+  conversationId?: string;
   workspaceId?: WorkspaceId;
   runId?: RunId;
 }
@@ -4904,7 +4920,7 @@ export interface ContinueBrowserHandoffResponse {
   handoffId: string;
   replayed: boolean;
   runId: RunId;
-  stepId: StepId;
+  stepId?: StepId;
 }
 
 export interface CancelBrowserHandoffPayload {
@@ -5036,6 +5052,8 @@ export interface GoalResumeResponse {
 // @sync-think/shared 的 scheduled-task。
 
 export interface CreateScheduledTaskPayload {
+  /** Bind trigger to an existing group instead of a separate legacy Team run. */
+  collaborationConversationId?: string;
   name: string;
   instruction: string;
   target: import('@sync-think/shared').ScheduledTaskTarget;
@@ -5046,6 +5064,8 @@ export interface CreateScheduledTaskPayload {
   workspaceId?: string;
   /** 触发时注入的 skill 版本 id（缺省 = 不注入）。 */
   skillVersionIds?: string[];
+  /** Explicit expected capabilities; omission keeps legacy behavior. */
+  automation?: import('@sync-think/shared').ScheduledTaskAutomation;
   /** 单次/首次触发时间（UTC 绝对时刻）；缺省按规则推算。 */
   nextRunAt?: string;
 }
@@ -5075,6 +5095,8 @@ export interface UpdateScheduledTaskPayload {
     workspaceId: string | null;
     /** null = 清空 skill 注入。 */
     skillVersionIds: string[] | null;
+    /** Replaces all bindings; omission preserves them, null clears them. */
+    automation: import('@sync-think/shared').ScheduledTaskAutomation | null;
     nextRunAt: string | null;
   }>;
 }

@@ -11,6 +11,7 @@ import {
   SqliteCollaborationStore,
   SqliteGlobalAgentStore,
   SqliteWorkspaceStore,
+  SqliteTeamStore,
 } from '@sync-think/storage';
 import type { AgentId, ModelId, WorkspaceId } from '@sync-think/shared';
 import { Runtime } from './runtime.js';
@@ -38,11 +39,13 @@ async function fixture(provider: FakeProvider = new FakeProvider()) {
   workspaceStore.createWorkspace({ id: 'workspace-1' as WorkspaceId, name: '运行测试', folderPath: directory });
   const agents = new SqliteGlobalAgentStore(connection.raw);
   const agent = agents.create({ id: 'agent-1' as AgentId, name: '执行者', defaultModelId: 'fake-mini' as ModelId });
-  const runtime = new Runtime({ installId: 'collaboration-runtime', allowNoToken: true, workspaceStore, globalAgentStore: agents, stateStore: new SqliteEventCheckpointStore(connection.raw), demoProvider: provider });
-  return { runtime, agent, agents, close: async () => { await runtime.stop(); connection.raw.close(); rmSync(directory, { recursive: true, force: true }); } };
+  const teams = new SqliteTeamStore(connection.raw);
+  const runtime = new Runtime({ teamStore: teams, installId: 'collaboration-runtime', allowNoToken: true, workspaceStore, globalAgentStore: agents, stateStore: new SqliteEventCheckpointStore(connection.raw), demoProvider: provider });
+  return { runtime, agent, agents, teams, close: async () => { await runtime.stop(); connection.raw.close(); rmSync(directory, { recursive: true, force: true }); } };
 }
 
 async function collaborationToolFixture(options: {
+  provider?: FakeProvider;
   execute?: ConstructorParameters<typeof CollaborationChatHost>[1]['execute'];
 } = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'sync-think-collaboration-tools-'));
@@ -71,7 +74,7 @@ async function collaborationToolFixture(options: {
     globalAgentStore: agents,
     stateStore: new SqliteEventCheckpointStore(connection.raw),
     collaborationChatHost: host,
-    demoProvider: new FakeProvider(),
+    demoProvider: options.provider ?? new FakeProvider(),
   });
   const close = async () => {
     await runtime.stop();
@@ -576,7 +579,7 @@ it.each(['reply','task','summary'] as const)('only a direct user reply can manag
   request.attempt.contextSequence=1;
   const result=await f.runtime.executeCollaborationTaskForHost(request);expect(result.error).toBeUndefined();
   const names=call.mock.calls[0][0].tools?.map(t=>t.name)??[];
-  expect(names.includes('create_agent')).toBe(kind==='reply');expect(names).not.toContain('update_agent');if(kind==='reply') expect(names).not.toContain('write_file');
+  expect(names.includes('create_agent')).toBe(kind==='reply');expect(names.includes('update_agent')).toBe(kind==='reply');if(kind==='reply') expect(names).not.toContain('write_file');
  }finally{await f.close();}
 });
 it('execution guard rejects autonomous creation and management-round delegation even for unadvertised calls',async()=>{
@@ -589,13 +592,13 @@ it('execution guard rejects autonomous creation and management-round delegation 
  const {run}=internal.prepareRunBinding({runId:'intent-guard',threadId:'intent-thread',userText:'修复代码',globalAgentId:f.agent.id});
  const result=JSON.parse(await internal.executeChatAgentTool({run,toolCall:{id:'auto-create',name:'create_agent',argumentsJson:'{}'},args:{name:'偷偷创建的助手'}}));
  expect(result.ok).toBe(false);expect(f.agents.list().some(a=>a.name==='偷偷创建的助手')).toBe(false);
- run.userText='帮我创建一个智能体';
+ run.definitionProposalsAllowed=true;run.userText='帮我创建一个智能体';
  const delegated=JSON.parse(await internal.executeDynamicAgentDelegation({run,toolCall:{id:'auto-run',name:'agent_run',argumentsJson:'{}'},workspaceRoot:'.',signal:new AbortController().signal}));
  expect(delegated.ok).toBe(false);expect(delegated.error).toContain('不自动启动');
  }finally{await f.close();}
 });
 
-it.each(['create_agent','update_agent'])('never reuses remembered approval for %s and exposes only once scope',async name=>{
+it.each(['create_agent','update_agent','create_team','update_team','delete_team'])('never reuses remembered approval for %s and exposes only once scope',async name=>{
  const f=await fixture();const controller=new AbortController();
  try{
  const internal=f.runtime as unknown as {
@@ -609,4 +612,265 @@ it.each(['create_agent','update_agent'])('never reuses remembered approval for %
  const request=published.mock.calls.find(([event])=>event.type==='tool.approval_requested')?.[0];
  expect(request?.payload.allowedScopes).toEqual(['once']);controller.abort();expect((await waiting).decision).toBe('deny');
  }finally{controller.abort();await f.close();}
+});
+
+it('creates an actual team from agent-chat management tools and rejects accidental or invented members', async () => {
+  const f = await fixture();
+  try {
+    const internal = f.runtime as unknown as { prepareRunBinding(input: object): { run: import('./demo-run.js').DemoRunState }; executeChatTeamTool(input: object): string; recordDefinitionApproval(run: import('./demo-run.js').DemoRunState, call: import('@sync-think/adapters').ProviderToolCall): void };
+    const { run } = internal.prepareRunBinding({ runId: 'team-create', threadId: 'team-chat', userText: '帮我用现有智能体创建一个测试小队', globalAgentId: f.agent.id, definitionProposalsAllowed: true });
+    const startRun = vi.spyOn(f.teams, 'startRun');
+    const toolCall = { id: 'team-tool', name: 'create_team', argumentsJson: JSON.stringify({ name: '聊天创建的小队', coordinatorAgent: f.agent.id, members: [{ agent: f.agent.id, title: '负责人' }] }) };
+    expect(JSON.parse(internal.executeChatTeamTool({ run, toolCall })).error).toContain('fresh_confirmation_required');
+    internal.recordDefinitionApproval(run, toolCall);
+    const result = JSON.parse(internal.executeChatTeamTool({ run, toolCall }));
+    expect(result.ok).toBe(true);
+    const saved = f.teams.get(result.team.id);
+    expect(saved?.members[0].agentId).toBe(f.agent.id);
+    expect(saved?.coordinatorAgentId).toBe(f.agent.id);
+    expect(startRun).not.toHaveBeenCalled();
+    expect(JSON.parse(internal.executeChatTeamTool({ run, toolCall })).error).toContain('fresh_confirmation_required');
+    const invalidCall = { ...toolCall, id: 'invalid-member', argumentsJson: JSON.stringify({ name: '错误成员队', members: [{ agent: 'invented-id' }] }) };
+    internal.recordDefinitionApproval(run, invalidCall);
+    const invalid = JSON.parse(internal.executeChatTeamTool({ run, toolCall: invalidCall }));
+    expect(invalid.ok).toBe(false); expect(f.teams.list()).toHaveLength(1);
+    run.userText = '帮我写小说';
+    expect(JSON.parse(internal.executeChatTeamTool({ run, toolCall })).ok).toBe(false);
+    expect(f.teams.list()).toHaveLength(1);
+  } finally { await f.close(); }
+});
+
+it.each(['帮我创建一个测试小队，复用执行者，并创建一个编辑智能体加入新小队', '帮我创建一个team，复用执行者，并创建一个编辑agent加入新team', '那按刚才我们说的，我要一个分析项目的team，你帮我创建吧，如果有不懂的，或者有哪里有疑惑，我们要先讨论', '按刚才的方案创建吧'])('completes agent + team creation through an actual tool loop with separate confirmations: %s', async text => {
+  class TeamBuilder extends FakeProvider {
+    round = 0;
+    newAgentId = '';
+    override async *call(request: Parameters<FakeProvider['call']>[0]) {
+      const round = this.round++;
+      const names = request.tools?.map(tool => tool.name) ?? [];
+      expect(names).toContain('create_team'); expect(names).toContain('create_agent');
+      expect(names).not.toContain('agent_run'); expect(names).not.toContain('collaboration_dispatch_tasks');
+      const toolResults = request.messages?.filter(message => message.role === 'tool') ?? [];
+      const latest = toolResults.at(-1)?.content;
+      const result = typeof latest === 'string' ? JSON.parse(latest) : undefined;
+      let call: { name: string; args: object };
+      if (round === 0) call = { name: 'list_agent_resources', args: {} };
+      else if (round === 1) { expect(result.ok).toBe(true); call = { name: 'list_teams', args: {} }; }
+      else if (round === 2) { expect(result.ok).toBe(true); call = { name: 'create_agent', args: { name: '聊天创建的编辑', persona: '校对与审稿' } }; }
+      else if (round === 3) {
+        expect(result.ok).toBe(true); this.newAgentId = result.agent.id;
+        call = { name: 'create_team', args: { name: '聊天建队端到端验收', coordinatorAgent: 'agent-1', members: [{ agent: 'agent-1', title: '负责人' }, { agent: this.newAgentId, title: '编辑', dependsOn: ['agent-1'] }] } };
+      } else {
+        expect(result.ok).toBe(true);
+        yield { type: 'text-delta' as const, text: '智能体和小队已保存，没有启动工作。' };
+        yield { type: 'finished' as const, reason: 'stop' as const }; return;
+      }
+      yield { type: 'tool-call' as const, toolCall: { id: `builder-${round}`, name: call.name, argumentsJson: JSON.stringify(call.args) } };
+      yield { type: 'finished' as const, reason: 'tool-requests' as const };
+    }
+  }
+  const provider = new TeamBuilder(); const f = await fixture(provider);
+  try {
+    const internal = f.runtime as unknown as { requestChatToolApproval(input: unknown): Promise<unknown> };
+    const approvals = vi.spyOn(internal, 'requestChatToolApproval').mockResolvedValue({ decision: 'approve', approvalId: 'explicit-test-confirmation' });
+    const request = input(f.agent.id, 'team-builder-reply', new AbortController().signal, () => {});
+
+    request.task.kind = 'reply'; request.task.instructions = text;
+    request.snapshot.members.push({ id: 'user:local', kind: 'user', name: '你', avatar: '', role: '用户', active: true });
+    request.snapshot.messages.push({ id: 'message-1', conversationId: request.snapshot.conversation.id, senderMemberId: 'user:local', recipientMemberIds: [request.task.assigneeMemberId], mentions: [], kind: 'chat', blocks: [{ type: 'text', text }], expectsResponse: true, correlationId: 'builder', hopCount: 0, sequence: 1, createdAt: new Date().toISOString() });
+    request.attempt.contextSequence = 1;
+    const result = await f.runtime.executeCollaborationTaskForHost(request);
+    expect(result.error).toBeUndefined(); expect(result.output).toContain('已保存');
+    expect(approvals).toHaveBeenCalledTimes(2);
+    expect(f.agents.get(provider.newAgentId)?.name).toBe('聊天创建的编辑');
+    expect(f.agents.get(provider.newAgentId)?.avatar).toBe('bot:v1:clover:preset');
+    expect(f.teams.list()).toHaveLength(1);
+    expect(f.teams.list()[0].members.map(member => member.agentId)).toEqual(['agent-1', provider.newAgentId]);
+    expect(f.teams.list()[0].members[1].dependsOn).toEqual(['agent-1']);
+  } finally { await f.close(); }
+});
+
+it.each(['你现在不能创建team嘛？', '能创建team？'])('answers capability inquiries using a stable proposal catalog without configuration writes: %s', async text => {
+  class CapabilityInspector extends FakeProvider {
+    round = 0;
+    override async *call(request: Parameters<FakeProvider['call']>[0]) {
+      const names = request.tools?.map(tool => tool.name) ?? [];
+      expect(names).toContain('list_agent_resources'); expect(names).toContain('list_teams');
+      for (const name of ['create_agent', 'update_agent', 'create_team', 'update_team', 'delete_team']) expect(names).toContain(name);
+      for (const name of ['agent_run', 'agent_delegate', 'collaboration_dispatch_tasks']) expect(names).not.toContain(name);
+      expect(request.systemPrompt).toContain('当前宿主也支持 list_teams/create_team');
+      expect(request.systemPrompt).toContain('不依赖动态派工开关');
+      expect(request.systemPrompt).toContain('能力询问只提供资源查询');
+      const round = this.round++;
+      if (round > 0) {
+        const latest = request.messages?.filter(message => message.role === 'tool').at(-1)?.content;
+        expect(typeof latest === 'string' ? JSON.parse(latest).ok : false).toBe(true);
+      }
+      if (round < 2) {
+        yield { type: 'tool-call' as const, toolCall: { id: `inspect-${round}`, name: round === 0 ? 'list_agent_resources' : 'list_teams', argumentsJson: '{}' } };
+        yield { type: 'finished' as const, reason: 'tool-requests' as const }; return;
+      }
+      yield { type: 'text-delta' as const, text: '支持创建小队。明确名称和成员后，我会提交配置让你确认。' };
+      yield { type: 'finished' as const, reason: 'stop' as const };
+    }
+  }
+  const provider = new CapabilityInspector(); const f = await fixture(provider);
+  try {
+    const internal = f.runtime as unknown as { requestChatToolApproval(input: unknown): Promise<unknown>; prepareRunBinding(input: object): { run: import('./demo-run.js').DemoRunState }; executeChatTeamTool(input: object): string; executeChatAgentTool(input: object): Promise<string> };
+    const approvals = vi.spyOn(internal, 'requestChatToolApproval');
+    const request = input(f.agent.id, 'capability-inquiry', new AbortController().signal, () => {});
+    request.task.kind = 'reply'; request.task.instructions = text;
+    request.snapshot.members.push({ id: 'user:local', kind: 'user', name: '你', avatar: '', role: '用户', active: true });
+    request.snapshot.messages.push({ id: 'message-1', conversationId: request.snapshot.conversation.id, senderMemberId: 'user:local', recipientMemberIds: [request.task.assigneeMemberId], mentions: [], kind: 'chat', blocks: [{ type: 'text', text }], expectsResponse: true, correlationId: 'inspect', hopCount: 0, sequence: 1, createdAt: new Date().toISOString() });
+    request.attempt.contextSequence = 1;
+    const result = await f.runtime.executeCollaborationTaskForHost(request);
+    expect(result.error).toBeUndefined(); expect(result.output).toContain('支持创建小队');
+    expect(provider.round).toBe(3); expect(approvals).not.toHaveBeenCalled();
+    // Even a fabricated call in a private chat stays behind the execution fence.
+    const { run } = internal.prepareRunBinding({ runId: 'inspection-guard', threadId: 'inspection-thread', userText: text, globalAgentId: f.agent.id, track: 'agent', definitionProposalsAllowed: true });
+    expect(JSON.parse(internal.executeChatTeamTool({ run, toolCall: { id: 'bad-team', name: 'create_team', argumentsJson: JSON.stringify({ name: '不应保存', members: [{ agent: f.agent.id }] }) } })).ok).toBe(false);
+    expect(JSON.parse(await internal.executeChatAgentTool({ run, toolCall: { id: 'bad-agent', name: 'create_agent', argumentsJson: '{}' }, args: { name: '不应保存' } })).ok).toBe(false);
+    expect(f.agents.list()).toHaveLength(1); expect(f.teams.list()).toHaveLength(0);
+  } finally { await f.close(); }
+});
+
+it('builds the real private-agent context for the exact user capability question', async () => {
+  const f = await fixture();
+  try {
+    const internal = f.runtime as unknown as { prepareRunBinding(input: object): { run: import('./demo-run.js').DemoRunState }; buildDefaultProviderContextSnapshot(run: import('./demo-run.js').DemoRunState, options: object): { providerRequest: { systemPrompt: string; tools: Array<{ name: string }> } } };
+    const text = '你现在不能创建team嘛？';
+    const { run } = internal.prepareRunBinding({ runId: 'private-capability', threadId: 'private-thread', userText: text, globalAgentId: f.agent.id, track: 'agent', definitionProposalsAllowed: true });
+    const { providerRequest } = internal.buildDefaultProviderContextSnapshot(run, { messages: [{ role: 'user', content: text }], toolsEnabled: true, executionMode: 'full-access', networkEnabled: false });
+    const names = providerRequest.tools.map(tool => tool.name);
+    expect(names).toContain('list_agent_resources'); expect(names).toContain('list_teams');
+    expect(names).toContain('create_team'); expect(names).toContain('create_agent');
+    expect(providerRequest.systemPrompt).toContain('当前宿主也支持 list_teams/create_team');
+    expect(providerRequest.systemPrompt).toContain('历史回复中的旧工具清单可能已过期');
+  } finally { await f.close(); }
+});
+
+
+it.each(['现在呢？', '按刚才的方案创建吧', '那按刚才我们说的，我要一个分析项目的team，你帮我创建吧，如果有不懂的，或者有哪里有疑惑，我们要先讨论'])('keeps the actual private-agent proposal catalog stable: %s', async text => {
+  const f = await fixture();
+  try {
+    const internal = f.runtime as unknown as { prepareRunBinding(input: object): { run: import('./demo-run.js').DemoRunState }; buildDefaultProviderContextSnapshot(run: import('./demo-run.js').DemoRunState, options: object): { providerRequest: { tools?: Array<{ name: string }> } } };
+    const { run } = internal.prepareRunBinding({ runId: 'stable-private', threadId: 'stable-thread', userText: text, globalAgentId: f.agent.id, track: 'agent', definitionProposalsAllowed: true });
+    const names = internal.buildDefaultProviderContextSnapshot(run, { messages: [{ role: 'user', content: text }], toolsEnabled: true, executionMode: 'full-access', networkEnabled: false }).providerRequest.tools?.map(tool => tool.name) ?? [];
+    expect(names).toContain('list_agent_resources'); expect(names).toContain('list_teams'); expect(names).toContain('create_agent'); expect(names).toContain('create_team');
+  } finally { await f.close(); }
+});
+
+it.each(['background', 'delegated', 'planning'] as const)('never broadens a %s run into a definition proposer', async scope => {
+  const f = await fixture();
+  try {
+    const internal = f.runtime as unknown as { prepareRunBinding(input: object): { run: import('./demo-run.js').DemoRunState }; canProposeAgentDefinitions(run: import('./demo-run.js').DemoRunState): boolean; buildDefaultProviderContextSnapshot(run: import('./demo-run.js').DemoRunState, options: object): { providerRequest: { tools?: Array<{ name: string }> } } };
+    const { run } = internal.prepareRunBinding({ runId: 'restricted', threadId: 'restricted-thread', userText: '帮我创建一个team', globalAgentId: f.agent.id, track: 'agent', definitionProposalsAllowed: scope !== 'background' });
+    if (scope === 'delegated') run.delegationParentRunId = 'parent' as never;
+    if (scope === 'planning') run.planningMode = true;
+    expect(internal.canProposeAgentDefinitions(run)).toBe(false);
+    const names = internal.buildDefaultProviderContextSnapshot(run, { messages: [{ role: 'user', content: run.userText }], toolsEnabled: true, executionMode: 'full-access', networkEnabled: false }).providerRequest.tools?.map(tool => tool.name) ?? [];
+    for (const tool of ['create_agent', 'update_agent', 'create_team', 'update_team', 'delete_team']) expect(names).not.toContain(tool);
+  } finally { await f.close(); }
+});
+
+
+it.each(['approve', 'deny'] as const)('external MCP definition proposals honor fresh %s confirmation', async decision => {
+  const f = await fixture();
+  try {
+    const { buildPlatformMcpToolDefinitions } = await import('./kernel/platform-tools.js');
+    const internal = f.runtime as unknown as {
+      prepareRunBinding(input: object): { run: import('./demo-run.js').DemoRunState };
+      demoRuns: Map<string, import('./demo-run.js').DemoRunState>;
+      platformMcpRuns: { setCatalog(runId: string, tools: unknown): void };
+      requestPlatformToolApproval(...args: unknown[]): Promise<'approve' | 'deny'>;
+      executePlatformMcpToolCall(...args: unknown[]): Promise<{ ok: boolean; content?: string }>;
+    };
+    const { run } = internal.prepareRunBinding({ runId: 'external-proposal', threadId: 'external-thread', userText: '我要一个分析项目的team，你帮我创建吧', globalAgentId: f.agent.id, track: 'agent', definitionProposalsAllowed: true });
+    internal.demoRuns.set(run.runId, run);
+    internal.platformMcpRuns.setCatalog(run.runId, buildPlatformMcpToolDefinitions({ includeTeamTools: true }));
+    const approval = vi.spyOn(internal, 'requestPlatformToolApproval').mockResolvedValue(decision);
+    const start = vi.spyOn(f.teams, 'startRun');
+    const args = { name: 'MCP建队', coordinatorAgent: f.agent.id, members: [{ agent: f.agent.id }] };
+    const result = await internal.executePlatformMcpToolCall(run.runId, run, '.', { id: 'external-create', tool: 'create_team', input: args, signal: new AbortController().signal }, JSON.stringify(args));
+    expect(approval).toHaveBeenCalledTimes(1); expect(result.ok).toBe(decision === 'approve');
+    expect(f.teams.list()).toHaveLength(decision === 'approve' ? 1 : 0); expect(start).not.toHaveBeenCalled();
+  } finally { await f.close(); }
+});
+
+
+it('creates a team through the actual private native loop for the original noun-before-verb request', async () => {
+  class PrivateTeamBuilder extends FakeProvider {
+    round = 0;
+    override async *call(request: Parameters<FakeProvider['call']>[0]) {
+      expect(request.tools?.map(tool => tool.name)).toContain('create_team');
+      const round = this.round++;
+      if (round === 0) {
+        yield { type: 'tool-call' as const, toolCall: { id: 'private-resources', name: 'list_agent_resources', argumentsJson: '{}' } };
+      } else if (round === 1) {
+        yield { type: 'tool-call' as const, toolCall: { id: 'private-create', name: 'create_team', argumentsJson: JSON.stringify({ name: '原句私聊建队验收', coordinatorAgent: 'agent-1', members: [{ agent: 'agent-1' }] }) } };
+      } else {
+        const content = request.messages?.filter(message => message.role === 'tool').at(-1)?.content;
+        expect(typeof content === 'string' ? JSON.parse(content).ok : false).toBe(true);
+        yield { type: 'text-delta' as const, text: '小队配置已保存。' };
+        yield { type: 'finished' as const, reason: 'stop' as const }; return;
+      }
+      yield { type: 'finished' as const, reason: 'tool-requests' as const };
+    }
+  }
+  const provider = new PrivateTeamBuilder(); const f = await fixture(provider);
+  try {
+    const internal = f.runtime as unknown as {
+      prepareRunBinding(input: object): { run: import('./demo-run.js').DemoRunState };
+      demoRuns: Map<string, import('./demo-run.js').DemoRunState>;
+      requestChatToolApproval(input: unknown): Promise<unknown>;
+      executeKernelRun(runId: string): Promise<void>;
+    };
+    const { run } = internal.prepareRunBinding({ runId: 'original-private-create', threadId: 'original-private-thread', userText: '那按刚才我们说的，我要一个分析项目的team，你帮我创建吧，如果有不懂的，或者有哪里有疑惑，我们要先讨论', globalAgentId: f.agent.id, track: 'agent', definitionProposalsAllowed: true });
+    internal.demoRuns.set(run.runId, run);
+    const approvals = vi.spyOn(internal, 'requestChatToolApproval').mockResolvedValue({ decision: 'approve', approvalId: 'private-explicit-confirmation' });
+    const start = vi.spyOn(f.teams, 'startRun');
+    await internal.executeKernelRun(run.runId);
+    expect(provider.round).toBe(3); expect(approvals).toHaveBeenCalledTimes(1);
+    expect(f.teams.list()).toHaveLength(1); expect(f.teams.list()[0].members[0].agentId).toBe(f.agent.id);
+    expect(start).not.toHaveBeenCalled();
+  } finally { await f.close(); }
+});
+
+
+it('archives an already-generated document at the output budget boundary without admitting new work', async () => {
+  class BudgetBoundary extends FakeProvider {
+    rounds = 0;
+    override async *call(request: Parameters<FakeProvider['call']>[0]) {
+      if (this.rounds++ === 0) {
+        yield { type: 'usage' as const, tokensIn: 1, tokensOut: 64000, costEstimate: 0 };
+        yield { type: 'tool-call' as const, toolCall: { id: 'finished-document', name: 'collaboration_submit_artifact', argumentsJson: JSON.stringify({ content: 'The completed document, already generated before the budget boundary.' }) } };
+        yield { type: 'tool-call' as const, toolCall: { id: 'excess-finalization', name: 'collaboration_submit_artifact', argumentsJson: JSON.stringify({ content: 'Should not replace the archived document after the single reserve is used.' }) } };
+        yield { type: 'tool-call' as const, toolCall: { id: 'new-read', name: 'collaboration_read_context', argumentsJson: JSON.stringify({ kind: 'members' }) } };
+        yield { type: 'finished' as const, reason: 'tool-requests' as const }; return;
+      }
+      const results = request.messages.filter(m => m.role === 'tool').map(m => JSON.parse(String(m.content)));
+      expect(results).toEqual(expect.arrayContaining([expect.objectContaining({ ok: true, artifact: expect.objectContaining({ title: 'delivery' }) }), expect.objectContaining({ ok: false, code: 'EXECUTION_BUDGET_EXHAUSTED' })]));
+      yield { type: 'text-delta' as const, text: 'Document archived; further operations stopped.' };
+      yield { type: 'finished' as const, reason: 'stop' as const };
+    }
+  }
+  const provider = new BudgetBoundary(); let f: Awaited<ReturnType<typeof collaborationToolFixture>>;
+  f = await collaborationToolFixture({ provider, execute: request => f.runtime.executeCollaborationTaskForHost(request) });
+  try {
+    const created = f.host.command({ action: 'create', kind: 'group', clientRequestId: 'budget-room', title: 'budget', workspaceId: f.workspace.id, agentIds: [f.agent.id, f.peer.id], coordinatorAgentId: f.peer.id }).snapshot!;
+    f.host.command({ action: 'room-brief', conversationId: created.conversation.id, clientRequestId: 'budget-goal', goal: 'one document', expectedGoalRevision: 0 });
+    const dispatched = f.host.command({ action: 'dispatch', conversationId: created.conversation.id, clientRequestId: 'budget-job', tasks: [{ assigneeMemberId: 'agent:' + f.agent.id, title: 'delivery', instructions: 'deliver the document', deliverable: { kind: 'document', title: 'delivery' } }] }).snapshot!;
+    let snapshot = dispatched;
+    for (let i = 0; i < 150; i++) {
+      snapshot = f.host.command({ action: 'get', conversationId: created.conversation.id }).snapshot!;
+      if (snapshot.attempts.find(a => a.id === dispatched.tasks[0].currentAttemptId)?.status === 'succeeded') break;
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    const attempt = snapshot.attempts.find(a => a.id === dispatched.tasks[0].currentAttemptId)!;
+    expect(attempt.status, JSON.stringify(attempt.error)).toBe('succeeded');
+    expect(attempt.artifacts?.[0]?.content).toContain('already generated');
+    expect(attempt.tools.find(t => t.id === 'excess-finalization' || t.name === 'collaboration_submit_artifact' && t.status === 'failed')?.status).toBe('failed');
+    const blocked = attempt.tools.find(t => t.name === 'collaboration_read_context');
+    expect(blocked?.status).toBe('failed');
+    expect(provider.rounds).toBeGreaterThanOrEqual(2);
+  } finally { await f.host.service.stop(); await f.close(); }
 });

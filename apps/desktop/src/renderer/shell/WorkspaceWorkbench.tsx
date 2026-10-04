@@ -55,6 +55,8 @@ export interface WorkspaceWorkbenchProps {
   /** Desktop main chat exposes the existing changes/browser engines as quick views. */
   chatLayout?: boolean;
   scope: WorkbenchScope;
+  /** Hidden conversation guests retain page state without appearing in this tab strip. */
+  retainedBrowserTabs?: WorkbenchTab[];
   /** When false the panel stays mounted at zero size so open/close can animate. */
   open?: boolean;
   focused?: boolean;
@@ -702,10 +704,10 @@ export function WorkspaceWorkbench(props: WorkspaceWorkbenchProps) {
       <div className="shell-workbench__divider" data-pane-tab-divider="true" />
       <div ref={contentRef} className="shell-workbench__content" data-pane-content-area="true">
         <div className="shell-workbench__main">
-          {props.scope.tabs
+          {(props.retainedBrowserTabs ?? props.scope.tabs)
             .filter((tab) => tab.type === 'browser')
             .map((tab) => {
-              const browserActive = !showFilesFull && tab.id === activeTab?.id;
+              const browserActive = open && !showFilesFull && tab.id === activeTab?.id;
               return (
                 <div
                   key={tab.id}

@@ -162,3 +162,32 @@ describe('run process state', () => {
     },
   );
 });
+
+
+describe('stream terminal authority', () => {
+  it.each(['run.paused', 'run.failed', 'run.cancelled'])('immediately projects %s before a healthy transient stream sends its terminal frame', (type) => {
+    const terminal = {
+      runId: 'run-timeout', type, sequence: 10, occurredAt: '2026-10-04T06:39:24Z',
+      payload: { reason: 'no_fallback_configured', failureClass: 'timeout', providerModelId: 'model-a', errorMessage: 'provider.timeout' },
+    } as unknown as Event;
+    const draft = { runId: 'run-timeout', streaming: true, text: '已开始创建文件' };
+    const settled = reconcileStreamingMessageProcessTerminal(draft, undefined, terminal);
+    expect(settled).toMatchObject({ streaming: false, text: draft.text, terminalState: type.slice(4) });
+    if (type !== 'run.cancelled') expect(settled?.terminalError).toContain('provider.timeout');
+  });
+
+  it('recovers a paused reason even if a process snapshot already stopped the spinner', () => {
+    const draft = { runId: 'run-timeout', streaming: false, text: '' };
+    const settled = reconcileStreamingMessageProcessTerminal(draft, undefined, {
+      runId: draft.runId, type: 'run.paused', payload: { failureClass: 'timeout', errorMessage: 'provider.timeout' },
+    } as unknown as Event);
+    expect(settled).toMatchObject({ terminalState: 'paused', terminalError: expect.stringContaining('provider.timeout') });
+  });
+
+  it('does not apply another run terminal to the current draft', () => {
+    const draft = { runId: 'run-current', streaming: true };
+    expect(reconcileStreamingMessageProcessTerminal(draft, undefined, {
+      runId: 'run-old', type: 'run.paused', payload: {},
+    } as unknown as Event)).toBe(draft);
+  });
+});

@@ -5,6 +5,45 @@
 
   "groups": [
     {
+      "id": "task-log",
+      "prefix": "--",
+      "utilities": true,
+      "_note": "BoardUI task-log reference: neutral typography, tree connectors and inline resource chips. Scoped to execution logs.",
+      "tokens": {
+        "color-task-log-focus": ["#2b7fff", "#2b7fff"],
+      "color-task-log-canvas": ["#ffffff", "#121212"],
+      "color-task-log-text": [
+          "#737373",
+          "#737373"
+        ],
+        "color-task-log-primary": [
+          "#0a0a0a",
+          "#fafafa"
+        ],
+        "color-task-log-muted": [
+          "#a3a3a3",
+          "#525252"
+        ],
+        "color-task-log-branch": [
+          "#d4d4d4",
+          "#404040"
+        ],
+        "color-task-log-chip": [
+          "#f7f7f7",
+          "#171717"
+        ],
+        "color-task-log-chip-hover": [
+          "#ebebeb",
+          "#262626"
+        ],
+        "color-task-log-chip-border": [
+          "rgba(235, 235, 235, 0.5)",
+          "rgba(64, 64, 64, 0.5)"
+        ],
+        "color-task-log-react": "#61dafb"
+      }
+    },
+    {
       "id": "legacy-parity",
       "prefix": "--",
       "utilities": true,
@@ -26,6 +65,74 @@
         "label-line-height": "20px",
         "meta-size": "12px",
         "meta-line-height": "18px"
+      }
+    },
+    {
+      "id": "agent-limits",
+      "prefix": "--limits-",
+      "utilities": false,
+      "_note": "Agent limits public-preview parity. Secondary counters deliberately use readable contrast; categories stay distinct independently of the app accent.",
+      "tokens": {
+        "surface": [
+          "#f7f7f7",
+          "#262626"
+        ],
+        "text": [
+          "#171717",
+          "#f5f5f5"
+        ],
+        "secondary": [
+          "#737373",
+          "#b3b3b3"
+        ],
+        "muted": [
+          "#737373",
+          "#a3a3a3"
+        ],
+        "track": [
+          "#ebebeb",
+          "#404040"
+        ],
+        "hover": [
+          "#ebebeb",
+          "#333333"
+        ],
+        "border": [
+          "#e8e8e8",
+          "#404040"
+        ],
+        "messages": [
+          "#3392ff",
+          "#3392ff"
+        ],
+        "tools": [
+          "#c27aff",
+          "#c27aff"
+        ],
+        "mcp": [
+          "#fb64b6",
+          "#fb64b6"
+        ],
+        "skills": [
+          "#ffcc00",
+          "#ffcc00"
+        ],
+        "system": [
+          "#00d492",
+          "#00d492"
+        ],
+        "memory": [
+          "#00bcff",
+          "#00bcff"
+        ],
+        "agents": [
+          "#00cdb8",
+          "#00cdb8"
+        ],
+        "shadow": [
+          "0 4px 16px rgb(0 0 0 / 0.10)",
+          "0 4px 20px rgb(0 0 0 / 0.28)"
+        ]
       }
     },
     {

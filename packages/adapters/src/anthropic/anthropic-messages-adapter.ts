@@ -7,7 +7,8 @@ import { streamAnthropicMessages } from './stream-messages.js';
 
 export interface AnthropicMessagesAdapterOptions {
   fetchImpl?: DiscoverAnthropicModelsOptions['fetchImpl'];
-  timeoutMs?: number;
+  timeoutMs?: number | null;
+  streamIdleTimeoutMs?: number | null;
   anthropicVersion?: string;
 }
 
@@ -25,7 +26,7 @@ export class AnthropicMessagesAdapter implements ProviderAdapter {
       apiKey,
       baseUrl,
       fetchImpl: this.opts.fetchImpl,
-      timeoutMs: this.opts.timeoutMs,
+      timeoutMs: this.opts.timeoutMs ?? undefined,
       anthropicVersion: this.opts.anthropicVersion,
     });
   }
@@ -34,6 +35,7 @@ export class AnthropicMessagesAdapter implements ProviderAdapter {
     yield* streamAnthropicMessages(request, {
       fetchImpl: this.opts.fetchImpl,
       timeoutMs: this.opts.timeoutMs,
+      streamIdleTimeoutMs: this.opts.streamIdleTimeoutMs,
       anthropicVersion: this.opts.anthropicVersion,
     });
   }

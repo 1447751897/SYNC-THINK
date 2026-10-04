@@ -217,7 +217,7 @@ export function BrowserWorkflowPanel(props: BrowserWorkflowPanelProps): JSX.Elem
   );
 
   const updateSchedule = useCallback(
-    async (task: BrowserAutomationTaskSummary, enabled: boolean, intervalMinutes: number) => {
+    async (task: BrowserAutomationTaskSummary, enabled: boolean, intervalMinutes: number, variables?: Record<string, string>) => {
       const detail = detailsByTaskId[task.id];
       setBusyAction(`schedule:${task.id}`);
       try {
@@ -225,6 +225,7 @@ export function BrowserWorkflowPanel(props: BrowserWorkflowPanelProps): JSX.Elem
           taskId: task.id,
           enabled,
           intervalMinutes,
+          ...(variables ? { variables } : {}),
           ...(detail?.schedule ? { expectedRevision: detail.schedule.revision } : {}),
         });
         setFeedback({
@@ -431,8 +432,8 @@ export function BrowserWorkflowPanel(props: BrowserWorkflowPanelProps): JSX.Elem
                 }
                 onOpen={(intent) => void openTask(task, intent)}
                 onExecute={(target) => void openExecute(target)}
-                onSchedule={(enabled, intervalMinutes) =>
-                  void updateSchedule(task, enabled, intervalMinutes)
+                onSchedule={(enabled, intervalMinutes, variables) =>
+                  void updateSchedule(task, enabled, intervalMinutes, variables)
                 }
               />
             ))}
@@ -521,11 +522,14 @@ function WorkflowTaskRow(props: {
   onToggle(): void;
   onOpen(intent: 'view' | 'record' | 'revision'): void;
   onExecute(task: BrowserAutomationTaskSummary): void;
-  onSchedule(enabled: boolean, intervalMinutes: number): void;
+  onSchedule(enabled: boolean, intervalMinutes: number, variables?: Record<string, string>): void;
 }): JSX.Element {
   const { task, detail, busy, scheduleBusy, expanded, onToggle, onOpen, onExecute, onSchedule } =
     props;
   const [intervalMinutes, setIntervalMinutes] = useState(detail?.schedule?.intervalMinutes ?? 60);
+  const [scheduleVariables, setScheduleVariables] = useState<Record<string, string>>(detail?.schedule?.variables ?? {});
+  useEffect(() => setScheduleVariables(detail?.schedule?.variables ?? {}), [detail?.schedule?.variables]);
+  const variableNames = [...new Set(detail?.version?.steps.flatMap(step => (step.kind === 'fill' || step.kind === 'select') && step.value.kind === 'variable' ? [step.value.name] : []) ?? [])];
   useEffect(() => {
     setIntervalMinutes(detail?.schedule?.intervalMinutes ?? 60);
   }, [detail?.schedule?.intervalMinutes]);
@@ -643,7 +647,7 @@ function WorkflowTaskRow(props: {
                   detail?.schedule?.enabled && 'browser-workflow__button--warning',
                 )}
                 disabled={scheduleBusy || intervalMinutes < 5 || intervalMinutes > 10080}
-                onClick={() => onSchedule(!detail?.schedule?.enabled, intervalMinutes)}
+                onClick={() => onSchedule(!detail?.schedule?.enabled, intervalMinutes, scheduleVariables)}
               >
                 {scheduleBusy ? (
                   <LoaderCircle className="animate-spin" size={11} />
@@ -652,6 +656,7 @@ function WorkflowTaskRow(props: {
                 )}
                 {detail?.schedule?.enabled ? '暂停定时' : '启用定时'}
               </button>
+              {variableNames.map(name => <label key={name} className="flex items-center gap-1.5 text-xs">参数 {name}<input className="h-7 max-w-44 rounded-md border border-border bg-elevated px-2 text-xs text-text" aria-label={'定时参数 ' + name} value={scheduleVariables[name] ?? ''} onChange={event => setScheduleVariables(current => ({ ...current, [name]: event.target.value }))} /></label>)}
               {detail?.schedule?.nextRunAt ? (
                 <span className="text-[10.5px] text-text-faint">
                   下次 {new Date(detail.schedule.nextRunAt).toLocaleString()}

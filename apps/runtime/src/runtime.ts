@@ -1,5 +1,37 @@
+import { missingScheduledTaskConfiguration } from './scheduled-task-tool.js';
+import { tryParseCreateScheduledTaskPayload, tryParseUpdateScheduledTaskPayload } from '@sync-think/protocol';
+import { defaultAgentAvatar, resolveAgentAvatar } from './agent-avatar.js';
+import { decideNativeTaskContinuation, isProgressBoundedNativeTask, recoverRejectedOutputReserve } from './native-task-continuation.js';
+
+
+import { prepareNativeContextRequest, streamWithContextOverflowRecovery, type NativeContextRequest } from './native-context-maintenance.js';
+import { resolveContextBudget, parseModelOutputLimit } from './context-policy.js';
+import { captureNativeCheckpointLineage, selectNativeCheckpointMessages, type NativeCheckpointLineage } from './native-checkpoint-lineage.js';
+import { CompactionJobJournal, type CompactionJob } from './compaction-job-journal.js';
+import { createUsageAnchor, parseContextUsageAnchor, type ContextUsageAnchor } from './context-token-meter.js';
+import { projectBrowserReadResultForModel } from './browser-read-model-projection.js';
+import { automationOutcomeFailure, parseAutomationOutcome } from './automation-outcome.js';
+import {
+  resolve as resolveAutomationPath,
+  dirname as automationDirname,
+  basename as automationBasename,
+  relative as automationRelative,
+  isAbsolute as automationIsAbsolute,
+  sep as automationPathSeparator,
+} from 'node:path';
+import { collectStepVariables } from '@sync-think/workers';
+import { prepareAutomationRun, exportAutomationArtifact, type AutomationMcpDependency, type PreparedAutomationRun } from './automation/index.js';
+import { BOARD_DATA_OUTPUT_CONTRACT, isReasoningEffort } from '@sync-think/shared';
+import { parseScheduledTaskAutomation } from '@sync-think/shared';
+import { evaluateAutomationBusinessAcceptance, type AutomationBusinessAcceptanceInput } from './automation-business-acceptance.js';
+import { automationExpectedLocalDate, automationAcceptanceContractHash } from './automation-acceptance-proof.js';
+type ScheduledAutomationBinding = { task: ScheduledTask; firedAt: string; workflowVersionId?: string; waitingLogin?: boolean };
+import { emptyAutomationEvidence, isAutomationEvidence, automationAcceptanceFailure, automationRecipientMatches, projectBrowserWorkflowResultForModel, bindAutomationMailAttachments, extractAutomationMailReceipt, type AutomationRunEvidence } from './automation-run-evidence.js';
+import { prepareCollaborationAttachments } from './collaboration-attachments.js';
+import { collaborationMessageImages } from './collaboration-attachment-context.js';
+import { ensureTaskRoomDirectory, readTaskRoomContext, roomContextSelection } from './task-room.js';
 import { COLLABORATION_EXECUTION_VERSION } from '@sync-think/shared';
-import { agentManagementIntent, managementToolAllowed, AGENT_DEFINITION_TOOLS, AGENT_DEFINITION_MUTATIONS, type AgentManagementIntent } from './agent-management-intent.js';
+import { agentManagementIntent, managementToolAllowed, LIBRARY_DEFINITION_TOOLS, LIBRARY_DEFINITION_MUTATIONS, type AgentManagementIntent } from './agent-management-intent.js';
 import { buildCollaborationExecutionContext } from './collaboration-workflow.js';
 import { existingArtifactHash, submitCollaborationArtifact } from './collaboration-artifacts.js';
 import { parseTaskPlanHistoryPayload } from '@sync-think/protocol';
@@ -64,8 +96,9 @@ import { DURABLE_TRUNCATION_MARKER, sanitizeDurableText } from '@sync-think/shar
 
 import { parseConversationListFileChangesPayload } from '@sync-think/protocol';
 import { parseConversationReadFileDiffPayload } from '@sync-think/protocol';
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, statSync, mkdirSync, lstatSync } from 'node:fs';
 import { ProjectlessStorage, PROJECTLESS_DIRECTORY_KEY } from './projectless-storage.js';
+import { withCurrentTaskPlan } from './chat-task-plan-context.js';
 import { tmpdir as projectlessTmpdir } from 'node:os';
 import { readFile as readFileAsync } from 'node:fs/promises';
 import { DemoRunPersistenceJournal } from './demo-run-persistence.js';
@@ -82,6 +115,7 @@ import {
 } from './desktop-waiting-projection.js';
 import {
   resolveInitialRunModelBinding,
+  resolveContextWindow,
   resolveRunCredentialBinding,
   type RunBindingCatalog,
 } from './initial-run-model-binding.js';
@@ -114,6 +148,7 @@ import {
   MAX_FRAME_BYTES,
   parseConversationReadContentPayload,
   parseCollaborationCommand,
+  collaborationDispatchIssues,
   tryParsePromptEnhanceCancelPayload,
   tryParsePromptEnhancePayload,
   type AppendMessageResponse,
@@ -382,7 +417,6 @@ import {
   type MessageBlock,
   type ConversationId,
   type ScheduledTask,
-  type ScheduledTaskTarget,
   type ScheduledTaskRunStatus,
   type TaskRule,
   type ExternalEventEnvelope,
@@ -575,7 +609,6 @@ import {
 } from './demo-run.js';
 import {
   buildCompactSummaryUserPrompt,
-  buildLocalCompactSummary,
   CHAT_AGENT_TOOL_NAMES,
   CHAT_BROWSER_TOOL_NAMES,
   CHAT_BROWSER_WORKFLOW_TOOL_NAMES,
@@ -592,6 +625,7 @@ import {
   collectThreadChatHistory,
   COMPACT_KEEP_RECENT_MESSAGES,
   COMPACT_SUMMARY_SYSTEM_PROMPT,
+  COMPACT_SUMMARY_USER_PROMPT_PREFIX,
   estimateCompactAfterTokens,
   buildForceFinalToolLoopMessage,
   evaluateToolLoopGuard,
@@ -605,16 +639,17 @@ import {
   executeTaskCreateTool,
   executeTaskUpdateTool,
   executeTaskListTool,
-  foldLongToolOutputsInMessages,
   foldToolOutputText,
   isChatToolAllowed,
   isMeaningfulCompactReduction,
+  isStructuredCompactSummary,
   normalizeChatExecutionMode,
   splitHistoryForCompact,
   summarizeToolCallForApproval,
   toolsForExecutionMode,
   wrapModelCompactSummary,
 } from './chat-tools.js';
+import { NATIVE_TOOL_CALL_BUDGET, NATIVE_FINAL_TOKEN_BUDGET, toolLoopBudgetReason } from './tool-loop-budget.js';
 import {
   resolveAppendMessageImageDataUrl,
   resolveAppendMessageImageStagingPath,
@@ -678,12 +713,12 @@ import {
 import {
   ContextSnapshotBuilder,
   LANGUAGE_FOLLOW_PROMPT,
-  selectRecentMessagesWithinBudget,
   type ContextSnapshot,
   type ContextSnapshotSource,
 } from './context-snapshot.js';
 import {
   buildProviderMessagesFromDurableMessages,
+  collectDurableCompactHistory,
   type InterruptedRunToolTrace,
 } from './context-message-history.js';
 import { shouldCreateRuntimeCheckpoint } from './runtime-checkpoint-policy.js';
@@ -929,6 +964,7 @@ import {
 } from './plan-act.js';
 import { ToolApprovalPolicy, toolApprovalScopesFor } from './tool-approval-policy.js';
 import { commitToolApprovalDecision } from './tool-approval-commit.js';
+import { narrowSkillApprovalArguments } from './skill-approval-narrowing.js';
 import {
   ActiveToolApprovalLifecycle,
   decideActiveToolApproval,
@@ -1343,6 +1379,7 @@ export interface RuntimeCheckpointSnapshot {
   threadVersions: Array<[threadId: string, version: number]>;
   events: Event[];
   createdAt: string;
+  compactionJobs?: CompactionJob[];
 }
 
 interface ValidatedOrchestrationMcpScope {
@@ -2182,6 +2219,16 @@ export class Runtime {
   private readonly activeRuns = new ActiveRunRegistry();
   private readonly daemonWorker: boolean;
   private readonly onShutdownRequested?: () => void;
+  /** Host-frozen automation configuration for an admitted round; UI edits affect the next round. */
+  private readonly resumedScheduledAutomation = new Map<string, ScheduledAutomationBinding>();
+  private readonly scheduledLoginContinuations = new Map<string, Promise<ContinueBrowserHandoffResponse>>();
+  private readonly scheduledGroupAdmissions = new Set<string>();
+  private readonly scheduledTaskAdmissions = new Set<string>();
+  private readonly scheduledGroupRounds = new Map<string, { task: ScheduledTask; firedAt: string }>();
+  private readonly preparedAutomationPrompts = new Map<string, string>();
+  private readonly scheduledAutomationEvidence = new Map<string, AutomationRunEvidence>();
+  private readonly scheduledAutomationThreads = new Map<string, ScheduledAutomationBinding>();
+  private readonly scheduledAutomationRounds = new Map<string, ScheduledAutomationBinding>();
   private readonly scheduledTaskDispatches = new ScheduledTaskDispatchRegistry();
   private readonly scheduledTaskRunRegistry = new ScheduledTaskRunRegistry<
     ScheduledTask,
@@ -2248,12 +2295,15 @@ export class Runtime {
   private readonly teamStore?: SqliteTeamStore;
   private readonly conversationStore?: SqliteConversationStore;
   private readonly collaborationChatHost?: CollaborationChatHost;
+  /** Approval binds the exact run object, tool-call ID and arguments and is consumed once. */
+  private readonly definitionApprovals = new WeakMap<DemoRunState, Map<string, string>>();
   private readonly collaborationTaskRuns = new Map<string, string>();
   private readonly collaborationThreadScopes = new Map<string, {
     conversationId: string; readOnly: boolean; taskKind: 'reply' | 'task' | 'summary';
     input: import('./collaboration-chat-service.js').CollaborationExecutionInput;
     artifacts: import('@sync-think/shared').CollaborationArtifact[];
     previousArtifactHash?: string;
+    blocker?: import('@sync-think/shared').CollaborationError;
   }>();
   /** Final assistant text retained briefly for collaboration callers after run cleanup. */
   private readonly collaborationRunResults = new Map<string, import('./collaboration-chat-service.js').CollaborationExecutionResult>();
@@ -2276,6 +2326,7 @@ export class Runtime {
   private readonly taskPlanStore?: SqliteTaskPlanStore;
   private readonly capabilityStore?: SqliteCapabilityStore;
   private readonly capabilityUsageRecorder: CapabilityUsageRecorder;
+
   private readonly secureStore?: SecureStore;
   private readonly webSearchConfigStore?: WebSearchConfigStore;
   private readonly mcpAuthConfigs: McpAuthConfigRepository;
@@ -2359,11 +2410,16 @@ export class Runtime {
   private readonly contextAmendments = new ConversationContextAmendmentRegistry();
   private readonly contextSnapshotCache = new ConversationContextSnapshotCache();
   private readonly compactBoundaryCache: ConversationCompactBoundaryCache;
+  private readonly activeCompactions = new Map<string, AbortController>();
+  private readonly compactionJobs = new CompactionJobJournal();
+  private readonly compactionOwnerId: string;
+  private readonly contextUsageAnchors = new Map<string, ContextUsageAnchor | undefined>();
   private eventSequence = 0;
   private lastCheckpointEventSequence = 0;
 
   constructor(opts: RuntimeOptions) {
     this.installId = opts.installId;
+    this.compactionOwnerId = opts.installId + ':' + randomUUID();
     this.daemonWorker = opts.daemonWorker ?? false;
     this.onShutdownRequested = opts.onShutdownRequested;
     this.kernelAdapterResolver = opts.kernelAdapterResolver ?? resolveRegisteredKernelAdapter;
@@ -2434,6 +2490,10 @@ export class Runtime {
     this.teamStore = opts.teamStore;
     this.conversationStore = opts.conversationStore;
     this.collaborationChatHost = opts.collaborationChatHost;
+    this.collaborationChatHost?.bindExecutionModeResolver((snapshot, task) => {
+      const automation = this.scheduledAutomationForCollaborationTask(snapshot, task)?.task.automation;
+      return automation ? normalizeChatExecutionMode(automation.executionMode) : undefined;
+    });
     this.messageStore = opts.messageStore;
     this.delegationService = new DelegationService(
       opts.messageStore,
@@ -2591,6 +2651,7 @@ export class Runtime {
     this.capabilityStore = opts.capabilityStore;
     this.capabilityUsageRecorder = new CapabilityUsageRecorder(opts.capabilityStore);
     this.secureStore = opts.secureStore;
+
     this.webSearchConfigStore =
       opts.appSettingStore && opts.secureStore
         ? new WebSearchConfigStore(opts.appSettingStore, opts.secureStore)
@@ -3284,7 +3345,7 @@ export class Runtime {
           return;
         }
         if (frame.type === 'conversation.compact') {
-          void this.handleConversationCompact(socket, frame);
+          this.trackBackgroundTask(this.handleConversationCompact(socket, frame));
           return;
         }
         if (frame.type === 'prompt.enhance') {
@@ -3503,6 +3564,7 @@ export class Runtime {
           this.handleSetSkillEnabled(socket, frame);
           return;
         }
+
         if (frame.type === 'mcp.register') {
           this.trackBackgroundTask(this.handleRegisterMcpServer(socket, frame));
           return;
@@ -3660,6 +3722,7 @@ export class Runtime {
     return {
       eventSequence: this.eventSequence,
       threadVersions: this.threadVersionProjection.entries(),
+      compactionJobs: this.compactionJobs.snapshot(),
       events: this.events.map((event) => ({ ...event, payload: { ...event.payload } })),
       createdAt: new Date().toISOString(),
     };
@@ -3667,6 +3730,8 @@ export class Runtime {
 
   private restoreCheckpoint(checkpoint: RuntimeCheckpointSnapshot): void {
     this.eventSequence = checkpoint.eventSequence;
+    this.compactionJobs.restore(checkpoint.compactionJobs);
+    for (const event of checkpoint.events) this.compactionJobs.apply(event);
     this.threadVersionProjection.replace(checkpoint.threadVersions);
     this.events.length = 0;
     this.rememberRecentEvents(
@@ -3825,6 +3890,7 @@ export class Runtime {
   }
 
   private restoreProjection(state: Record<string, unknown>): void {
+    this.compactionJobs.restore(state.compactionJobs);
     const entries = state.threadVersions;
     if (!Array.isArray(entries)) {
       throw new Error('Runtime checkpoint is missing threadVersions');
@@ -3849,6 +3915,7 @@ export class Runtime {
   }
 
   private applyEventToProjection(event: Event): void {
+    this.compactionJobs.apply(event);
     if (event.type === 'message.appended') {
       const threadId = event.payload.threadId;
       const taskVersion = event.payload.taskVersion;
@@ -8793,7 +8860,7 @@ export class Runtime {
         name: payload.name,
         defaultModelId: payload.defaultModelId,
         defaultKernelId: payload.defaultKernelId,
-        avatar: payload.avatar,
+        avatar: defaultAgentAvatar(payload.avatar),
         persona: payload.persona,
         description: payload.description,
         fallbackModelIds: payload.fallbackModelIds,
@@ -9442,10 +9509,15 @@ export class Runtime {
 
   private buildRunAgentInstructions(run: DemoRunState, workspaceRoot?: string): string[] {
     const collaborationScope = this.collaborationThreadScopes.get(run.threadId);
-    const collaborationPrompt = collaborationScope ? [
+    const roomRolePrompt = collaborationScope?.input.snapshot.conversation.room
+      ? '群聊角色适用范围：当前用户请求和已确认群聊目标决定本轮要做什么；人设、小队使命和绑定 Skill 描述专长与特定模式的操作约定，不是每种请求都必须跑的流水线。只在实际采用该模式时检查其必需输入；公开资料调研、普通聊天不套用商品监控的登录态、商品字段或外发配置。角色可在现有权限内协助相关工作；不因此绕过登录、审批、工具权限或真实安全约束。保持真实姓名，不自行修改角色或 Skill 定义。'
+      : undefined;
+    const collaborationPrompt = collaborationScope?.input.snapshot.conversation.room
+      ? '当前是群聊。正常聊天先沟通，工作须有用户明确开工要求；是否可从聊天开工，以本轮上下文和实际提供的 collaboration_start_workflow 工具为准。协调轮通过 collaboration_dispatch_tasks 真正派工；collaboration_send_message 的 handoff 是普通聊天/单向转达，只唤醒接收者；notify 不唤醒；consult 才等待答复并恢复原任务。不用聊天转达承担正式交付。按小队描述决定交接边界；当前工作提交成果后可用 collaboration_handoff @成员请求审核、接下一项工作或回报负责人，结束本轮后才投递。不要预排尚待判断的整条任务链。不得使用 agent_run、agent_delegate 或跨群私聊绕过本群队列。不要让用户了解或切换内部轮次。'
+      : collaborationScope ? [
       '你正在以当前智能体的真实姓名和角色直接参与这场对话，不是临时创建的子角色，也不需要向另一个主智能体交付普通聊天回复。',
       collaborationScope.taskKind === 'reply'
-        ? '当前是用户的聊天消息。用户说先讨论时，只交流想法；问候和讨论只正常回复；用户明确要求开始执行、制作产物或同意前面的方案时，协调人必须调用 collaboration_start_workflow，goal 包含已确认设定和本轮交付范围。系统按团队依赖自动派发文档任务；单聊或你不是协调员时只由你本人执行。用户要求修改工作区文件时必须使用 file 交付合同，不用聊天文档冒充文件修改。需要自定义任务图时使用 collaboration_dispatch_tasks 并为每个节点声明 deliverable。文字 @成员不算派发。工具返回成功后简短确认，不代替成员编写全部内容，也不重复派发。'
+        ? '当前是用户的聊天消息。用户说先讨论时，只交流想法；问候和讨论只正常回复；用户明确要求开始执行、制作产物或同意前面的方案时，协调人必须调用 collaboration_start_workflow，goal 包含已确认设定和本轮交付范围。系统先建立工作目标，成员按小队描述和实际成果通过 @交接决定下一步，不自动执行全员工作链；单聊或你不是协调员时只由你本人执行。用户要求修改工作区文件时必须使用 file 交付合同，不用聊天文档冒充文件修改。需要自定义任务图时使用 collaboration_dispatch_tasks 并为每个节点声明 deliverable。文字 @成员不算派发。工具返回成功后简短确认，不代替成员编写全部内容，也不重复派发。'
         : '当前是在群聊中明确分配的任务或结果汇总。按任务要求交付，不扩展范围。',
       collaborationScope.readOnly
         ? '工作区工具为只读，不调用写文件或更新任务计划。实际提供的 collaboration_start_workflow / collaboration_dispatch_tasks 是任务调度，不是工作区写入；collaboration_submit_artifact 可持久化阶段文档。正常聊天不解释后台权限。任务阶段必须提交实际产物后再简短回复；最终回复不是产物提交。'
@@ -9465,7 +9537,8 @@ export class Runtime {
         ? [
             `You are the Agent「${run.globalAgentName}」in SYNC-THINK.`,
             run.persona
-              ? `Follow this persona / system instructions exactly:\n${run.persona}`
+              ? roomRolePrompt ? `Agent specialization (apply when relevant to the current request):\n${run.persona}`
+                : `Follow this persona / system instructions exactly:\n${run.persona}`
               : 'Stay in character for this Agent across the whole conversation.',
             'Answer as this Agent. Do not claim to be a different agent unless the user reassigns you.',
           ].join('\n')
@@ -9498,6 +9571,7 @@ export class Runtime {
       personalizationPrompt,
       helpModePrompt,
       skillPrompt,
+      roomRolePrompt,
       collaborationPrompt,
     ].filter((value): value is string => Boolean(value));
   }
@@ -9593,6 +9667,7 @@ export class Runtime {
       runId: ulid() as RunId,
       threadId: input.threadId,
       userText: '',
+      definitionProposalsAllowed: true,
       kernelId: input.kernelId,
       modelId: input.modelId,
       track: input.track,
@@ -9690,6 +9765,8 @@ export class Runtime {
         estimatedUsedTokens: snapshot.status.estimatedUsedTokens,
         usageRatio: snapshot.status.usageRatio,
         compactThreshold: snapshot.status.compactThreshold,
+        budget: { ...snapshot.status.budget },
+        measurement: snapshot.status.measurement,
         ...(snapshot.status.compactedAt ? { compactedAt: snapshot.status.compactedAt } : {}),
         sections: snapshot.status.sections.map((section) => ({ ...section })),
       };
@@ -9767,14 +9844,14 @@ export class Runtime {
         : undefined;
       if (
         payload.conversationId &&
-        (!conversation?.workspaceId ||
+        (!conversation ||
           !task?.threadId ||
-          task.workspaceId !== conversation.workspaceId)
+          (conversation.workspaceId != null && task.workspaceId !== conversation.workspaceId))
       )
         throw new Error('content.not-found');
       const scope =
-        conversation?.workspaceId && task?.threadId
-          ? { workspaceId: conversation.workspaceId, taskId: task.id, threadId: task.threadId }
+        conversation && task?.threadId
+          ? { workspaceId: task.workspaceId, taskId: task.id, threadId: task.threadId }
           : undefined;
       if (scope && !this.conversationHistory) throw new Error('history.unavailable');
       const response: ConversationGetRunProcessResponse = {
@@ -9794,11 +9871,16 @@ export class Runtime {
         if (
           !currentConversation ||
           currentConversation.taskId !== scope.taskId ||
-          currentConversation.workspaceId !== scope.workspaceId ||
+          currentConversation.workspaceId !== conversation?.workspaceId ||
           currentTask?.threadId !== scope.threadId ||
           currentTask.workspaceId !== scope.workspaceId
         )
           throw new Error('content.not-found');
+      }
+      // Event projection tracks active tools, not text generation. Overlay live
+      // Runtime liveness after scope validation without mutating a cached snapshot.
+      if (this.activeRuns.has(String(payload.runId))) {
+        response.process = {...response.process, running: true};
       }
       socket.write(
         encodeFrame({
@@ -9824,11 +9906,12 @@ export class Runtime {
       const task = conversation?.taskId
         ? this.workspaceStore?.getTask(conversation.taskId)
         : undefined;
-      if (!conversation || !task?.threadId || task.workspaceId !== conversation.workspaceId)
+      if (!conversation || !task?.threadId ||
+          (conversation.workspaceId != null && task.workspaceId !== conversation.workspaceId))
         throw new Error('content.not-found');
       if (!this.conversationHistory?.readTaskPlanHistory) throw new Error('history.unavailable');
       const response = await this.conversationHistory.readTaskPlanHistory(
-        { workspaceId: conversation.workspaceId, taskId: task.id, threadId: task.threadId },
+        { workspaceId: task.workspaceId, taskId: task.id, threadId: task.threadId },
         {
           beforeSequence: payload.beforeSequence,
           beforeRunId: payload.beforeRunId,
@@ -9844,7 +9927,8 @@ export class Runtime {
       if (
         current?.taskId !== task.id ||
         current?.workspaceId !== conversation.workspaceId ||
-        currentTask?.threadId !== task.threadId
+        currentTask?.threadId !== task.threadId ||
+        currentTask.workspaceId !== task.workspaceId
       )
         throw new Error('content.scope-changed');
       socket.write(
@@ -9871,10 +9955,11 @@ export class Runtime {
       const task = conversation?.taskId
         ? this.workspaceStore?.getTask(conversation.taskId)
         : undefined;
-      if (!conversation || !task?.threadId || task.workspaceId !== conversation.workspaceId)
+      if (!conversation || !task?.threadId ||
+          (conversation.workspaceId != null && task.workspaceId !== conversation.workspaceId))
         throw new Error('content.not-found');
       const scope = {
-        workspaceId: conversation.workspaceId,
+        workspaceId: task.workspaceId,
         taskId: task.id,
         threadId: task.threadId,
       };
@@ -9885,7 +9970,7 @@ export class Runtime {
         const collaboration = this.collaborationChatHost?.repository.read(String(conversation.id));
         const attempt = collaboration?.attempts.find(a => a.runId === runId);
         const child = attempt?.threadId ? this.workspaceStore?.getTaskByThreadId(attempt.threadId as ThreadId) : undefined;
-        if (child && child.workspaceId === conversation.workspaceId && child.parentTaskId === task.id && child.threadId) {
+        if (child && child.workspaceId === scope.workspaceId && child.parentTaskId === task.id && child.threadId) {
           scope.taskId = child.id; scope.threadId = child.threadId;
         }
       }
@@ -9927,6 +10012,7 @@ export class Runtime {
       if (
         current?.taskId !== task.id ||
         currentTask?.threadId !== task.threadId ||
+        currentTask.workspaceId !== task.workspaceId ||
         current?.workspaceId !== conversation.workspaceId
       )
         throw new Error('content.scope-changed');
@@ -10635,13 +10721,11 @@ export class Runtime {
   }
 
   /**
-   * NewMax-style context compact:
-   * 1) User types /compact (or auto at ~70% window) �?runtime receives conversation.compact
-   * 2) Primary path: call the bound provider with Claude Code's compact summary prompt
-   *    (same approach NewMax uses by submitting /compact to the long-lived CLI)
-   * 3) Write durable context.compacted boundary + visible system marker
-   * 4) Subsequent buildChatMessagesFromEvents starts from that boundary
-   * Local truncate summary is only a degraded fallback when the model is unavailable.
+   * Native context maintenance follows the DSH-style retained-tail/checkpoint contract.
+   * Manual /compact and automatic requests replace only the covered durable prefix.
+   * Raw recent messages and prior checkpoint facts survive repeated compaction.
+   * Failed/interrupted summaries leave the previous boundary and original records intact.
+   * External kernels use their own compaction mechanism.
    */
   private async handleConversationCompact(socket: Socket, frame: Frame): Promise<void> {
     const payload = parseConversationCompactPayload(frame.payload);
@@ -10660,6 +10744,8 @@ export class Runtime {
       | undefined;
     let lifecycleStarted = false;
     let lifecycleSettled = false;
+    let compactLockThread: string | undefined;
+    let compactAbort: AbortController | undefined;
     try {
       const conversation = this.conversationStore.get(payload.conversationId);
       if (!conversation) {
@@ -10691,6 +10777,10 @@ export class Runtime {
         throw new Error(`Task/thread not found for conversation: ${payload.conversationId}`);
       }
       const threadId = String(task.threadId);
+      if (this.activeCompactions.has(threadId)) throw new Error('该会话正在压缩，请等待本次完成。');
+      compactAbort = new AbortController();
+      this.activeCompactions.set(threadId, compactAbort);
+      compactLockThread = threadId;
       const events = this.stateStore.listEventsByTask
         ? this.stateStore.listEventsByTask(task.id)
         : this.stateStore.listAllEvents
@@ -10704,11 +10794,19 @@ export class Runtime {
         globalAgentId: conversation.track === 'agent' ? conversation.targetRef : undefined,
         teamId: conversation.track === 'team' ? conversation.targetRef : undefined,
       });
-      const history = collectThreadChatHistory(events, threadId);
+      if (snapshot.status.kernelId && snapshot.status.kernelId !== 'native') {
+        throw new Error('当前外部内核自行管理上下文压缩，请使用其原生压缩入口。');
+      }
+      const previousBoundary = this.compactBoundaryCache.get(threadId);
+      const durableHistory = this.listDurableContextMessages(threadId, snapshot.status.contextWindow, previousBoundary, true);
+      const history = this.messageStore
+        ? { messages: collectDurableCompactHistory(durableHistory, previousBoundary) }
+        : collectThreadChatHistory(events, threadId);
       const beforeTokens = snapshot.status.estimatedUsedTokens;
       const messageTokens =
         snapshot.status.sections.find((section) => section.type === 'messages')?.tokens ?? 0;
-      const fixedContextTokens = Math.max(0, beforeTokens - messageTokens);
+      const fixedContextTokens = Math.max(0, beforeTokens - messageTokens -
+        (snapshot.status.sections.find(section => section.type === 'summary')?.tokens ?? 0));
       const mode = payload.mode === 'auto' ? 'auto' : 'manual';
       lifecycle = { threadId, taskId: task.id, mode, beforeTokens };
       const onlyIfNeeded = payload.onlyIfNeeded === true || mode === 'auto';
@@ -10755,8 +10853,10 @@ export class Runtime {
       }
 
       const keepRecent = payload.keepRecent ?? COMPACT_KEEP_RECENT_MESSAGES;
-      const split = splitHistoryForCompact(history.messages, keepRecent);
-      if (split.foldedCount <= 0) {
+      const split = splitHistoryForCompact(history.messages, keepRecent,
+        payload.keepRecent === undefined ? snapshot.status.budget.retainedTailTokens : undefined);
+      const foldedCount = split.older.filter(message => !message.checkpoint).length;
+      if (foldedCount <= 0) {
         this.publishEvent(
           this.appendEvent(
             'context',
@@ -10798,11 +10898,11 @@ export class Runtime {
         return;
       }
 
-      // Primary: model-generated structured summary (NewMax / Claude Code path).
+      // Only a validated model-generated checkpoint may replace the selected prefix.
       // Compare the compacted message estimate against the same full-request snapshot
       // used by the context ring; project/system/tool tokens remain fixed.
       let summaryText = '';
-      let summarySource: 'model' | 'local' = 'local';
+      const summarySource = 'model' as const;
       let afterTokens = beforeTokens;
 
       this.publishEvent(
@@ -10815,9 +10915,15 @@ export class Runtime {
             conversationId: payload.conversationId,
             mode,
             beforeTokens,
-            foldedCount: split.foldedCount,
+            foldedCount,
             keepRecent,
             startedAt: new Date(startedAt).toISOString(),
+            taskId:task.id,ownerId:this.compactionOwnerId,leaseExpiresAt:Date.now()+95_000,
+            modelId:snapshot.status.modelId,
+            modelBinding:createHash('sha256').update(JSON.stringify([conversation.track,conversation.targetRef,compactModelId])).digest('hex'),
+            sourceFingerprint:createHash('sha256').update(JSON.stringify(split.older)).digest('hex'),
+            boundaryFingerprint:createHash('sha256').update(JSON.stringify(previousBoundary ?? null)).digest('hex'),
+            coveredThroughMessageSequence: this.messageStore ? Math.max(previousBoundary?.coveredThroughMessageSequence ?? 0,...split.older.filter(m=>!m.checkpoint).map(m=>m.sequence)) : undefined,
           },
           undefined,
           undefined,
@@ -10826,39 +10932,37 @@ export class Runtime {
       );
       lifecycleStarted = true;
 
-      const local = buildLocalCompactSummary({
-        messages: history.messages,
-        keepRecent,
-        contextWindow: snapshot.status.contextWindow,
-      });
-
       const modelSummary = await this.generateModelCompactSummary({
         threadId,
         conversationId: String(payload.conversationId),
         olderMessages: split.older,
         modelId: compactModelId,
+        signal: compactAbort.signal,
       });
-      if (modelSummary) {
+      if (compactAbort.signal.aborted || !this.compactionJobs.owns(threadId,frame.id,this.compactionOwnerId,Date.now()))
+        throw new Error('压缩已中断，迟到摘要已忽略，原始上下文已保留。');
+      const currentConversation = this.conversationStore.get(payload.conversationId);
+      if (!currentConversation || currentConversation.track !== conversation.track || currentConversation.targetRef !== conversation.targetRef ||
+          this.resolveConversationDefaultModelId(currentConversation) !== compactModelId)
+        throw new Error('压缩期间模型绑定已变化，原始上下文已保留，请重试。');
+      if (modelSummary && isStructuredCompactSummary(modelSummary)) {
         const wrapped = wrapModelCompactSummary(modelSummary);
         const modelAfter =
           fixedContextTokens + estimateCompactAfterTokens(wrapped, split.keptMessages);
-        // Require a real reduction; otherwise local truncate is better for the ring.
+        // Require a real reduction; otherwise keep the previous boundary unchanged.
         if (wrapped && isMeaningfulCompactReduction(beforeTokens, modelAfter)) {
           summaryText = wrapped;
-          summarySource = 'model';
           afterTokens = modelAfter;
         }
       }
-      if (!summaryText) {
-        // Local path already rejects non-shrinking summaries (empty summaryText).
-        summaryText = local.summaryText;
-        summarySource = 'local';
-        afterTokens = fixedContextTokens + local.afterTokens;
+      // Failed summaries never become a destructive local truncation.
+      if (!modelSummary || !isStructuredCompactSummary(modelSummary)) {
+        throw new Error('摘要生成未完成或保留契约未通过，原始上下文已保留，请重试。');
       }
 
       if (
         !summaryText ||
-        split.foldedCount <= 0 ||
+        foldedCount <= 0 ||
         !isMeaningfulCompactReduction(beforeTokens, afterTokens)
       ) {
         this.publishEvent(
@@ -10902,11 +11006,32 @@ export class Runtime {
         return;
       }
 
-      const foldedCount = split.foldedCount;
+      const selectedIds = new Set(split.older.flatMap(message => message.messageId ? [message.messageId] : []));
+      const selectedOriginals = durableHistory.filter(message => selectedIds.has(message.id));
+      if (JSON.stringify(this.compactBoundaryCache.get(threadId)) !== JSON.stringify(previousBoundary) ||
+          selectedOriginals.some(message => JSON.stringify(this.messageStore?.getMessage(message.id)) !== JSON.stringify(message))) {
+        throw new Error('压缩期间所选历史已变化，原始上下文已保留，请重试。');
+      }
+      const coveredThroughMessageSequence = this.messageStore ? Math.max(
+        previousBoundary?.coveredThroughMessageSequence ?? -1,
+        ...split.older.filter(message => !message.checkpoint).map(message => message.sequence),
+      ) : undefined;
+      if (coveredThroughMessageSequence !== undefined && coveredThroughMessageSequence < 0) {
+        throw new Error('没有可安全替换的原始消息区间，原始上下文已保留。');
+      }
+      const coveredEventSequences = [...new Set([
+        ...(!this.messageStore ? split.older.filter(message => !message.checkpoint).map(message => message.sequence) : []),
+        ...(previousBoundary?.coveredEventSequences ?? (previousBoundary ? events.filter(event =>
+          event.payload.threadId === threadId && event.occurredAt <= previousBoundary.compactedAt).map(event => event.sequence) : [])),
+        ...events.filter(event => event.payload.threadId === threadId &&
+          (selectedIds.has(String(event.payload.messageId ?? '')) ||
+           (event.type === 'run.completed' && selectedOriginals.some(message => message.runId && message.runId === event.runId))))
+          .map(event => event.sequence),
+      ])];
       const compactMessageId = ulid() as MessageId;
       const markerMessageId = ulid() as MessageId;
       // Prefer durable task.version �?same source appendMessage uses for OCC.
-      const currentVersion = task.version ?? this.threadVersionProjection.current(threadId) ?? 0;
+      const currentVersion = this.workspaceStore?.getTask(task.id)?.version ?? this.threadVersionProjection.current(threadId) ?? 0;
       const nextVersion = currentVersion + 1;
       const compactDurationMs = Date.now() - startedAt;
 
@@ -10926,6 +11051,9 @@ export class Runtime {
             afterTokens,
             foldedCount,
             keepRecent,
+            coveredThroughMessageSequence,
+            coveredEventSequences,
+            coveredMessageIds: [...selectedIds],
             operationId: frame.id,
             durationMs: compactDurationMs,
             messageId: compactMessageId,
@@ -10969,9 +11097,13 @@ export class Runtime {
       };
 
       const written = this.runInUnitOfWork(writeCompact);
+      this.compactionJobs.apply(written.compactEvent);
       this.compactBoundaryCache.record(threadId, {
         summaryText,
         compactedAt: written.compactEvent.occurredAt,
+        coveredThroughMessageSequence,
+        coveredEventSequences,
+        keepRecent,
       });
       this.invalidateConversationContextSnapshot(threadId);
       this.publishEvent(written.compactEvent);
@@ -11010,6 +11142,7 @@ export class Runtime {
                 conversationId: payload.conversationId,
                 mode: lifecycle.mode,
                 beforeTokens: lifecycle.beforeTokens,
+                reason:compactAbort?.signal.aborted ? 'cancelled' : 'failed',originalHistoryPreserved:true,
                 durationMs: Date.now() - startedAt,
                 error: error instanceof Error ? error.message.slice(0, 500) : String(error),
               },
@@ -11023,6 +11156,8 @@ export class Runtime {
         }
       }
       this.writeTeamModelCommandError(socket, frame, error);
+    } finally {
+      if (compactLockThread) this.activeCompactions.delete(compactLockThread);
     }
   }
 
@@ -11042,7 +11177,7 @@ export class Runtime {
   }
 
   /**
-   * Call the bound provider with Claude Code's compact summary prompt.
+   * Call the bound provider with the structured checkpoint retention contract.
    * Returns raw model text, or undefined when no live provider is available.
    * Tools are intentionally disabled �?compaction agents must only produce text.
    */
@@ -11051,6 +11186,7 @@ export class Runtime {
     conversationId: string;
     olderMessages: readonly import('./chat-tools.js').CompactHistoryMessage[];
     modelId?: string;
+    signal?: AbortSignal;
   }): Promise<string | undefined> {
     if (!this.canStartModelRun()) return undefined;
     if (!input.olderMessages.length) return undefined;
@@ -11083,25 +11219,36 @@ export class Runtime {
         messages: [{ role: 'user', content: userPrompt }],
         toolsEnabled: false,
         networkEnabled: false,
-        signal: abort.signal,
+        signal: input.signal ? AbortSignal.any([input.signal,abort.signal]) : abort.signal,
+        contextMaintenance: true,
+        maxOutputTokens: Math.min(8192, Math.max(256, Math.floor((prepared.run.effectiveContextWindow ?? 128_000) * .04))),
         systemPromptOverride: COMPACT_SUMMARY_SYSTEM_PROMPT,
       });
       if (!stream) return undefined;
 
       let text = '';
+      let stoppedNormally = false;
       for await (const event of stream) {
-        if (abort.signal.aborted) break;
+        if (abort.signal.aborted || input.signal?.aborted) return undefined;
         if (event.type === 'text-delta') {
           text += event.text;
+        } else if (event.type === 'assistant-message-delta' && event.phase === 'final_answer') {
+          text += event.text;
+        } else if (event.type === 'usage') {
+          this.publishEvent(this.appendEvent('provider', 'provider.usage', {
+            threadId: input.threadId, modelId: prepared.run.modelId, purpose: 'compaction',
+            tokensIn: event.tokensIn, tokensOut: event.tokensOut, cachedTokensHit: event.cachedTokensHit,
+            cachedTokensCreated: event.cachedTokensCreated, totalTokens: event.totalTokens,
+          }, undefined, runId));
         } else if (event.type === 'error') {
           return undefined;
         } else if (event.type === 'finished') {
-          break;
+          stoppedNormally = event.reason === 'stop'; break;
         }
       }
       const cleaned = text.replace(/\s+$/g, '').trim();
-      // Reject empty / trivial responses so we fall back to local summary.
-      if (cleaned.length < 40) return undefined;
+      // Reject partial or malformed summaries instead of losing original constraints.
+      if (!stoppedNormally || cleaned.length < 40 || !isStructuredCompactSummary(cleaned)) return undefined;
       return cleaned;
     } catch {
       return undefined;
@@ -11821,6 +11968,7 @@ export class Runtime {
         runId: peekRunId,
         threadId: payload.threadId,
         userText,
+        definitionProposalsAllowed: true,
         modelId: typeof payload.modelId === 'string' ? payload.modelId : undefined,
         credentialRefId:
           typeof payload.credentialRefId === 'string' ? payload.credentialRefId : undefined,
@@ -13615,6 +13763,10 @@ export class Runtime {
   }
 
   /** Register a remote HTTP MCP endpoint; key storage and tool discovery are best effort. */
+
+
+
+
   private async handleRegisterRemoteMcp(socket: Socket, frame: Frame): Promise<void> {
     const payload = parseRegisterRemoteMcpPayload(frame.payload);
     if (!payload) {
@@ -17063,6 +17215,7 @@ export class Runtime {
           runId: demoRunId,
           threadId: payload.threadId,
           userText: payload.text,
+          definitionProposalsAllowed: true,
           kernelId: typeof payload.kernelId === 'string' ? payload.kernelId : undefined,
           modelId: explicitModelId,
           credentialRefId:
@@ -17747,6 +17900,7 @@ export class Runtime {
       this.writeTeamModelStoreUnavailable(socket, frame);
       return;
     }
+    if (payload.automation !== undefined && !parseScheduledTaskAutomation(payload.automation)) { this.writeMalformedPayload(socket, frame); return; }
     const target = payload.target;
     const rule = payload.rule;
     const ruleError = this.validateTaskRule(rule);
@@ -17765,6 +17919,10 @@ export class Runtime {
         this.writeMalformedPayload(socket, frame);
         return;
       }
+      this.validateScheduledConversationTarget({ target, workspaceId, automation: payload.automation });
+      const linkedGroup = payload.collaborationConversationId ? this.collaborationChatHost?.command({ action: 'get', conversationId: payload.collaborationConversationId }).snapshot : undefined;
+      if (payload.collaborationConversationId && (!linkedGroup?.conversation.room || linkedGroup.conversation.workspaceId !== workspaceId)) throw new Error('scheduledTask.group_binding_invalid');
+      if (linkedGroup && payload.automation?.conversation && (payload.automation.conversation.mode !== 'existing' || payload.automation.conversation.conversationId !== linkedGroup.conversation.id)) throw new Error('scheduledTask.conversation_binding_conflict');
       const skillVersionIds = Array.isArray(payload.skillVersionIds)
         ? payload.skillVersionIds.filter((item): item is string => typeof item === 'string')
         : undefined;
@@ -17778,6 +17936,7 @@ export class Runtime {
         enabled: payload.enabled !== false,
         ...(workspaceId ? { workspaceId } : {}),
         ...(skillVersionIds && skillVersionIds.length > 0 ? { skillVersionIds } : {}),
+        ...(payload.automation ? { automation: payload.automation } : {}),
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       };
@@ -17790,6 +17949,8 @@ export class Runtime {
         rule,
         timeZone,
         enabled: task.enabled,
+        ...(linkedGroup ? { conversationId: linkedGroup.conversation.id } : payload.automation?.conversation?.mode === 'existing' ? { conversationId: payload.automation.conversation.conversationId } : {}),
+        ...(payload.automation ? { automation: payload.automation } : {}),
         ...(workspaceId ? { workspaceId } : {}),
         ...(skillVersionIds ? { skillVersionIds } : {}),
         ...(nextRunAt ? { nextRunAt } : {}),
@@ -17837,6 +17998,7 @@ export class Runtime {
       return;
     }
     const patch = payload.patch;
+    if (patch.automation !== undefined && patch.automation !== null && !parseScheduledTaskAutomation(patch.automation)) { this.writeMalformedPayload(socket, frame); return; }
     if (patch.rule) {
       const ruleError = this.validateTaskRule(patch.rule);
       if (ruleError) {
@@ -17852,39 +18014,12 @@ export class Runtime {
       this.writeMalformedPayload(socket, frame);
       return;
     }
+    if (!this.scheduledTaskStore.get(payload.taskId)) {
+      socket.write(encodeFrame({ id: frame.id, kind: 'response', type: 'scheduledTask.update', payload: {}, error: { code: ErrorCode.TASK_NOT_FOUND, message: 'Scheduled task not found' } }));
+      return;
+    }
     try {
-      let nextRunAt: string | null | undefined;
-      if (patch.rule || patch.nextRunAt !== undefined) {
-        const current = this.scheduledTaskStore.get(payload.taskId);
-        if (current) {
-          const rule = patch.rule ?? current.rule;
-          const timeZone = patch.timeZone ?? current.timeZone;
-          nextRunAt =
-            patch.nextRunAt === null
-              ? null
-              : (patch.nextRunAt ?? initialNextRunAt({ ...current, rule, timeZone }));
-        }
-      }
-      const updated = this.scheduledTaskStore.update(payload.taskId, {
-        ...patch,
-        ...(nextRunAt !== undefined ? { nextRunAt } : {}),
-      });
-      if (!updated) {
-        socket.write(
-          encodeFrame({
-            id: frame.id,
-            kind: 'response',
-            type: 'scheduledTask.update',
-            payload: {},
-            error: { code: ErrorCode.TASK_NOT_FOUND, message: 'Scheduled task not found' },
-          }),
-        );
-        return;
-      }
-      this.publishTaskEvent('scheduledTask.updated', updated.id, {
-        taskId: updated.id,
-        action: 'update',
-      });
+      const updated = this.updateScheduledTaskDefinition(payload.taskId, patch);
       socket.write(
         encodeFrame({
           id: frame.id,
@@ -17896,6 +18031,40 @@ export class Runtime {
     } catch (error) {
       this.writeTeamModelCommandError(socket, frame, error);
     }
+  }
+
+  /** UI and chat use the same in-place mutation; execution history is never recreated. */
+  private updateScheduledTaskDefinition(taskId: string, patch: UpdateScheduledTaskPayload['patch']): ScheduledTask {
+    const store = this.scheduledTaskStore;
+    const before = store?.get(taskId);
+    if (!store || !before) throw new Error('Scheduled task not found');
+    if (patch.name !== undefined && !patch.name.trim()) throw new Error('任务名称不能为空');
+    if (patch.instruction !== undefined && !patch.instruction.trim()) throw new Error('执行指令不能为空');
+    const ruleError = patch.rule && this.validateTaskRule(patch.rule);
+    if (ruleError) throw new Error(ruleError);
+    if (patch.workspaceId !== undefined && patch.workspaceId !== null && !this.workspaceStore?.getWorkspace(patch.workspaceId as WorkspaceId)) throw new Error('运行工作区不存在，请从 resources 选择');
+    this.validateScheduledConversationTarget({
+      target: patch.target ?? before.target,
+      workspaceId: patch.workspaceId === undefined ? before.workspaceId : patch.workspaceId ?? undefined,
+      automation: patch.automation === undefined ? before.automation : patch.automation ?? undefined,
+    });
+    let nextRunAt: string | null | undefined;
+    if (patch.rule || patch.timeZone || patch.nextRunAt !== undefined) {
+      nextRunAt = patch.nextRunAt === null ? null : patch.nextRunAt ?? initialNextRunAt({ ...before, rule: patch.rule ?? before.rule, timeZone: patch.timeZone ?? before.timeZone });
+    }
+    const scopeChanged = Boolean(patch.target && JSON.stringify(patch.target) !== JSON.stringify(before.target) || patch.workspaceId !== undefined && (patch.workspaceId ?? undefined) !== before.workspaceId);
+    const conversationChanged = patch.automation !== undefined && JSON.stringify(patch.automation?.conversation) !== JSON.stringify(before.automation?.conversation);
+    const destination = patch.automation === undefined ? before.automation?.conversation : patch.automation?.conversation;
+    const updated = store.update(taskId, {
+      ...patch,
+      ...(patch.name !== undefined ? { name: patch.name.trim() } : {}),
+      ...(patch.instruction !== undefined ? { instruction: patch.instruction.trim() } : {}),
+      ...(scopeChanged || conversationChanged ? { conversationId: destination?.mode === 'existing' ? destination.conversationId : null } : {}),
+      ...(nextRunAt !== undefined ? { nextRunAt } : {}),
+    });
+    if (!updated) throw new Error('Scheduled task not found');
+    this.publishTaskEvent('scheduledTask.updated', updated.id, { taskId: updated.id, action: 'update' });
+    return updated;
   }
 
   private handleDeleteScheduledTask(socket: Socket, frame: Frame): void {
@@ -18314,15 +18483,27 @@ export class Runtime {
       const result = await this.fireScheduledTask(task);
       if (!result.fired) {
         this.scheduledTaskDispatches.cancelStart(taskId);
+        this.daemonCompletionRegistry.track(sendTaskCompletionToDaemon({ installId: this.installId, helloSecret: this.handlers.expectedSecret, appVersion: 'sync-think-runtime', handshakeTimeoutMs: 2_000 }, { taskId, status: 'failed', reason: result.reason ?? '任务未获准启动' }));
         console.warn(`[runtime] task.dispatch: ${taskId} not fired: ${result.reason ?? 'unknown'}`);
         return;
       }
     })();
   }
 
+  private completeScheduledGroupDispatch(taskId: string, firedAt: string, status: 'success' | 'failed', reason?: string): void {
+    const runId = 'group:' + taskId + ':' + firedAt;
+    this.scheduledGroupAdmissions.delete(taskId);
+    this.preparedAutomationPrompts.delete(taskId + ':' + firedAt);
+    const completed = this.scheduledTaskDispatches.completeRun(runId);
+    if (completed.wasDispatched) this.daemonCompletionRegistry.track(sendTaskCompletionToDaemon({
+      installId: this.installId, helloSecret: this.handlers.expectedSecret, appVersion: 'sync-think-runtime', handshakeTimeoutMs: 2_000,
+    }, { taskId, status, ...(reason ? { reason } : {}) }));
+  }
+
   private scheduledTaskDispatchRejection(task: ScheduledTask): string | undefined {
     if (!task.enabled) return '任务已停用';
-    if (this.scheduledTaskRunRegistry.activeCount() >= this.taskMaxConcurrent()) return '并发上限';
+    if (this.scheduledTaskAdmissions.has(task.id)) return '会话忙';
+    if ((this.scheduledTaskRunRegistry.activeCount() + this.scheduledGroupAdmissions.size) >= this.taskMaxConcurrent()) return '并发上限';
     const threadId = task.conversationId
       ? this.resolveConversationThreadId(task.conversationId)
       : undefined;
@@ -19065,6 +19246,7 @@ export class Runtime {
             capabilityToken: `workflow-schedule:${workflow.task.id}:${now}`,
             signal: new AbortController().signal,
             trigger: 'schedule',
+            variables: schedule.variables,
           });
           if (!result.ok) {
             console.warn(
@@ -19084,27 +19266,108 @@ export class Runtime {
    * 触发一个任务：并发/忙检查 → 创建/复用任务会话 → 注入指令启动 run →
    * 更新 nextRunAt（错过 ≤24h 补跑，否则顺延）。返回是否已触发。
    */
-  private async fireScheduledTask(
+  private async fireScheduledTask(task: ScheduledTask, now: Date = new Date()): Promise<{fired:boolean;reason?:string}> {
+    const reason = this.scheduledTaskAdmissions.has(task.id) ? '会话忙，正在准备本轮执行' : this.scheduledTaskAdmissions.size + this.scheduledTaskRunRegistry.activeCount() + this.scheduledGroupAdmissions.size >= this.taskMaxConcurrent() ? '并发上限' : undefined;
+    if (reason) { this.recordTaskSkipped(task,now.toISOString(),reason); this.recordTaskHistory(task,'skipped',now.toISOString(),undefined,reason); return {fired:false,reason}; }
+    this.scheduledTaskAdmissions.add(task.id);
+    try { return await this.fireScheduledTaskAdmitted(task,now); }
+    finally { this.scheduledTaskAdmissions.delete(task.id); }
+  }
+
+  private async fireScheduledTaskAdmitted(
     task: ScheduledTask,
     now: Date = new Date(),
+    admittedPreparation?: PreparedAutomationRun,
   ): Promise<{ fired: boolean; reason?: string }> {
     if (!this.scheduledTaskStore || !this.conversationStore || !this.workspaceStore) {
       return { fired: false, reason: '存储不可用' };
     }
-    const firedAt = now.toISOString();
+    const resumed = this.resumedScheduledAutomation.get(task.id);
+    this.resumedScheduledAutomation.delete(task.id);
+    const firedAt = resumed?.firedAt ?? now.toISOString();
+    const waiting = this.browserController?.listWaitingHandoffs({workspaceId: task.workspaceId}).some(handoff => handoff.scheduledTaskId === task.id);
+    if (waiting) { const reason = '等待登录，请先完成已有登录交接'; this.recordTaskSkipped(task, now.toISOString(), reason); this.recordTaskHistory(task, 'skipped', now.toISOString(), undefined, reason); return {fired:false,reason}; }
     const missedMs = now.getTime() - Date.parse(task.nextRunAt ?? firedAt);
     const missedHours = Math.max(0, missedMs / 3_600_000);
 
     // 并发上限：任务 run 计数（内存近似）。
-    if (this.scheduledTaskRunRegistry.activeCount() >= this.taskMaxConcurrent()) {
+    if ((this.scheduledTaskRunRegistry.activeCount() + this.scheduledGroupAdmissions.size) >= this.taskMaxConcurrent()) {
       this.recordTaskSkipped(task, firedAt, '并发上限');
       this.recordTaskHistory(task, 'skipped', firedAt, undefined, '并发上限');
       return { fired: false, reason: '并发上限' };
     }
 
+    if (task.automation?.conversation?.mode === 'existing') {
+      try { this.validateScheduledConversationTarget(task); } catch (error) { return this.failAutomationAdmission(task, firedAt, error instanceof Error ? error.message : '目标会话校验失败'); }
+      task = { ...task, conversationId: task.automation.conversation.conversationId };
+    } else if (task.automation?.conversation?.mode === 'new' && !resumed) task = { ...task, conversationId: undefined };
+
+    if (task.automation) {
+      let prepared: PreparedAutomationRun;
+      try { prepared = admittedPreparation ?? await this.prepareScheduledAutomation(task, firedAt); } catch (error) { return this.failAutomationAdmission(task, firedAt, error instanceof Error ? error.message : '自动化预检失败'); }
+      if (!prepared.ready) return this.failAutomationAdmission(task, firedAt, prepared.reasons.join('；'), prepared.status);
+      this.preparedAutomationPrompts.set(task.id + ':' + firedAt, prepared.prompt);
+    }
+
+    // Team schedules use an isolated durable group, never a coordinator-only legacy Team run.
+    if (task.target.kind === 'team' && (!task.conversationId || !this.collaborationChatHost?.repository.read(task.conversationId)?.conversation.room)) {
+      const team = this.teamStore?.get(task.target.teamId as TeamId);
+      if (!team || !this.collaborationChatHost) return this.failAutomationAdmission(task, firedAt, '小队或群聊执行服务尚未就绪');
+      const workspaceId = task.workspaceId ?? this.getOrCreateInboxWorkspace();
+      const created = this.collaborationChatHost.command({ action: 'create', clientRequestId: 'schedule-group:' + task.id + ':' + task.target.teamId + ':' + workspaceId + (task.automation?.conversation?.mode === 'new' ? ':' + firedAt : ''),
+        kind: 'group', title: '自动化 · ' + task.name, workspaceId,
+        teamId: team.id, agentIds: [], coordinatorAgentId: team.coordinatorAgentId ?? team.members[0]?.agentId,
+      }).snapshot;
+      if (!created) return this.failAutomationAdmission(task, firedAt, '自动化群聊创建失败');
+      if (task.automation?.browser) this.collaborationChatHost.command({ action: 'policy', conversationId: created.conversation.id,
+        policy: { networkEnabled: true, browserProfileId: task.automation.browser.profileId,
+          browserWorkflowTaskId: task.automation.browser.workflowTaskId, browserWorkflowVariables: task.automation.browser.variables } });
+      task = this.scheduledTaskStore.update(task.id, { conversationId: created.conversation.id, workspaceId }) ?? task;
+    }
+
+    // A group-bound schedule enters the SAME durable group queue; no legacy Team execution.
+    if (task.conversationId && this.collaborationChatHost?.repository.read(task.conversationId)?.conversation.room) {
+      const host = this.collaborationChatHost;
+      const snapshot = host.command({ action: 'get', conversationId: task.conversationId }).snapshot!;
+      const room = snapshot.conversation.room!;
+      const latest = new Set(snapshot.tasks.map(task => task.currentAttemptId));
+      const busy = snapshot.attempts.some(attempt => latest.has(attempt.id) && ['queued', 'running', 'waiting_input', 'stopping'].includes(attempt.status));
+      const waitingLogin = this.browserController?.listWaitingHandoffs({ workspaceId: snapshot.conversation.workspaceId }).some(handoff => handoff.conversationId === snapshot.conversation.id);
+      // An accepted round is not a cancellation of an enabled recurring definition.
+      // Only reopen this monitor's own successful round; never override an explicit pause,
+      // a login handoff, unrelated work, or another monitor's accepted goal.
+      const priorRound = this.scheduledGroupRounds.get(task.conversationId) ??
+        this.appSettingStore?.get('schedule:group-round:' + task.conversationId)?.value as { task: ScheduledTask; firedAt: string } | undefined;
+      const nextAcceptedRound = room.state === 'completed' && task.enabled && task.rule.kind !== 'at' &&
+        priorRound?.task.id === task.id && Boolean(task.lastRunAt && this.scheduledTaskStore.hasHistoryResult(task.id, task.lastRunAt, 'success'));
+      const reason = task.workspaceId !== snapshot.conversation.workspaceId ? '群聊与定时任务工作区不匹配' :
+        ['paused', 'pausing'].includes(room.state) || room.state === 'completed' && !nextAcceptedRound ? '群聊已暂停或已验收，请先恢复' :
+        waitingLogin ? '等待登录，本轮合并跳过' : busy ? '群聊工作尚未完成，本轮合并跳过' : undefined;
+      if (reason) { this.recordTaskSkipped(task, firedAt, reason); this.recordTaskHistory(task, 'skipped', firedAt, undefined, reason); return { fired: false, reason }; }
+      if (nextAcceptedRound) host.command({ action: 'room-brief', conversationId: task.conversationId,
+        clientRequestId: 'scheduled-goal:' + task.id + ':' + firedAt,
+        goal: '【周期任务 · ' + task.name + '】' + this.scheduledAutomationInstruction(task, firedAt),
+        expectedGoalRevision: room.goalRevision });
+      const nextRunAt = computeNextRunAt(task, firedAt, now);
+      this.scheduledGroupRounds.set(task.conversationId!, {task:structuredClone(task),firedAt});
+      this.appSettingStore?.set('schedule:group-round:' + task.conversationId, {task:structuredClone(task),firedAt});
+      if (task.automation) { const binding = this.freezeScheduledAutomation(task, firedAt); this.scheduledAutomationRounds.set(task.conversationId!, binding); this.appSettingStore?.set('automation:round:' + task.conversationId, binding); }
+      // Register admission before starting: fast groups may settle before command() returns.
+      this.scheduledTaskDispatches.bindRun('group:' + task.id + ':' + firedAt, task.id);
+      this.scheduledGroupAdmissions.add(task.id);
+      this.scheduledTaskStore.update(task.id, { nextRunAt, lastRunAt: firedAt });
+      const result = host.command({ action: 'send', conversationId: task.conversationId, clientRequestId: 'scheduled:' + task.id + ':' + firedAt,
+        text: '【定时监控 · ' + task.name + '】' + this.scheduledAutomationInstruction(task, firedAt), intent: 'work' });
+      this.scheduledTaskStore.update(task.id, { nextRunAt, lastRunAt: firedAt });
+      this.publishTaskEvent('scheduledTask.fired', task.id, { taskId: task.id, firedAt, nextRunAt: nextRunAt ?? null, conversationId: result.snapshot?.conversation.id });
+      return { fired: true };
+    }
+
     // 会话忙：该任务会话有 in-flight run。
-    const conversationId = await this.getOrCreateTaskConversation(task, now);
+    const conversationId = await this.getOrCreateTaskConversation(task, now, Boolean(resumed));
     if (!conversationId) return { fired: false, reason: '任务会话创建失败' };
+    // Include the lazily created identity without reading mutable config back into this round.
+    task = { ...task, conversationId };
     const threadId = this.resolveConversationThreadId(conversationId);
     if (threadId) {
       const busy = [...this.demoRuns.values()].some(
@@ -19117,8 +19380,9 @@ export class Runtime {
       }
     }
 
-    // 更新状态（先落库再启动，崩溃最多重复一次触发）。
-    const nextRunAt = computeNextRunAt(task, firedAt, now);
+    // Execution remains frozen; future timer edits made during a wait stay live.
+    const schedulingTask = resumed ? this.scheduledTaskStore.get(task.id) ?? task : task;
+    const nextRunAt = computeNextRunAt(schedulingTask, firedAt, now);
     const updated = this.scheduledTaskStore.update(task.id, {
       nextRunAt,
       lastRunAt: firedAt,
@@ -19131,6 +19395,8 @@ export class Runtime {
       missedHours: Math.round(missedHours * 10) / 10,
     });
 
+    if (threadId && task.automation) this.scheduledAutomationThreads.set(threadId, resumed ? {...resumed, waitingLogin:false} : this.freezeScheduledAutomation(task, firedAt));
+
     // 注入指令启动 run（仿 triggerGoalTurn 路径，不经 socket）。
     if (threadId && this.stateStore && this.canStartModelRun()) {
       const runId = ulid() as RunId;
@@ -19138,8 +19404,9 @@ export class Runtime {
         const prepared = this.prepareRunBinding({
           runId,
           threadId: threadId as ThreadId,
-          userText: task.instruction,
+          userText: this.scheduledAutomationInstruction(task, firedAt),
           skillVersionIds: task.skillVersionIds ?? [],
+          networkEnabled: Boolean(task.automation?.browser || task.automation?.delivery || task.automation?.requiredMcpServerIds?.length),
           ...(task.target.kind === 'model' ? { modelId: task.target.modelId } : {}),
           ...(task.target.kind === 'agent'
             ? { globalAgentId: task.target.agentId }
@@ -19148,10 +19415,15 @@ export class Runtime {
               : {}),
         });
         const demoRun = prepared.run;
+        const frozen = this.scheduledAutomationThreads.get(threadId);
+        demoRun.scheduledTaskContext = { version: 1, threadId, task: structuredClone(task), firedAt,
+          ...(this.scheduledTaskDispatches.pendingTaskIds().includes(task.id) ? {daemonDispatched:true} : {}),
+          ...(frozen?.workflowVersionId ? {workflowVersionId:frozen.workflowVersionId} : {}) };
         const occurredAt = new Date().toISOString();
         const workspaceTask = this.workspaceStore.getTaskByThreadId(threadId as ThreadId);
+        const messageId = ulid() as MessageId;
         const messageEventDraft: EventDraft = {
-          id: ulid() as Event['id'],
+          id: messageId as unknown as Event['id'],
           workspaceId: workspaceTask?.workspaceId ?? this.workspaceId,
           taskId: workspaceTask?.id,
           runId,
@@ -19159,6 +19431,7 @@ export class Runtime {
           type: 'message.appended',
           occurredAt,
           payload: {
+            messageId,
             threadId,
             role: 'user',
             text: `【定时任务 · ${task.name}】${task.instruction}`,
@@ -19186,11 +19459,29 @@ export class Runtime {
             mcpServerIds: prepared.mcpServerIds,
           },
         };
-        const events = this.persistProjectedEvents(
-          [messageEventDraft, packetEvent],
+        const events = this.runInUnitOfWork(() => {
+          this.persistFinalChatMessage({
+            id: messageId,
+            threadId: threadId as ThreadId,
+            runId,
+            role: 'user',
+            text: messageEventDraft.payload.text as string,
+            createdAt: occurredAt,
+            strict: true,
+          });
+          return this.commitProjectedEvents(
+          [messageEventDraft, packetEvent, {
+            id: ulid() as Event['id'], workspaceId: workspaceTask?.workspaceId ?? this.workspaceId,
+            taskId: workspaceTask?.id, runId, category: 'run', type: 'run.started', occurredAt,
+            payload: {threadId, conversationId, modelId:demoRun.modelId, providerModelId:demoRun.providerModelId,
+              kernelId:demoRun.kernelId, globalAgentId:demoRun.globalAgentId, packetId:prepared.packetId,
+              idempotencyKey:runId, run: serializeDemoRun(demoRun), triggerSource:'scheduled',
+              scheduledTaskId:task.id, scheduledFiredAt:firedAt},
+          }],
           this.threadVersionProjection.snapshot(),
           projectedRuns,
-        );
+          );
+        });
         this.recordCommittedEvents(events);
         this.demoRuns.set(runId, demoRun);
         this.scheduledTaskDispatches.bindRun(String(runId), task.id);
@@ -19239,10 +19530,11 @@ export class Runtime {
     const result = await this.fireScheduledTask(task);
     if (!result.fired) return { ok: false, reason: result.reason };
     // 等待所有定时任务 run 结束（活动计数为零 = 无 in-flight 执行）。
-    while (this.scheduledTaskRunRegistry.activeCount() > 0) {
-      await new Promise((resolve) => setTimeout(resolve, 1_000));
+    while (this.scheduledTaskRunRegistry.activeCount() > 0 || this.scheduledGroupAdmissions.has(taskId)) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
     }
-    return { ok: true };
+    const settled = this.scheduledTaskStore?.get(taskId)?.lastResult;
+    return settled?.status === 'success' ? {ok:true} : {ok:false,reason:settled?.reason ?? '任务未产生已验收的执行结果'};
   }
 
   /** 任务 run 结束时从并发计数移除并回填执行摘要（监听终态事件）。 */
@@ -19265,7 +19557,7 @@ export class Runtime {
             {
               taskId,
               runId,
-              status: result.status,
+              status: result.status === 'success' ? 'success' : 'failed',
               ...(result.reason ? { reason: result.reason } : {}),
             },
           );
@@ -19280,8 +19572,9 @@ export class Runtime {
 
   private recordTaskSkipped(task: ScheduledTask, firedAt: string, reason: string): void {
     this.scheduledTaskStore?.update(task.id, {
+      nextRunAt: computeNextRunAt(task, firedAt, new Date()) ?? null,
       lastRunAt: firedAt,
-      lastResult: { status: 'skipped', firedAt, reason },
+      ...(task.lastResult?.status === 'waiting_input' ? {} : {lastResult: { status: 'skipped' as const, firedAt, reason }}),
     });
     this.publishTaskEvent('scheduledTask.skipped', task.id, {
       taskId: task.id,
@@ -19314,7 +19607,7 @@ export class Runtime {
   /** 将定时任务 run 的终态统一写入任务结果与唯一历史条目。 */
   private finalizeScheduledTaskRun(
     runId: string,
-  ): { status: 'success' | 'failed' | 'cancelled'; reason?: string } | undefined {
+  ): { status: ScheduledTaskRunStatus; reason?: string } | undefined {
     if (!this.scheduledTaskStore) return undefined;
     const metadata = this.scheduledTaskRunRegistry.takeMetadata(runId);
     if (!metadata) return undefined;
@@ -19331,21 +19624,37 @@ export class Runtime {
     const terminal = [...events]
       .reverse()
       .find((event) => TERMINAL_RUN_EVENT_TYPES.has(event.type));
-    const status: 'success' | 'failed' | 'cancelled' =
+    let status: ScheduledTaskRunStatus =
       terminal?.type === 'run.completed'
         ? 'success'
         : terminal?.type === 'run.cancelled'
           ? 'cancelled'
           : 'failed';
     const payload = (terminal?.payload ?? {}) as Record<string, unknown>;
-    const reason =
-      typeof payload.reason === 'string'
-        ? payload.reason
-        : typeof payload.errorMessage === 'string'
-          ? payload.errorMessage
+    let reason =
+      typeof payload.errorMessage === 'string'
+        ? payload.errorMessage
+        : typeof payload.reason === 'string'
+          ? payload.reason
           : terminal
             ? undefined
             : 'run 未产生终态事件';
+    const finalEvidence = this.readAutomationEvidence(metadata);
+    const reportedBlocker = finalEvidence.outcome?.runId === runId && finalEvidence.outcome.status !== 'success';
+    if (status !== 'cancelled' && metadata.task.automation && metadata.task.target.kind !== 'team' &&
+        (status === 'success' || reportedBlocker || payload.failureClass === 'delivery_incomplete')) {
+      const outcome = automationOutcomeFailure(metadata.task.automation, finalEvidence, runId);
+      if (outcome) { status = outcome.status; reason = outcome.reason; }
+    }
+    if (status === 'success' && metadata.task.automation) {
+      const failure = this.automationAcceptanceForBinding({task: metadata.task, firedAt: metadata.firedAt});
+      if (failure) { const delivery = this.readAutomationEvidence(metadata).delivery; status = delivery?.state === 'sending' || delivery?.state === 'unknown' ? 'reconciling' : 'failed'; reason = failure; }
+    }
+    const deliveryState = this.readAutomationEvidence(metadata).delivery?.state;
+    if (deliveryState === 'sending' || deliveryState === 'unknown') {status='reconciling'; reason='邮件发送结果待核对，为避免重复发送，本轮已停止自动重发';}
+    if (this.scheduledAutomationThreads.get(metadata.run.threadId)?.waitingLogin) { status='waiting_input'; reason='等待登录，产物已保留，请完成登录交接后继续'; }
+    this.scheduledAutomationThreads.delete(metadata.run.threadId);
+    this.preparedAutomationPrompts.delete(metadata.task.id + ":" + metadata.firedAt);
     const entryId = this.recordTaskHistory(metadata.task, status, metadata.firedAt, runId, reason);
     this.scheduledTaskStore.update(metadata.task.id, {
       lastResult: {
@@ -19357,7 +19666,7 @@ export class Runtime {
     });
     if (entryId && this.messageStore) {
       const page = this.messageStore.listMessages(metadata.run.threadId as ThreadId, { limit: 50 });
-      const summary = selectScheduledTaskHistorySummary(page.messages);
+      const summary = selectScheduledTaskHistorySummary(page.messages, runId);
       if (summary) this.scheduledTaskStore.updateHistorySummary(entryId, summary);
     }
     return { status, ...(reason ? { reason } : {}) };
@@ -19367,14 +19676,432 @@ export class Runtime {
     this.publishEvent(this.appendEvent('system', type, payload));
   }
 
-  /** 任务专属会话：按 target 创建（track agent/model，标题「任务 · {名}」）或复用。 */
+  /** Read-only probes establish MCP connectivity; cached tool names are not a connection receipt. */
+  private async prepareScheduledAutomation(
+    task: ScheduledTask,
+    firedAt: string,
+  ): Promise<PreparedAutomationRun> {
+    const workspaceId = task.workspaceId ?? this.getOrCreateInboxWorkspace();
+    const workspace = this.workspaceStore?.getWorkspace(workspaceId as WorkspaceId);
+    const agents = this.globalAgentStore?.listEffective(workspaceId) ?? [];
+    const teams = this.teamStore?.list() ?? [];
+    const modelIds = new Set([
+      ...(this.providerStore?.listAllModels().map((model) => String(model.id)) ?? []),
+      ...agents.flatMap((agent) => [
+        String(agent.defaultModelId),
+        ...agent.fallbackModelIds.map(String),
+      ]),
+      ...(task.target.kind === 'model' ? [task.target.modelId] : []),
+    ]);
+    const models = [...modelIds].map((id) => {
+      try {
+        const binding = resolveInitialRunModelBinding(
+          {
+            agent: this.resolveAgentModelBinding(),
+            requestedModelId: id,
+            planActRoute: { applied: false },
+          },
+          {
+            catalog: this.runBindingCatalog(),
+            secureStoreAvailable: Boolean(this.secureStore),
+            externalKernel: false,
+          },
+        );
+        return {
+          id,
+          available:
+            this.canStartModelRun() &&
+            (!this.providerStore?.listAllModels().length ||
+              Boolean(
+                this.providerStore.getProvider(
+                  binding.model?.providerId ?? ('' as ProviderId),
+                )?.enabled,
+              )),
+        };
+      } catch (error) {
+        return {
+          id,
+          available: false,
+          reason: error instanceof Error ? error.message : '模型未就绪',
+        };
+      }
+    });
+    const requiredMcp = [
+      ...new Set([
+        ...(task.automation?.requiredMcpServerIds ?? []),
+        ...(task.automation?.delivery ? [task.automation.delivery.mcpServerId] : []),
+      ]),
+    ];
+    const mcpServers: AutomationMcpDependency[] = [];
+    for (const id of requiredMcp) {
+      const server = this.mcpStore?.get(id);
+      if (!server || !server.enabled) {
+        mcpServers.push({
+          id,
+          registered: Boolean(server),
+          connected: false,
+          available: false,
+          tools: [],
+        });
+        continue;
+      }
+      let tools = server.tools;
+      let connected = false;
+      let reason: string | undefined;
+      try {
+        const timeoutMs = Math.min(server.timeoutMs || 10000, 10000);
+        if (server.transport === 'remote-http') {
+          const auth = await this.retrieveMcpAuth(server.id);
+          const discovered = await discoverRemoteMcpTools(server.endpoint, {
+            auth: auth ? { key: auth.key, scheme: auth.authScheme } : undefined,
+            timeoutMs,
+            maxBytes: server.maxOutputBytes,
+            maxTools: 200,
+          });
+          const liveNames = new Set(discovered.map((tool) => tool.name));
+          tools = server.tools.filter((tool) => liveNames.has(tool.name));
+          connected = true;
+        } else {
+          const worker = new LocalStdioMcpWorker();
+          for await (const event of worker.exec(
+            {
+              workingDir: workspace?.folderPath ?? process.cwd(),
+              endpoint: server.endpoint,
+              transport: server.transport,
+              policy: { ...server, timeoutMs },
+              mcpServerId: id,
+              action: { kind: 'list-tools', maxTools: 200 },
+            },
+            {
+              token: 'automation-preflight',
+              allowedRoot: workspace?.folderPath ?? process.cwd(),
+              timeoutMs,
+            },
+          )) {
+            if (event.type === 'completed') {
+              const output =
+                event.output as import('@sync-think/workers').LocalStdioMcpWorkerOutput;
+              connected = output.jsonRpcOk === true;
+              const liveNames = new Set(output.tools?.map((tool) => tool.name));
+              tools = server.tools.filter((tool) => liveNames.has(tool.name));
+            }
+            if (event.type === 'failed') reason = event.error?.message;
+          }
+        }
+      } catch (error) {
+        reason = error instanceof Error ? error.message : 'MCP 连接验证失败';
+      }
+      const delivery = task.automation?.delivery;
+      const selectedSend =
+        delivery?.mcpServerId === id ? (delivery.toolName ?? 'send_email') : undefined;
+      const sendTool = selectedSend
+        ? tools.find((tool) => tool.name === selectedSend)
+        : undefined;
+      let directRecipient = false;
+      try {
+        const schema = JSON.parse(sendTool?.inputSchemaJson ?? '{}') as {
+          properties?: Record<string, unknown>;
+        };
+        directRecipient = ['to', 'recipient', 'recipients', 'to_email', 'toEmail'].some(
+          (key) => schema.properties && Object.hasOwn(schema.properties, key),
+        );
+      } catch {
+        /* An opaque send schema is not a verified delivery adapter. */
+      }
+      mcpServers.push({
+        id,
+        registered: true,
+        connected,
+        available: true,
+        ...(delivery?.mcpServerId === id && directRecipient
+          ? { connector: 'gmail' as const }
+          : {}),
+        reason,
+        tools: tools.map((tool) => ({
+          name: tool.name,
+          available: true,
+          ...(tool.name === selectedSend && directRecipient
+            ? { capabilities: ['gmail.send' as const] }
+            : {}),
+        })),
+      });
+    }
+    const workflowId = task.automation?.browser?.workflowTaskId;
+    const workflow = workflowId
+      ? this.browserWorkflowService?.getWorkflow({ taskId: workflowId })
+      : undefined;
+    const fullAccess = task.automation?.executionMode === 'full-access';
+    const permission =
+      workflow?.version && this.browserWorkflowRunner
+        ? this.browserWorkflowRunner.checkPermissions(workflow.version.id, workflow.task.id)
+        : undefined;
+    return prepareAutomationRun(task, {
+      firedAt,
+      defaultWorkspaceId: workspaceId,
+      workspaces: workspace ? [{ id: workspace.id, available: true }] : [],
+      models,
+      agents: agents.map((agent) => ({
+        id: agent.id,
+        available: !agent.archived,
+        modelId: agent.defaultModelId,
+        fallbackModelIds: agent.fallbackModelIds,
+      })),
+      teams: teams.map((team) => ({
+        id: team.id,
+        available: true,
+        memberAgentIds: team.members.map((member) => member.agentId),
+        coordinatorAgentId: team.coordinatorAgentId ?? team.members[0]?.agentId,
+      })),
+      browserAvailable: Boolean(this.browserController),
+      browserWorkflowReplayAvailable: Boolean(this.browserWorkflowRunner),
+      browserProfiles: this.browserStore
+        ?.listProfiles()
+        .map((profile) => ({
+          id: profile.id,
+          available: true,
+          loginState: 'unknown' as const,
+        })),
+      browserWorkflows: workflow
+        ? [
+            {
+              id: workflow.task.id,
+              profileId: workflow.task.profileId,
+              workspaceId: workflow.task.workspaceId,
+              enabled: workflow.task.status === 'enabled',
+              publishedVersionId: workflow.version?.id,
+              ...(workflow.version
+                ? {
+                    publishedVersion: {
+                      id: workflow.version.id,
+                      requiredVariables: collectStepVariables(workflow.version.steps),
+                    },
+                  }
+                : {}),
+              approvalState:
+                permission && !permission.allowed && !fullAccess ? 'required' : 'ready',
+            },
+          ]
+        : [],
+      mcpServers,
+      tools: [
+        {
+          name: 'automation_export_artifact',
+          available: true,
+          capabilities: ['spreadsheet', 'presentation'],
+        },
+      ],
+      skills: (task.skillVersionIds ?? []).map((id) => ({
+        id,
+        available: Boolean(
+          this.skillStore?.getVersionMetadata(id)?.enabled &&
+          this.skillStore.isPermissionApproved(id),
+        ),
+      })),
+    });
+  }
+
+  private freezeScheduledAutomation(
+    task: ScheduledTask,
+    firedAt: string,
+  ): ScheduledAutomationBinding {
+    const workflowId = task.automation?.browser?.workflowTaskId;
+    const versionId = workflowId
+      ? this.browserWorkflowService?.getWorkflow({ taskId: workflowId }).version?.id
+      : undefined;
+    return {
+      task: structuredClone(task),
+      firedAt,
+      ...(versionId ? { workflowVersionId: versionId } : {}),
+    };
+  }
+
+  private scheduledAutomationForThread(
+    threadId: string,
+  ): ScheduledAutomationBinding | undefined {
+    const direct = this.scheduledAutomationThreads.get(threadId);
+    if (direct) return direct;
+    const scope = this.collaborationThreadScopes.get(threadId);
+    return scope ? this.scheduledAutomationForCollaborationTask(scope.input.snapshot, scope.input.task) : undefined;
+  }
+
+  private scheduledAutomationForCollaborationTask(
+    snapshot: import('@sync-think/shared').CollaborationSnapshot,
+    task: import('@sync-think/shared').CollaborationTask,
+  ): ScheduledAutomationBinding | undefined {
+    const conversationId = snapshot.conversation.id;
+    const cached = this.scheduledAutomationRounds.get(conversationId);
+    if (cached && this.isScheduledAutomationScope(snapshot, task, cached)) return cached;
+    const stored = this.appSettingStore?.get('automation:round:' + conversationId)?.value as
+      ScheduledAutomationBinding | undefined;
+    if (
+      stored?.task?.automation && typeof stored.firedAt === 'string' &&
+      this.isScheduledAutomationScope(snapshot, task, stored)
+    ) {
+      this.scheduledAutomationRounds.set(conversationId, stored);
+      return stored;
+    }
+    return undefined;
+  }
+
+  private isScheduledAutomationScope(
+    snapshot: import('@sync-think/shared').CollaborationSnapshot,
+    task: import('@sync-think/shared').CollaborationTask,
+    binding: ScheduledAutomationBinding,
+  ): boolean {
+    if (
+      binding.task.conversationId !== snapshot.conversation.id ||
+      binding.task.workspaceId !== snapshot.conversation.workspaceId || !snapshot.conversation.room
+    ) return false;
+    const receipt = snapshot.receipts['send:scheduled:' + binding.task.id + ':' + binding.firedAt];
+    if (!receipt) return false;
+    let messageId: string;
+    try {
+      messageId = (JSON.parse(receipt) as { reference: string }).reference;
+    } catch {
+      return false;
+    }
+    const goalRevision = task.goalRevision;
+    const seen = new Set<string>();
+    while (task && !seen.has(task.id)) {
+      if (task.goalRevision !== goalRevision || task.goalRevision !== snapshot.conversation.room.goalRevision)
+        return false;
+      if (task.originMessageId === messageId) return true;
+      seen.add(task.id);
+      const parent = task.parentTaskId
+        ? snapshot.tasks.find((item) => item.id === task.parentTaskId)
+        : undefined;
+      if (!parent) break;
+      task = parent;
+    }
+    return false;
+  }
+
+  private scheduledAutomationMcpIds(threadId: string): string[] {
+    const config = this.scheduledAutomationForThread(threadId)?.task.automation;
+    return [
+      ...new Set([
+        ...(config?.requiredMcpServerIds ?? []),
+        ...(config?.delivery ? [config.delivery.mcpServerId] : []),
+      ]),
+    ];
+  }
+
+  private scheduledAutomationMcpProviderNames(threadId: string): string[] {
+    const servers = this.scheduledAutomationMcpIds(threadId)
+      .map((id) => this.mcpStore?.get(id))
+      .filter((row): row is NonNullable<typeof row> => Boolean(row));
+    return mcpToolsToProviderSchemas(
+      servers.map((row) => ({ id: row.id, name: row.name, tools: row.tools })),
+      { maxTools: 16 },
+    ).tools.map((tool) => tool.name);
+  }
+
+  private scheduledAutomationInstruction(task: ScheduledTask, firedAt: string): string {
+    if (!task.automation) return task.instruction;
+    const prepared = this.preparedAutomationPrompts.get(task.id + ':' + firedAt);
+    if (prepared) return prepared;
+    return (
+      task.instruction +
+      '\n\n【本轮自动化契约，宿主配置】\n' +
+      JSON.stringify({
+        taskId: task.id,
+        firedAt,
+        timeZone: task.timeZone,
+        ...task.automation,
+      }) +
+      '\n仅完成本轮目标。能力链是协作指南，不是固定流水线。浏览器流程回放不等于业务验收；读取真实页面和来源日期。若要求表格/PPT，调用 automation_export_artifact 生成真正的 XLSX/PPTX，纯文本声明不算交付。邮件仅使用指定 MCP 和指定收件人；先核对产物，取得真实发送回执再报告成功。缺登录或权限时明确说明阻塞、保留已有结果，勿重复审批或把待配置标记成已完成。'
+    );
+  }
+
+  private automationEvidenceKey(binding: { task: ScheduledTask; firedAt: string }): string {
+    return 'automation:receipt:' + binding.task.id + ':' + binding.firedAt;
+  }
+  private readAutomationEvidence(binding: {
+    task: ScheduledTask;
+    firedAt: string;
+  }): AutomationRunEvidence {
+    const key = this.automationEvidenceKey(binding);
+    const stored = this.appSettingStore?.get(key)?.value;
+    if (isAutomationEvidence(stored)) return structuredClone(stored);
+    return structuredClone(
+      this.scheduledAutomationEvidence.get(key) ?? emptyAutomationEvidence(),
+    );
+  }
+  private saveAutomationEvidence(
+    binding: { task: ScheduledTask; firedAt: string },
+    evidence: AutomationRunEvidence,
+  ): void {
+    const key = this.automationEvidenceKey(binding);
+    this.scheduledAutomationEvidence.set(key, structuredClone(evidence));
+    this.appSettingStore?.set(key, evidence);
+  }
+  /** Validate the frozen business contract and the actual current bytes, not actor prose. */
+  private automationAcceptanceForBinding(binding: {task: ScheduledTask; firedAt: string}, includeDelivery = true): string | undefined {
+    const config = binding.task.automation;
+    if (!config) return undefined;
+    const evidence = this.readAutomationEvidence(binding);
+    const failure = automationAcceptanceFailure({...config, ...(includeDelivery ? {} : {delivery: undefined})}, evidence,
+      automationAcceptanceContractHash(config.acceptanceChecks, binding.firedAt, binding.task.timeZone));
+    if (failure) return failure;
+    for (const format of config.outputs ?? []) {
+      const output = evidence.outputs.find(item => item.format === format && item.bytes > 0)!;
+      try {
+        const entry = lstatSync(output.path);
+        if (!entry.isFile() || entry.isSymbolicLink() || entry.size !== output.bytes) return '交付文件已改变，请重新导出并核对';
+        const bytes = readFileSync(output.path);
+        if (createHash('sha256').update(bytes).digest('hex') !== output.sha256) return '交付文件已改变，请重新导出并核对';
+      } catch { return '交付文件不存在，请重新导出并核对'; }
+    }
+    return undefined;
+  }
+
+  private failAutomationAdmission(
+    task: ScheduledTask,
+    firedAt: string,
+    reason: string,
+    status: 'blocked' | 'waiting_input' = 'blocked',
+  ): { fired: false; reason: string } {
+    this.scheduledTaskStore?.update(task.id, {
+      nextRunAt: computeNextRunAt(task, firedAt, new Date()) ?? null,
+      lastRunAt: firedAt,
+      lastResult: { status, firedAt, reason },
+    });
+    this.recordTaskHistory(task, status, firedAt, undefined, reason);
+    this.publishTaskEvent('scheduledTask.updated', task.id, {
+      taskId: task.id,
+      action: 'preflight-blocked',
+      reason,
+    });
+    return { fired: false, reason };
+  }
+
+  private validateScheduledConversationTarget(task: Pick<ScheduledTask, 'target' | 'workspaceId' | 'automation'>): void {
+    const selected = task.automation?.conversation;
+    if (selected?.mode !== 'existing') return;
+    const conversation = this.conversationStore?.get(selected.conversationId as ConversationId);
+    if (!conversation || conversation.archivedAt) throw new Error('目标会话已删除或归档，请重新选择运行会话');
+    const workspace = conversation.workspaceId && this.workspaceStore?.getWorkspace(conversation.workspaceId);
+    const scope = workspace?.name === '__inbox__' ? undefined : conversation.workspaceId;
+    if (scope !== task.workspaceId) throw new Error('目标会话不属于所选工作区，请重新选择');
+    const ref = task.target.kind === 'agent' ? task.target.agentId : task.target.kind === 'team' ? task.target.teamId : task.target.modelId;
+    if (conversation.track !== task.target.kind || conversation.targetRef !== ref) throw new Error('目标会话的执行者与定时任务不一致，请重新选择');
+    if (task.target.kind === 'team' && !this.collaborationChatHost?.repository.read(conversation.id)?.conversation.room) throw new Error('请选择该小队的群聊会话');
+  }
+
+  /** Resolve explicit destination without silently replacing an existing conversation. */
+
   private async getOrCreateTaskConversation(
     task: ScheduledTask,
     now: Date = new Date(),
+    resumed = false,
   ): Promise<string | undefined> {
     if (!this.conversationStore || !this.workspaceStore) return undefined;
     let conversation: import('@sync-think/storage').ConversationRecord | undefined;
-    if (task.conversationId) {
+    const destination = task.automation?.conversation;
+    if (destination?.mode === 'existing') {
+      this.validateScheduledConversationTarget(task);
+      conversation = this.conversationStore.get(destination.conversationId as ConversationId);
+    } else if ((destination?.mode !== 'new' || resumed) && task.conversationId) {
       conversation = this.conversationStore.get(task.conversationId as ConversationId);
     }
     if (conversation) {
@@ -19382,7 +20109,8 @@ export class Runtime {
       const desiredScope = task.workspaceId && this.workspaceStore.getWorkspace(task.workspaceId as WorkspaceId) ? task.workspaceId : undefined;
       // Keep the old conversation and its files intact when a schedule changes scope.
       // The next run gets a fresh conversation under its newly selected scope.
-      if (currentScope !== desiredScope) conversation = undefined;
+      const desiredRef = task.target.kind === 'agent' ? task.target.agentId : task.target.kind === 'team' ? task.target.teamId : task.target.modelId;
+      if (currentScope !== desiredScope || conversation.track !== task.target.kind || conversation.targetRef !== desiredRef) conversation = undefined;
     }
     if (!conversation) {
       const workspaceId =
@@ -19583,7 +20311,7 @@ export class Runtime {
       );
       return;
     }
-    const command = parseCollaborationCommand(frame.payload);
+    let command = parseCollaborationCommand(frame.payload);
     if (!command) {
       this.writeMalformedPayload(socket, frame);
       return;
@@ -19592,6 +20320,35 @@ export class Runtime {
       // Renderer requests are user-scoped. Agent-originated collaboration
       // commands use the runtime-owned service path and provide their member
       // identity through the execution adapter rather than the pipe payload.
+      if (command.action === 'policy') {
+        if (command.policy.browserProfileId && !this.browserStore?.getProfile(command.policy.browserProfileId)) throw new Error('browser.profile_not_found');
+        if (command.policy.browserWorkflowTaskId) {
+          const workflow = this.browserWorkflowService?.getWorkflow({ taskId: command.policy.browserWorkflowTaskId });
+          const current = this.collaborationChatHost.repository.read(command.conversationId);
+          const profileId = command.policy.browserProfileId ?? current?.conversation.policy.browserProfileId ?? 'default';
+          if (!workflow?.version || workflow.task.status !== 'enabled' || workflow.task.profileId !== profileId || (workflow.task.workspaceId && workflow.task.workspaceId !== current?.conversation.workspaceId)) throw new Error('browser.workflow-binding-invalid');
+        }
+      }
+      if (command.action === 'send' && (command.images?.length || command.files?.length)) {
+        const current = this.collaborationChatHost.repository.read(command.conversationId);
+        // A transport retry must retain the originally imported bytes, even if the source changed.
+        if (!current?.receipts['send:' + command.clientRequestId]) {
+          const conversation = this.conversationStore?.get(command.conversationId as ConversationId);
+          const task = conversation?.taskId && this.workspaceStore?.getTask(conversation.taskId);
+          const root = task ? this.resolveChatWorkspaceRoot(task.threadId) : undefined;
+          command = prepareCollaborationAttachments(command, root);
+        } else {
+          const reference = (JSON.parse(current.receipts['send:' + command.clientRequestId]) as { reference: string }).reference;
+          const sent = current.messages.find(message => message.id === reference);
+          const images = sent?.blocks.filter(block => block.type === 'image').map(block => block.payload as import('@sync-think/shared').CollaborationImageAttachment) ?? [];
+          const files = sent?.blocks.filter(block => block.type === 'file').map(block => block.payload as import('@sync-think/shared').CollaborationFileAttachment) ?? [];
+          const imageKeys = (items: typeof images) => items.map(image => [image.id, image.name, image.mimeType]);
+          const fileKeys = (items: typeof files) => items.map(file => [file.sourcePath ?? file.path, file.name, file.mimeType, file.kind ?? 'file']);
+          if (JSON.stringify(imageKeys(command.images ?? [])) !== JSON.stringify(imageKeys(images)) ||
+              JSON.stringify(fileKeys(command.files ?? [])) !== JSON.stringify(fileKeys(files))) throw new Error('collaboration.idempotency_conflict');
+          command = { ...command, images: command.images ? images : undefined, files: command.files ? files : undefined, attachmentContext: undefined };
+        }
+      }
       const response = { ...this.collaborationChatHost.command(command), executionVersion: COLLABORATION_EXECUTION_VERSION };
       if (command.action === 'create' && !command.workspaceId && response.snapshot) {
         const conversation = this.conversationStore?.get(response.snapshot.conversation.id as ConversationId);
@@ -19931,6 +20688,7 @@ export class Runtime {
               left.localeCompare(right),
             ),
             demoRuns: serializeDemoRuns(projectedRuns),
+            compactionJobs: this.compactionJobs.stage(events),
           },
           createdAt: events[events.length - 1].occurredAt,
         }
@@ -19960,6 +20718,23 @@ export class Runtime {
     return committed.events;
   }
 
+  private recoverContinuationOutputReserve(runId: RunId, run: DemoRunState, message: string): boolean {
+    const state = recoverRejectedOutputReserve(run.nativeTaskContinuation, message);
+    if (!state) return false;
+    const occurredAt = new Date().toISOString();
+    const next = appendAssistantStatus({...run, nativeTaskContinuation: state, nextAdapterEventIndex: 0}, {
+      statusType: 'other', label: '网关限制单轮输出长度，使用已接受的长度继续任务', occurredAt,
+    });
+    this.demoRuns.set(runId, next);
+    this.publishEvent(this.persistProjectedEvent({
+      id: ulid() as Event['id'], workspaceId: this.resolveEventWorkspaceId(run.threadId),
+      taskId: this.resolveEventTaskId(run.threadId), runId, category: 'run', type: 'run.continuing', occurredAt,
+      payload: {threadId: run.threadId, reason: 'output_reserve_adjusted', run: serializeDemoRun(next)},
+    }, new Map(this.demoRuns)));
+    this.pushKernelTimelineSnapshot(runId, run.threadId, occurredAt);
+    return true;
+  }
+
   private async executeDemoRun(runId: RunId): Promise<void> {
     const initialRun = this.demoRuns.get(runId);
     if (!initialRun || !this.activeRuns.start(runId)) return;
@@ -19968,6 +20743,7 @@ export class Runtime {
       // Multi-turn chat history + optional bound workspace for file tools.
       // Network tools can run without a project folder when Compose 联网 is on.
       let chatMessages = this.buildChatProviderMessages(initialRun);
+      if (initialRun.nativeTaskContinuation?.instruction) chatMessages.push({ role: 'system', content: initialRun.nativeTaskContinuation.instruction });
       const workspaceRoot = this.resolveChatWorkspaceRoot(initialRun.threadId);
       const executionMode = this.resolveChatExecutionMode(initialRun.threadId);
       const networkEnabled = initialRun.networkEnabled === true;
@@ -19981,7 +20757,20 @@ export class Runtime {
       const toolsEnabled = true;
       const pendingToolCalls: import('@sync-think/adapters').ProviderToolCall[] = [];
       let toolLoopRound = 0;
-      const MAX_TOOL_ROUNDS = 8;
+      const toolLoopUsage = { toolCallsUsed: 0, outputTokensUsed: 0 };
+      // Root chats and scheduled tasks are progress-bounded, not lifetime-token/operation-bounded.
+      // Assigned collaboration workers, delegated children, and explicit goals keep their quotas.
+      const progressBoundedRun = isProgressBoundedNativeTask({
+        scheduled: Boolean(initialRun.scheduledTaskContext),
+        delegated: Boolean(initialRun.delegationParentRunId),
+        explicitlyBudgeted: initialRun.delegationTokenBudget != null || this.goalExecutionState.hasRunRevision(String(runId)),
+        collaborationScoped: this.collaborationThreadScopes.has(initialRun.threadId),
+      });
+      const runUntilDelivered = Boolean(initialRun.scheduledTaskContext) && progressBoundedRun;
+      const executionBudgetReason = () => progressBoundedRun ? undefined : toolLoopBudgetReason(toolLoopUsage);
+      // At most one already-generated artifact and one blocker can be persisted after exhaustion.
+      const budgetFinalizations = new Set<string>();
+      let toolLoopFailedRounds = 0;
       /** Track repeated/failed tool batches so we can force a final answer. */
       let toolLoopSeenFingerprints = new Set<string>();
       let toolLoopStagnantRounds = 0;
@@ -20078,9 +20867,18 @@ export class Runtime {
               }),
               signal: abort.signal,
               toolAllowlist: attemptRun.delegatedToolAllowlist,
-              ...(attemptRun.delegatedReadOnly && attemptRun.delegationTokenBudget !== null
-                ? { maxOutputTokens: attemptRun.delegationTokenBudget }
-                : {}),
+              ...(finalTurn && !progressBoundedRun
+                ? { maxOutputTokens: Math.min(
+                    NATIVE_FINAL_TOKEN_BUDGET,
+                    attemptRun.delegationParentRunId
+                      ? (attemptRun.delegationTokenBudget ?? NATIVE_FINAL_TOKEN_BUDGET)
+                      : NATIVE_FINAL_TOKEN_BUDGET,
+                  ) }
+                : attemptRun.delegationParentRunId && attemptRun.delegationTokenBudget != null
+                  ? { maxOutputTokens: attemptRun.delegationTokenBudget }
+                  : attemptRun.nativeTaskContinuation?.outputTokens
+                    ? { maxOutputTokens: attemptRun.nativeTaskContinuation.outputTokens }
+                    : {}),
             });
             if (process.env.SYNC_THINK_E2E_DEBUG === '1') {
               const schemas = nativePlatformToolSchemas({
@@ -20100,6 +20898,7 @@ export class Runtime {
           } catch (error) {
             if (abort.signal.aborted || this.isAbortError(error)) return;
             const message = error instanceof Error ? error.message : 'provider stream failed';
+            if (!producedOutputThisRound() && this.recoverContinuationOutputReserve(runId, attemptRun, message)) continue;
             const failureClass = this.classifyThrownFailure(error);
             console.error('[demo-run] provider error', {
               runId,
@@ -20156,6 +20955,7 @@ export class Runtime {
 
           let providerEventIndex = 0;
           let resumeAfterFallback = false;
+          let resumeAfterContinuation = false;
           let finishedWithToolRequests = false;
           pendingToolCalls.length = 0;
           const roundTranscript = createProviderRoundTranscript();
@@ -20268,6 +21068,9 @@ export class Runtime {
               const failureClass = adapterEvent.failureClass as FailureClass;
               const message =
                 typeof adapterEvent.message === 'string' ? adapterEvent.message : undefined;
+              if (!producedOutputThisRound() && message && this.recoverContinuationOutputReserve(runId, currentRun, message)) {
+                resumeAfterFallback = true; break;
+              }
               console.error('[demo-run] provider error event', {
                 runId,
                 failureClass,
@@ -20319,8 +21122,12 @@ export class Runtime {
               finishedWithToolRequests = true;
             }
             if (adapterEvent.type === 'usage') {
+              // Count generated tokens across provider rounds/fallbacks. Replayed
+              // input context is not new work; delegated/goal budgets stay stricter.
+              toolLoopUsage.outputTokensUsed += Number.isFinite(adapterEvent.tokensOut)
+                ? Math.max(0, Math.floor(adapterEvent.tokensOut)) : 0;
               const delegationTokenBudget = currentRun.delegationTokenBudget;
-              if (currentRun.delegatedReadOnly && delegationTokenBudget != null) {
+              if (currentRun.delegationParentRunId && delegationTokenBudget != null) {
                 const tokensUsed =
                   (currentRun.delegationTokensUsed ?? 0) +
                   Math.max(0, Math.floor(adapterEvent.tokensIn)) +
@@ -20454,6 +21261,63 @@ export class Runtime {
                 // Convert synthetic completion into a non-terminal marker.
                 projection.type = 'tool.turn_pending';
                 projection.category = 'tool';
+              }
+            }
+            // A round ending is not evidence that the task delivered. Reuse the run,
+            // frozen contract and transcript; never replay completed side effects.
+            if (adapterEvent.type === 'finished' && !suppressTerminal && progressBoundedRun) {
+              const binding = this.scheduledAutomationForThread(currentRun.threadId);
+              const evidence = binding ? this.readAutomationEvidence(binding) : undefined;
+              const explicitBlocker = evidence?.outcome && evidence.outcome.status !== 'success';
+              const uncertainDelivery = evidence?.delivery?.state === 'sending' || evidence?.delivery?.state === 'unknown';
+              const acceptanceFailure = adapterEvent.reason === 'stop' && runUntilDelivered && binding &&
+                !binding.waitingLogin && !explicitBlocker && !uncertainDelivery
+                ? this.automationAcceptanceForBinding(binding) ??
+                  (binding.task.automation ? automationOutcomeFailure(binding.task.automation, evidence!, String(runId))?.reason : undefined)
+                : undefined;
+              const reason = adapterEvent.reason === 'length' ? 'length' : acceptanceFailure ? 'acceptance' : undefined;
+              if (reason) {
+                const decision = decideNativeTaskContinuation({
+                  previous: currentRun.nativeTaskContinuation, reason, detail: acceptanceFailure,
+                  progress: reason === 'length'
+                    ? currentRun.assistantText.slice(roundOutputLengths.assistantText) +
+                      currentRun.commentaryText.slice(roundOutputLengths.commentaryText)
+                    : JSON.stringify({ outputs: evidence?.outputs, workflow: evidence?.browserWorkflowCompleted,
+                        outcome: evidence?.outcome?.status, browserReadRun: evidence?.browserRead?.runId,
+                        delivery: evidence?.delivery ? {state: evidence.delivery.state, receiptId: evidence.delivery.receiptId} : undefined }),
+                  currentOutputTokens: currentRun.nativeTaskContinuation?.outputTokens ?? resolveContextBudget({
+                    contextWindow: currentRun.effectiveContextWindow ?? currentRun.contextWindow ?? 128_000,
+                    modelMaxOutputTokens: currentRun.modelMaxOutputTokens,
+                  }).reservedOutputTokens,
+                  contextWindow: currentRun.effectiveContextWindow ?? currentRun.contextWindow ?? 128_000,
+                  modelMaxOutputTokens: currentRun.modelMaxOutputTokens,
+                });
+                const hardStop = finalTurn || explicitBlocker || uncertainDelivery || binding?.waitingLogin ||
+                  reason === 'acceptance' && toolLoopFailedRounds > 0 || executionBudgetReason() ||
+                  currentRun.delegationTokenBudget != null && (currentRun.delegationTokensUsed ?? 0) >= currentRun.delegationTokenBudget;
+                if (decision.blocked || hardStop) {
+                  projection.type = 'run.failed';
+                  projection.payload = { ...projection.payload,
+                    failureClass: reason === 'length' ? 'output_limit' : 'delivery_incomplete',
+                    errorMessage: decision.blocked ? decision.message :
+                      binding?.waitingLogin ? '等待登录，已有结果已保留，请完成登录交接后继续。' :
+                      uncertainDelivery ? '邮件发送结果待核对，为避免重复发送，已停止自动续接。' :
+                      explicitBlocker ? evidence!.outcome!.reason :
+                      (acceptanceFailure ?? '单轮输出被截断') + '；执行已达到停止条件，已有进度已保留。',
+                  };
+                } else {
+                  const occurredAt = new Date().toISOString();
+                  const nextRun = appendAssistantStatus({ ...currentRun,
+                    nativeTaskContinuation: decision.state,
+                    nextAdapterEventIndex: 0,
+                  }, { statusType: 'other', label: decision.message, occurredAt });
+                  projection.type = 'run.continuing'; projection.category = 'run';
+                  projection.terminal = false; projection.nextRun = nextRun;
+                  projection.payload = { threadId: currentRun.threadId, reason, message: decision.message,
+                    continuationRound: decision.state.rounds, modelId: currentRun.modelId,
+                    providerModelId: currentRun.providerModelId };
+                  resumeAfterContinuation = true;
+                }
               }
             }
             if (projection.terminal && projection.type === 'run.completed') {
@@ -20665,7 +21529,25 @@ export class Runtime {
               this.demoRuns.set(runId, projection.nextRun);
             }
             providerEventIndex++;
-            if (projection.terminal) break;
+            if (projection.terminal || resumeAfterContinuation) break;
+          }
+
+          if (resumeAfterContinuation) {
+            // Incomplete tool proposals were never admitted. Keep visible progress,
+            // not unmatched tool calls; earlier completed tool/result pairs stay intact.
+            appendActiveRoundTranscript('visible');
+            const current = this.demoRuns.get(runId);
+            if (!current || abort.signal.aborted) return;
+            // A thinking-only truncated round must retain the partial analysis too.
+            const reasoning = current.reasoningText.slice(roundReasoningStart);
+            if (reasoning) chatMessages.push({ role: 'assistant', phase: 'commentary',
+              content: '[上一轮未完成的分析记录，供续接参考]\n' + reasoning.slice(-12_000) });
+            chatMessages = chatMessages.filter(message => message.role !== 'system' ||
+              typeof message.content !== 'string' || !message.content.startsWith('[宿主任务续接]\n'));
+            chatMessages.push({ role: 'system', content: current.nativeTaskContinuation!.instruction });
+            this.demoRuns.set(runId, { ...current, nextAdapterEventIndex: 0 });
+            this.pushKernelTimelineSnapshot(runId, current.threadId, new Date().toISOString());
+            continue;
           }
 
           if (resumeAfterFallback) {
@@ -20680,11 +21562,7 @@ export class Runtime {
             finishedWithToolRequests &&
             toolsEnabled &&
             pendingToolCalls.length > 0 &&
-            this.demoRuns.has(runId) &&
-            (toolLoopRound < MAX_TOOL_ROUNDS ||
-              pendingToolCalls.every((call) =>
-                ['read_command', 'list_commands', 'stop_command'].includes(call.name),
-              ))
+            this.demoRuns.has(runId)
           ) {
             toolLoopRound += 1;
             const currentRun = this.demoRuns.get(runId)!;
@@ -20699,7 +21577,11 @@ export class Runtime {
             const delegationBatch =
               pendingToolCalls.length > 1 &&
               !currentRun.delegatedReadOnly &&
-              pendingToolCalls.every((call) => call.name === 'agent_delegate');
+              pendingToolCalls.every((call) => call.name === 'agent_delegate') &&
+              !executionBudgetReason() &&
+              (progressBoundedRun || pendingToolCalls.length <= NATIVE_TOOL_CALL_BUDGET - toolLoopUsage.toolCallsUsed);
+            // Charge the complete parallel batch before any child can start.
+            if (delegationBatch) toolLoopUsage.toolCallsUsed += pendingToolCalls.length;
             const delegatedBatchResults = delegationBatch
               ? await this.executeDelegationBatch({
                   run: currentRun,
@@ -20718,7 +21600,7 @@ export class Runtime {
                   item.resultText,
                 );
                 const foldedForModel = foldToolOutputText(item.resultText).text;
-                completedResults.push({ toolCallId: item.toolCall.id, content: foldedForModel });
+                completedResults.push({ toolCallId: item.toolCall.id, content: item.resultText });
                 chatMessages = [
                   ...chatMessages,
                   { role: 'tool', toolCallId: item.toolCall.id, content: foldedForModel },
@@ -20751,6 +21633,27 @@ export class Runtime {
                 this.pushKernelTimelineSnapshot(runId, runBeforeTool.threadId, toolStartOccurredAt);
               }
 
+              const budgetReason = executionBudgetReason();
+              const finalization = !budgetFinalizations.has(toolCall.name) && ['collaboration_submit_artifact', 'collaboration_report_blocker'].includes(toolCall.name) && this.isCollaborationControlToolAllowed(currentRun, toolCall.name);
+              if (budgetReason && !finalization) {
+                // Every requested call still receives a matching tool result.
+                // No approval, mutation or delegation is attempted over budget.
+                const deniedText = JSON.stringify({ ok: false, code: 'EXECUTION_BUDGET_EXHAUSTED', error: budgetReason });
+                this.publishToolCompleted(runId, currentRun.threadId, toolCall, deniedText);
+                completedResults.push({ toolCallId: toolCall.id, content: deniedText });
+                chatMessages = [...chatMessages, { role: 'tool', content: deniedText, toolCallId: toolCall.id }];
+                continue;
+              }
+              if (budgetReason && finalization) budgetFinalizations.add(toolCall.name);
+              toolLoopUsage.toolCallsUsed += 1;
+
+              if (!this.isTaskRoomToolAllowed(currentRun, toolCall.name)) {
+                const deniedText = JSON.stringify({ ok: false, error: 'task_room.tool_not_allowed' });
+                this.publishToolCompleted(runId, currentRun.threadId, toolCall, deniedText);
+                completedResults.push({ toolCallId: toolCall.id, content: deniedText });
+                chatMessages = [...chatMessages, { role: 'tool', content: deniedText, toolCallId: toolCall.id }];
+                continue;
+              }
               if (currentRun.delegatedReadOnly) {
                 const dispatch = (
                   currentRun as DemoRunState & {
@@ -20760,7 +21663,7 @@ export class Runtime {
                     >;
                   }
                 ).mcpToolDispatch?.get(toolCall.name);
-                if (!isDelegatedReadOnlyTool(toolCall.name, dispatch?.readOnly) && !this.isCollaborationControlToolAllowed(currentRun, toolCall.name)) {
+                if (!this.isReadOnlyRunToolAllowed(currentRun, toolCall.name, dispatch?.readOnly)) {
                   const deniedText = JSON.stringify({
                     ok: false,
                     error: this.collaborationThreadScopes.has(currentRun.threadId)
@@ -20775,6 +21678,13 @@ export class Runtime {
                   ];
                   continue;
                 }
+              }
+              if (LIBRARY_DEFINITION_TOOLS.has(toolCall.name) && !this.canProposeAgentDefinitions(currentRun)) {
+                const deniedText = JSON.stringify({ ok: false, error: 'definition_management.direct_user_turn_required' });
+                this.publishToolCompleted(runId, currentRun.threadId, toolCall, deniedText);
+                completedResults.push({ toolCallId: toolCall.id, content: deniedText });
+                chatMessages = [...chatMessages, { role: 'tool', content: deniedText, toolCallId: toolCall.id }];
+                continue;
               }
 
               const desktopCapabilityEnabled = this.isComputerUsePluginEnabled();
@@ -20806,6 +21716,7 @@ export class Runtime {
                 })
               ) {
                 const browserPermissionInput = {
+                  profileId: this.resolveBrowserProfileForThread(currentRun.threadId),
                   toolName: toolCall.name,
                   argumentsJson: toolCall.argumentsJson || '{}',
                   workspaceId: this.resolveEventWorkspaceId(currentRun.threadId),
@@ -20929,6 +21840,7 @@ export class Runtime {
                   ];
                   continue;
                 }
+                if (LIBRARY_DEFINITION_MUTATIONS.has(toolCall.name)) this.markDefinitionManagement(currentRun);
                 const approval = await this.requestChatToolApproval({
                   runId,
                   threadId: currentRun.threadId,
@@ -20952,7 +21864,8 @@ export class Runtime {
                   ];
                   continue;
                 }
-                // approved �?fall through to execute
+                this.recordDefinitionApproval(currentRun, toolCall);
+                // Approved; the definition executor consumes this exact one-shot grant.
               } else if (
                 !isChatToolAllowed(executionMode, toolCall.name, {
                   networkEnabled,
@@ -20990,6 +21903,7 @@ export class Runtime {
                 ? resolveCollaborationToolDenial({
                     track: currentRun.track,
                     agentManagementIntent: this.managementIntentForRun(currentRun),
+                    allowAgentDefinitionProposals: this.canProposeAgentDefinitions(currentRun),
                     toolName: toolCall.name,
                     settings: normalizeCollaborationSettings(
                       this.appSettingStore?.get(COLLABORATION_SETTINGS_KEY)?.value,
@@ -21034,6 +21948,12 @@ export class Runtime {
                   signal: abort.signal,
                   approval: browserApproval,
                 });
+              } else if (toolCall.name === 'automation_report_outcome') {
+                resultText = this.executeAutomationOutcomeTool(currentRun, toolCall.argumentsJson);
+              } else if (toolCall.name === 'automation_request_login') {
+                resultText = await this.executeAutomationLoginTool(currentRun, toolCall.argumentsJson);
+              } else if (toolCall.name === 'automation_export_artifact') {
+                resultText = await this.executeAutomationArtifactTool(currentRun, toolCall.argumentsJson);
               } else if (CHAT_BROWSER_WORKFLOW_TOOL_NAMES.has(toolCall.name)) {
                 if (toolCall.name === 'browser_workflow_execute') {
                   resultText = await this.executeChatBrowserWorkflowReplay({
@@ -21070,7 +21990,7 @@ export class Runtime {
                   signal: abort.signal,
                 });
               } else if (CHAT_AGENT_TOOL_NAMES.has(toolCall.name)) {
-                resultText = this.executeChatAgentTool({
+                resultText = await this.executeChatAgentTool({
                   run: currentRun,
                   toolCall,
                 });
@@ -21170,10 +22090,18 @@ export class Runtime {
                     }
                   : undefined,
               );
-              const foldedForModel = foldToolOutputText(resultText).text;
+              // This tool already returns bounded pages. Head/tail folding would corrupt its JSON and lose continuation cursors.
+              const foldedForModel = toolCall.name === 'browser_workflow_execute' ? projectBrowserWorkflowResultForModel(resultText) : ['collaboration_read_context', 'web_fetch'].includes(toolCall.name) ? resultText : foldToolOutputText(resultText).text;
+              // A read-only poll of an already running command is not a new
+              // operation. It still consumes the generated-token budget.
+              if (toolCall.name === 'read_command' && isRunningCommandResult(resultText)) {
+                toolLoopUsage.toolCallsUsed -= 1;
+              }
+              // Measure progress from the real result, not its lossy head/tail
+              // projection for model context (large docs may change in the middle).
               completedResults.push({
                 toolCallId: toolCall.id,
-                content: foldedForModel,
+                content: resultText,
                 pendingCommand:
                   ['run_command', 'read_command'].includes(toolCall.name) &&
                   isRunningCommandResult(resultText),
@@ -21184,8 +22112,7 @@ export class Runtime {
               ];
             }
 
-            // NewMax preventive: also fold older tool outputs still in the live loop transcript.
-            chatMessages = foldLongToolOutputsInMessages(chatMessages).messages;
+            // Keep the original loop transcript; request preflight prunes only at pressure.
 
             // Waiting for a live command is not a new work attempt or a stagnant retry.
             if (
@@ -21197,16 +22124,18 @@ export class Runtime {
             }
             const guard = evaluateToolLoopGuard({
               toolLoopRound,
-              maxToolRounds: MAX_TOOL_ROUNDS,
+              failedRounds: toolLoopFailedRounds,
               completedResults,
               seenFingerprints: toolLoopSeenFingerprints,
               stagnantRounds: toolLoopStagnantRounds,
             });
             toolLoopSeenFingerprints = guard.seenFingerprints;
             toolLoopStagnantRounds = guard.stagnantRounds;
-            if (guard.kind === 'force_final') {
+            toolLoopFailedRounds = guard.failedRounds;
+            const budgetReason = executionBudgetReason();
+            if (budgetReason || guard.kind === 'force_final') {
               forceFinalAnswer = true;
-              forceFinalReason = guard.reason;
+              forceFinalReason = budgetReason ?? guard.reason;
             } else if (guard.reason) {
               // Soft recovery hint (e.g. first all-unavailable batch) �?keep tools on
               // but tell the model how to recover.
@@ -21226,25 +22155,6 @@ export class Runtime {
             }
             // One run stays one durable assistant turn; persist only at terminal.
 
-            continue;
-          }
-
-          // Hit the round cap with pending tools still requested: one forced final turn.
-          if (
-            !finalTurn &&
-            finishedWithToolRequests &&
-            toolsEnabled &&
-            pendingToolCalls.length > 0 &&
-            this.demoRuns.has(runId) &&
-            toolLoopRound >= MAX_TOOL_ROUNDS &&
-            !forceFinalAnswer
-          ) {
-            forceFinalAnswer = true;
-            forceFinalReason = `已达到工具轮次上限（${MAX_TOOL_ROUNDS}）。请停止调用工具，直接根据已有结果回复用户。`;
-            const live = this.demoRuns.get(runId);
-            if (live) {
-              this.demoRuns.set(runId, { ...live, nextAdapterEventIndex: 0 });
-            }
             continue;
           }
 
@@ -21301,7 +22211,7 @@ export class Runtime {
       // Synthetic thread strings alone have no storage/workspace binding. Materialize a
       // real child task before preparing context or persisting the model's final answer.
       const existing = this.workspaceStore?.getTaskByThreadId(threadId as ThreadId);
-      if (existing && existing.workspaceId !== input.snapshot.conversation.workspaceId)
+      if (existing && (existing.workspaceId !== input.snapshot.conversation.workspaceId || existing.id !== 'collaboration-task:' + input.task.id))
         throw new Error('collaboration.thread_scope_mismatch');
       if (!existing && this.workspaceStore) {
         const parent = this.conversationStore?.get(input.snapshot.conversation.id);
@@ -21314,11 +22224,12 @@ export class Runtime {
       }
       this.collaborationThreadScopes.set(threadId, {
         input, artifacts: [],
-        previousArtifactHash: existingArtifactHash(this.resolveChatWorkspaceRoot(threadId), input.task),
+        previousArtifactHash: undefined,
         conversationId: input.snapshot.conversation.id,
         taskKind: input.task.kind,
         readOnly: input.task.kind !== 'task' || (input.task.resourceClaims.length > 0 && input.task.resourceClaims.every(claim => claim.mode === 'read')),
       });
+      this.collaborationThreadScopes.get(threadId)!.previousArtifactHash = existingArtifactHash(this.resolveChatWorkspaceRoot(threadId), input.task);
       const member = input.snapshot.members.find(item => item.id === input.task.assigneeMemberId);
       const modelConversation = input.snapshot.conversation.kind === 'model';
       const prepared = this.prepareRunBinding({
@@ -21326,22 +22237,42 @@ export class Runtime {
         track: modelConversation ? 'model' : 'agent',
         modelId: modelConversation ? input.snapshot.conversation.modelId : undefined,
         globalAgentId: modelConversation ? undefined : member?.agentId, skillContextMode: 'run',
+        networkEnabled: input.snapshot.conversation.policy.networkEnabled === true || Boolean(this.scheduledAutomationForThread(threadId)?.task.automation?.browser || this.scheduledAutomationForThread(threadId)?.task.automation?.delivery || this.scheduledAutomationForThread(threadId)?.task.automation?.requiredMcpServerIds?.length),
       });
+      const admittedIds = input.snapshot.conversation.room
+        ? new Set(roomContextSelection(input.snapshot, input.task, input.attempt).manifest.messageIds)
+        : new Set(input.snapshot.messages.filter(message => message.sequence <= input.attempt.contextSequence).slice(-24).map(message => message.id));
+      const attachmentImages = collaborationMessageImages(input.snapshot.messages.filter(message => admittedIds.has(message.id)));
+      if (attachmentImages.length) prepared.run.images = attachmentImages;
       const parentConversation = this.conversationStore?.get(input.snapshot.conversation.id);
       const boundTeam = member?.teamSnapshot ?? (parentConversation?.track === 'team' ? this.teamStore?.get(parentConversation.targetRef as TeamId) : undefined);
+      const routingContextBlocks = prepared.run.projectContextPromptBlocks ?? [];
       prepared.run.projectContextPromptBlocks = [...(prepared.run.projectContextPromptBlocks ?? []),
-        buildCollaborationExecutionContext(input.snapshot, input.task, input.attempt, input.task.kind === 'reply' ? boundTeam : undefined)];
+        buildCollaborationExecutionContext(input.snapshot, input.task, input.attempt, boundTeam),
+        '浏览器 Profile: ' + (input.snapshot.conversation.policy.browserProfileId ?? 'default') + '. 发现登录墙、验证码或设备确认时，调用 collaboration_request_login 后结束本轮；其他群聊继续执行。用户点击继续后要重新读取页面验证登录，复用已有成果，不将登录确认视为目标完成。',
+        ...(input.task.kind === 'task' && input.snapshot.conversation.policy.browserWorkflowTaskId ? ['复用已绑定浏览器流程 ' + input.snapshot.conversation.policy.browserWorkflowTaskId + '。默认参数 ' + JSON.stringify(input.snapshot.conversation.policy.browserWorkflowVariables ?? {}) + '。同类任务优先 browser_workflow_execute，不重复探索。必须核查真实结果与工作目标；步骤回放成功不等于业务验收。'] : [])];
+      // Coordination is read-only with narrowly scoped scheduling tools, not a second writer.
+      if (input.snapshot.conversation.room && input.task.purpose === 'coordination') this.collaborationThreadScopes.get(threadId)!.readOnly = true;
       // Read claims must stay read-only even if the conversation allows writes.
       if (this.collaborationThreadScopes.get(threadId)?.readOnly) {
         prepared.run.delegatedReadOnly = true;
         // Match advertised tools to the dispatch guard; otherwise models attempt writes we reject.
-        prepared.run.delegatedToolAllowlist = [...DELEGATED_READONLY_TOOLS, ...['collaboration_start_workflow', 'collaboration_dispatch_tasks', 'collaboration_submit_artifact', 'list_agent_resources', 'create_agent', 'update_agent'].filter(name => this.isCollaborationControlToolAllowed(prepared.run, name))];
+        prepared.run.delegatedToolAllowlist = [...DELEGATED_READONLY_TOOLS, ...['browser_open', 'browser_read', 'browser_workflow_list', 'browser_workflow_get', 'browser_workflow_execute', 'automation_export_artifact', 'collaboration_read_context', 'collaboration_send_message', 'collaboration_start_workflow', 'collaboration_dispatch_tasks', 'collaboration_handoff', 'collaboration_submit_artifact', 'collaboration_report_blocker', 'collaboration_request_login', ...LIBRARY_DEFINITION_TOOLS, ...this.scheduledAutomationMcpProviderNames(threadId)].filter(name => this.isReadOnlyRunToolAllowed(prepared.run, name))];
       }
       if (input.task.deliverable?.kind === 'file' && this.collaborationThreadScopes.get(threadId)?.readOnly) {
         return { output: '', runId: String(runId), threadId, error: { code: 'collaboration.file_delivery_readonly', category: 'permission',
           message: '该任务约定写入文件，但当前智能体或会话为只读。请设置智能体继承权限并批准工作区写入，或创建文档交付任务。', retryable: true, traceId: String(runId) } };
       }
       this.demoRuns.set(runId, prepared.run);
+      if (input.task.conversationPlanning) {
+        this.collaborationThreadScopes.get(threadId)!.readOnly = true;
+        prepared.run.delegatedReadOnly = true;
+        prepared.run.delegatedToolAllowlist = [];
+        // Preserve admitted child-task goal/status sources so the context ledger
+        // describes the actual provider payload. These contain the public-only
+        // routing request; do not include the general participant work context.
+        prepared.run.projectContextPromptBlocks = [...routingContextBlocks, input.task.instructions];
+      }
       this.collaborationTaskRuns.set(input.attempt.id, String(runId));
       this.collaborationProgress.set(String(runId), new CollaborationProgressPublisher(input.onProgress));
       input.onProgress({ runId: String(runId), threadId, status: 'running', output: '', phase: 'thinking' });
@@ -21352,7 +22283,7 @@ export class Runtime {
       if (input.signal.aborted) return { output: '', runId: String(runId), threadId };
       const completed = this.demoRuns.get(runId);
       this.collaborationProgress.get(String(runId))?.flush();
-      return { output: completed ? projectCollaborationRunProgress(completed).output ?? '' : '', ...this.collaborationRunResults.get(String(runId)), artifacts: this.collaborationThreadScopes.get(threadId)?.artifacts, runId: String(runId), threadId };
+      return { output: completed ? projectCollaborationRunProgress(completed).output ?? '' : '', ...this.collaborationRunResults.get(String(runId)), artifacts: this.collaborationThreadScopes.get(threadId)?.artifacts, ...(this.collaborationThreadScopes.get(threadId)?.blocker ? { error: this.collaborationThreadScopes.get(threadId)!.blocker } : {}), runId: String(runId), threadId };
     } catch (error) {
       return { output: '', runId: String(runId), threadId, error: {
         code: 'collaboration.execution_failed', category: 'execution',
@@ -21369,6 +22300,36 @@ export class Runtime {
   }
 
   publishCollaborationSnapshot(snapshot: import('@sync-think/shared').CollaborationSnapshot): void {
+    // Record an execution result only after the complete group round settles, never on enqueue.
+    const durableRound = this.scheduledGroupRounds.get(snapshot.conversation.id) ?? this.appSettingStore?.get('schedule:group-round:' + snapshot.conversation.id)?.value as {task:ScheduledTask;firedAt:string}|undefined;
+    const candidates = (this.scheduledTaskStore?.list(true) ?? []).filter(task => task.conversationId === snapshot.conversation.id);
+    if (durableRound?.task.conversationId === snapshot.conversation.id && !candidates.some(task => task.id === durableRound.task.id)) candidates.push({...durableRound.task, lastRunAt:durableRound.firedAt});
+    for (const scheduled of candidates) {
+      if (scheduled.conversationId !== snapshot.conversation.id || !scheduled.lastRunAt) continue;
+      const prefix = 'send:scheduled:' + scheduled.id + ':';
+      const receiptKey = Object.keys(snapshot.receipts).filter(key => key.startsWith(prefix)).sort().at(-1);
+      if (!receiptKey) continue;
+      const roundFiredAt = receiptKey.slice(prefix.length);
+      const receipt = snapshot.receipts[receiptKey];
+      const messageId = (JSON.parse(receipt) as { reference: string }).reference;
+      const roots = snapshot.tasks.filter(task => task.originMessageId === messageId);
+      const ids = new Set(roots.map(task => task.id));
+      let previous = 0; while (previous !== ids.size) { previous = ids.size; snapshot.tasks.forEach(task => { if (task.parentTaskId && ids.has(task.parentTaskId)) ids.add(task.id); }); }
+      const attempts = snapshot.tasks.filter(task => ids.has(task.id)).map(task => snapshot.attempts.find(attempt => attempt.id === task.currentAttemptId)).filter(Boolean);
+      if (!attempts.length || attempts.some(attempt => ['queued', 'running', 'waiting_input', 'stopping'].includes(attempt!.status))) continue;
+      const failed = attempts.find(attempt => attempt!.status !== 'succeeded');
+      const frozen = this.scheduledAutomationRounds.get(snapshot.conversation.id);
+      const acceptanceFailure = frozen?.firedAt === roundFiredAt && frozen.task.automation ? this.automationAcceptanceForBinding(frozen) : undefined;
+      const deliveryState = frozen?.firedAt === roundFiredAt ? this.readAutomationEvidence(frozen).delivery?.state : undefined;
+      const status: ScheduledTaskRunStatus = deliveryState === 'unknown' || deliveryState === 'sending' ? 'reconciling' : failed || acceptanceFailure ? 'failed' : 'success';
+      if (this.scheduledTaskStore?.hasHistoryResult(scheduled.id, roundFiredAt, status)) { this.completeScheduledGroupDispatch(scheduled.id, roundFiredAt, status === 'success' ? 'success' : 'failed'); continue; }
+      const reason = acceptanceFailure ?? failed?.error?.message ?? '本轮执行已交付；业务目标仍按群聊验收要求核对。';
+      const latestTask = this.scheduledTaskStore?.get(scheduled.id);
+      if (latestTask?.conversationId === snapshot.conversation.id) this.scheduledTaskStore?.update(scheduled.id, { lastResult: { status, firedAt: roundFiredAt, reason } });
+      this.recordTaskHistory(scheduled, status, roundFiredAt, undefined, reason);
+      this.completeScheduledGroupDispatch(scheduled.id, roundFiredAt, status === 'success' ? 'success' : 'failed', reason);
+      this.publishTaskEvent('scheduledTask.updated', scheduled.id, { taskId: scheduled.id, action: 'group-result' });
+    }
     const event = this.appendEvent(
       'message',
       'collaboration.updated',
@@ -22471,6 +23432,7 @@ export class Runtime {
       ].join('\n'),
     );
     parts.push(HTML_PREVIEW_OUTPUT_CONTRACT);
+    parts.push(BOARD_DATA_OUTPUT_CONTRACT);
     if (isExplicitExcalidrawRequest(run.userText)) {
       parts.push(EXCALIDRAW_OUTPUT_CONTRACT);
     }
@@ -22554,15 +23516,20 @@ export class Runtime {
       hasActiveGoal: this.conversationHasActiveGoal(run.threadId),
       collaborationEnabled: this.isCollaborationConversationForThread(run.threadId),
     });
-    const selection = selectKernelMcpRun({
+    const unfilteredSelection = selectKernelMcpRun({
       kernelId: request.kernelId,
       conversationTrack: run.track,
       agentManagementIntent: this.managementIntentForRun(run),
+      allowAgentDefinitionProposals: this.canProposeAgentDefinitions(run),
       collaborationSettings: this.appSettingStore?.get(COLLABORATION_SETTINGS_KEY)?.value,
       executionMode: this.resolveChatExecutionMode(run.threadId),
       networkEnabled,
       planningMode,
     });
+    const selection = { ...unfilteredSelection,
+      externalTools: unfilteredSelection.externalTools.filter(tool => this.isTaskRoomToolAllowed(run, tool.name)),
+      servers: unfilteredSelection.servers.map(server => ({ ...server, tools: server.tools.filter(tool => this.isTaskRoomToolAllowed(run, tool.name)) })).filter(server => server.tools.length),
+    };
     const tools: PlatformMcpToolDefinition[] = selection.externalTools.map((tool) => ({
       name: tool.name,
       description: tool.description,
@@ -22666,6 +23633,8 @@ export class Runtime {
     // Idempotency: the same call id + arguments replays the first result so a
     // kernel retry cannot create a second agent/task/team.
     const argumentsJson = JSON.stringify(call.input ?? {});
+    // Own-account reads must recheck current grants even when a kernel retries the same call ID.
+
     const replayKey = `${call.id}:${createHash('sha256').update(`${call.tool}\n${argumentsJson}`).digest('hex')}`;
     return this.platformMcpRuns.executeOnce(
       runId,
@@ -22682,9 +23651,17 @@ export class Runtime {
     call: PlatformMcpToolCall,
     argumentsJson: string,
   ): Promise<{ ok: boolean; content?: string; error?: string }> {
+    if (!this.isTaskRoomToolAllowed(run, call.tool)) return { ok: false, error: 'task_room.tool_not_allowed' };
     if (this.collaborationThreadScopes.has(run.threadId) && run.delegatedReadOnly &&
-      !isDelegatedReadOnlyTool(call.tool) && !this.isCollaborationControlToolAllowed(run, call.tool)) {
+      !this.isReadOnlyRunToolAllowed(run, call.tool)) {
       return { ok: false, error: '当前协作轮次仅提供只读工作区工具及范围受控的任务/产物工具。' };
+    }
+    if (call.tool === 'automation_report_outcome') { const content = this.executeAutomationOutcomeTool(run, argumentsJson); return {ok:(JSON.parse(content) as {ok:boolean}).ok, content}; }
+    if (call.tool === 'automation_request_login') { const content = await this.executeAutomationLoginTool(run, argumentsJson); return {ok:(JSON.parse(content) as {ok:boolean}).ok,content}; }
+    if (call.tool === 'automation_export_artifact') {
+      const content = await this.executeAutomationArtifactTool(run, argumentsJson);
+      const ok = (JSON.parse(content) as {ok:boolean}).ok;
+      return { ok, content, ...(!ok ? {error: content} : {}) };
     }
     // OCR and describe_image ride the registry, not the legacy catalog. Route
     // them before catalog lookup so native and external kernels share one
@@ -22719,6 +23696,7 @@ export class Runtime {
       const collaborationDenial = resolveCollaborationToolDenial({
         track: run.track,
         agentManagementIntent: this.managementIntentForRun(run),
+        allowAgentDefinitionProposals: this.canProposeAgentDefinitions(run),
         toolName: call.tool,
         settings: normalizeCollaborationSettings(
           this.appSettingStore?.get(COLLABORATION_SETTINGS_KEY)?.value,
@@ -22745,9 +23723,9 @@ export class Runtime {
       );
     }
 
-    if (['collaboration_start_workflow', 'collaboration_submit_artifact', 'collaboration_dispatch_tasks'].includes(call.tool) && this.collaborationThreadScopes.has(run.threadId)) {
+    if (['collaboration_read_context', 'collaboration_start_workflow', 'collaboration_submit_artifact', 'collaboration_dispatch_tasks', 'collaboration_handoff', 'collaboration_report_blocker', 'collaboration_request_login'].includes(call.tool) && this.collaborationThreadScopes.has(run.threadId)) {
       if (!this.isCollaborationControlToolAllowed(run, call.tool)) return { ok: false, error: 'collaboration.control_not_allowed' };
-      const content = this.executeChatCollaborationTool({ run, toolCall: { id: call.id, name: call.tool, argumentsJson }, args: call.input });
+      const content = await this.executeChatCollaborationTool({ run, toolCall: { id: call.id, name: call.tool, argumentsJson }, args: call.input });
       const result = JSON.parse(content) as { ok?: boolean; error?: string };
       return result.ok ? { ok: true, content } : { ok: false, error: result.error, content };
     }
@@ -22775,11 +23753,12 @@ export class Runtime {
     }
 
     // Host-only file tools keep the ask-mode tier; every chat tool defers to the
-    // native classifier (Agent/Skill/Team/MCP writes are gated outside full-access).
+    // native classifier (Agent/Team/Skill definitions require fresh one-shot confirmation).
     const needsApproval = isPlatformFileToolName(call.tool)
       ? definition.approval === 'ask-mode' && executionMode === 'ask'
       : chatToolRequiresApproval(executionMode, call.tool);
     if (needsApproval) {
+      if (LIBRARY_DEFINITION_MUTATIONS.has(call.tool)) this.markDefinitionManagement(run);
       const decision = await this.requestPlatformToolApproval(runId, run.threadId, call);
       if (decision !== 'approve') {
         return {
@@ -22790,6 +23769,9 @@ export class Runtime {
         };
       }
     }
+    // Execute the host-approved proposal rather than the pre-approval source.
+    if (call.tool === 'create_skill' || call.tool === 'update_skill') argumentsJson = JSON.stringify(call.input ?? {});
+    if (needsApproval) this.recordDefinitionApproval(run, { id: call.id, name: call.tool, argumentsJson });
     // A late approval must not apply a side effect the kernel already abandoned
     // (MCP-side timeout / notifications/cancelled), nor outlive the run.
     if (call.signal.aborted || !this.demoRuns.has(runId)) {
@@ -23256,148 +24238,92 @@ export class Runtime {
     const input =
       call.input && typeof call.input === 'object' ? (call.input as Record<string, unknown>) : {};
     const action = input.action;
-    if (action !== 'create' && action !== 'list' && action !== 'cancel') {
-      return { ok: false, error: 'task_schedule: action 必须为 create/list/cancel' };
+    if (!['resources', 'create', 'list', 'get', 'update', 'cancel'].includes(String(action))) {
+      return { ok: false, error: 'task_schedule: action 必须为 resources/create/list/get/update/cancel' };
     }
-    if (action === 'create' || action === 'cancel') {
+    if (action === 'create' || action === 'update' || action === 'cancel') {
       if (executionMode === 'ask') {
         const decision = await this.requestPlatformToolApproval(runId, run.threadId, call);
-        if (decision !== 'approve') {
-          return { ok: false, error: '宿主已拒绝此操作' };
-        }
+        if (decision !== 'approve') return { ok: false, error: '宿主已拒绝此操作' };
       }
-      if (call.signal.aborted || !this.demoRuns.has(runId)) {
-        return { ok: false, error: 'platform tool call was cancelled before execution' };
-      }
+      if (call.signal.aborted || !this.demoRuns.has(runId)) return { ok: false, error: 'platform tool call was cancelled before execution' };
     }
+    const scope = this.collaborationThreadScopes.get(run.threadId);
+    const boundGroup = scope?.input.snapshot.conversation.room ? scope.input.snapshot.conversation : undefined;
     try {
+      if (action === 'resources') {
+        const currentWorkspaceId = boundGroup?.workspaceId ?? this.resolveEventWorkspaceId(run.threadId);
+        const workspaces = (this.workspaceStore?.listWorkspaces() ?? []).filter(workspace => workspace.name !== '__inbox__' && (!boundGroup || workspace.id === boundGroup.workspaceId));
+        const models = this.providerStore?.listAllModels().map(model => ({ modelId: model.id, displayName: model.displayName, providerId: model.providerId })) ?? [{ modelId: run.modelId, displayName: run.modelId }];
+        const agents = (this.globalAgentStore?.list() ?? []).filter(agent => !agent.archived && agent.enabled !== false).map(agent => ({ agentId: agent.id, name: agent.name, defaultModelId: agent.defaultModelId }));
+        const teams = (this.teamStore?.list() ?? []).map(team => ({ teamId: team.id, name: team.name }));
+        const conversations = (this.conversationStore?.list() ?? []).filter(conversation => !conversation.archivedAt && (!boundGroup || conversation.id === boundGroup.id)).slice(0, 100).map(conversation => ({ conversationId: conversation.id, title: conversation.title, track: conversation.track, targetRef: conversation.targetRef, workspaceId: workspaces.some(workspace => workspace.id === conversation.workspaceId) ? conversation.workspaceId : null }));
+        return { ok: true, content: JSON.stringify({
+          models, agents, teams,
+          workspaces: workspaces.map(workspace => ({ workspaceId: workspace.id, name: workspace.name, folderPath: workspace.folderPath })),
+          conversations,
+          defaults: { modelId: run.modelId, workspaceId: workspaces.some(workspace => workspace.id === currentWorkspaceId) ? currentWorkspaceId : null, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone, conversation: boundGroup ? { mode: 'existing', conversationId: boundGroup.id } : { mode: 'task' } },
+          conversationModes: [{ mode: 'task', label: '此任务的专属会话', description: '复用单个专属会话，保留连续上下文' }, { mode: 'new', label: '每次运行时新建会话', description: '每轮独立上下文' }, { mode: 'existing', label: '继续已有会话', description: '所选会话须匹配执行者和工作区' }],
+          note: '先请用户确认执行内容、执行者/模型、工作区、会话方式、时间/时区与启用状态；默认项是建议，不是用户已确认的选择。已有任务可用 get/update 原地修改。',
+        }) };
+      }
       if (action === 'list') {
-        const tasks = this.scheduledTaskStore.list();
-        return {
-          ok: true,
-          content: JSON.stringify(
-            tasks.map((task) => ({
-              id: task.id,
-              name: task.name,
-              enabled: task.enabled,
-              nextRunAt: task.nextRunAt ?? null,
-              lastRunAt: task.lastRunAt ?? null,
-              rule: task.rule,
-              target: task.target,
-            })),
-          ),
-        };
+        const tasks = this.scheduledTaskStore.list().filter(task => !boundGroup || task.conversationId === boundGroup.id);
+        return { ok: true, content: JSON.stringify(tasks) };
       }
-      if (action === 'cancel') {
-        const taskId = typeof input.taskId === 'string' ? input.taskId : '';
-        if (!taskId) return { ok: false, error: 'task_schedule: cancel 需要 taskId' };
-        const updated = this.scheduledTaskStore.update(taskId, { enabled: false });
-        if (!updated) return { ok: false, error: 'task_schedule: 任务不存在' };
-        this.publishTaskEvent('scheduledTask.updated', taskId, {
-          taskId,
-          action: 'cancel',
-        });
-        return { ok: true, content: JSON.stringify({ cancelled: true, taskId }) };
+      if (action === 'get' || action === 'update' || action === 'cancel') {
+        const taskId = typeof input.taskId === 'string' ? input.taskId.trim() : '';
+        const before = taskId && this.scheduledTaskStore.get(taskId);
+        if (!before) return { ok: false, error: 'task_schedule: 任务不存在，请用 list 查询准确 taskId' };
+        if (boundGroup && before.conversationId !== boundGroup.id) return { ok: false, error: 'task_schedule: 只可管理当前群的监控任务' };
+        if (action === 'get') return { ok: true, content: JSON.stringify({ task: before }) };
+        if (action === 'cancel') {
+          const updated = this.scheduledTaskStore.update(taskId, { enabled: false });
+          this.publishTaskEvent('scheduledTask.updated', taskId, { taskId, action: 'cancel' });
+          return { ok: true, content: JSON.stringify({ cancelled: true, taskId, task: updated }) };
+        }
+        const rawPatch = input.patch;
+        if (!rawPatch || typeof rawPatch !== 'object' || Array.isArray(rawPatch) || !Object.keys(rawPatch).length) return { ok: false, error: 'task_schedule: update 需要非空 patch，只传要修改的字段' };
+        const patch = { ...(rawPatch as Record<string, unknown>) };
+        // A conversation-only edit must retain browser/MCP/output/delivery/permission bindings.
+        if (patch.automation && typeof patch.automation === 'object' && !Array.isArray(patch.automation)) patch.automation = { ...before.automation, ...patch.automation };
+        const payload = tryParseUpdateScheduledTaskPayload({ taskId, patch });
+        if (!payload) return { ok: false, error: 'task_schedule: update patch 参数非法' };
+        if (boundGroup && (payload.patch.workspaceId !== undefined && payload.patch.workspaceId !== boundGroup.workspaceId || payload.patch.automation?.conversation && (payload.patch.automation.conversation.mode !== 'existing' || payload.patch.automation.conversation.conversationId !== boundGroup.id))) return { ok: false, error: 'task_schedule: 群任务保持当前群和工作区绑定' };
+        const updated = this.updateScheduledTaskDefinition(taskId, payload.patch);
+        return { ok: true, content: JSON.stringify({ updated: true, taskId, task: updated, note: '已原地修改，任务 ID、历史记录与未修改的配置保持不变。' }) };
       }
-      // create
-      const name = typeof input.name === 'string' && input.name.trim() ? input.name.trim() : '';
-      const instruction =
-        typeof input.instruction === 'string' && input.instruction.trim()
-          ? input.instruction.trim()
-          : '';
-      const targetRaw =
-        input.target && typeof input.target === 'object'
-          ? (input.target as Record<string, unknown>)
-          : {};
-      const ruleRaw =
-        input.rule && typeof input.rule === 'object' ? (input.rule as Record<string, unknown>) : {};
-      const targetKind = targetRaw.kind;
-      const target: ScheduledTaskTarget | undefined =
-        targetKind === 'agent' && typeof targetRaw.agentId === 'string'
-          ? { kind: 'agent', agentId: targetRaw.agentId }
-          : targetKind === 'model' && typeof targetRaw.modelId === 'string'
-            ? { kind: 'model', modelId: targetRaw.modelId }
-            : undefined;
-      const ruleKind = ruleRaw.kind;
-      let rule: TaskRule | undefined;
-      if (ruleKind === 'at' && typeof ruleRaw.runAt === 'string') {
-        rule = { kind: 'at', runAt: ruleRaw.runAt };
-      } else if (
-        ruleKind === 'every' &&
-        typeof ruleRaw.intervalMinutes === 'number' &&
-        Number.isInteger(ruleRaw.intervalMinutes) &&
-        ruleRaw.intervalMinutes >= 5
-      ) {
-        rule = {
-          kind: 'every',
-          intervalMinutes: ruleRaw.intervalMinutes,
-          ...(typeof ruleRaw.firstRunAt === 'string' ? { firstRunAt: ruleRaw.firstRunAt } : {}),
-        };
-      } else if (
-        ruleKind === 'random' &&
-        typeof ruleRaw.windowStart === 'string' &&
-        typeof ruleRaw.windowEnd === 'string' &&
-        typeof ruleRaw.minTimes === 'number' &&
-        typeof ruleRaw.maxTimes === 'number'
-      ) {
-        rule = {
-          kind: 'random',
-          windowStart: ruleRaw.windowStart,
-          windowEnd: ruleRaw.windowEnd,
-          minTimes: Math.max(1, Math.floor(ruleRaw.minTimes)),
-          maxTimes: Math.max(1, Math.floor(ruleRaw.maxTimes)),
-        };
-      } else if (ruleKind === 'weekly') {
-        rule = parseWeeklyRule(ruleRaw);
-      } else if (ruleKind === 'cron' && typeof ruleRaw.expression === 'string') {
-        rule = { kind: 'cron', expression: ruleRaw.expression };
+      if (!boundGroup) {
+        const missing = missingScheduledTaskConfiguration(input);
+        if (missing.length) return { ok: false, error: 'task_schedule: configuration_required。请先调用 resources 并让用户确认执行模型/智能体、运行工作区和会话方式，再创建。缺少：' + missing.join(', ') };
       }
-      if (!name || !instruction || !target || !rule) {
-        return {
-          ok: false,
-          error: 'task_schedule: create 需要 name/instruction/target/rule 且参数合法',
-        };
-      }
+      const rawPayload = { ...input };
+      delete rawPayload.action;
+      if (rawPayload.workspaceId === null) delete rawPayload.workspaceId;
+      const payload = tryParseCreateScheduledTaskPayload(rawPayload);
+      if (!payload || !payload.name.trim() || !payload.instruction.trim()) return { ok: false, error: 'task_schedule: create 参数非法，需要 name/instruction/target/rule 和明确的执行配置' };
+      const ruleError = this.validateTaskRule(payload.rule);
+      if (ruleError) return { ok: false, error: ruleError };
+      const workspaceId = boundGroup?.workspaceId ?? payload.workspaceId;
+      if (workspaceId && !this.workspaceStore?.getWorkspace(workspaceId as WorkspaceId)) return { ok: false, error: 'task_schedule: 工作区不存在，请从 resources 选择 workspaceId' };
+      if (boundGroup && (payload.workspaceId !== undefined && payload.workspaceId !== boundGroup.workspaceId || payload.automation?.conversation && (payload.automation.conversation.mode !== 'existing' || payload.automation.conversation.conversationId !== boundGroup.id))) return { ok: false, error: 'task_schedule: 群任务保持当前群和工作区绑定' };
+      this.validateScheduledConversationTarget({ target: payload.target, workspaceId, automation: payload.automation });
       const id = `task-${ulid()}`;
-      const timeZone =
-        typeof input.timeZone === 'string' && input.timeZone.trim() ? input.timeZone.trim() : 'UTC';
-      const task: ScheduledTask = {
-        id,
-        name,
-        instruction,
-        target,
-        rule,
-        timeZone,
-        enabled: true,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      };
-      const nextRunAt = initialNextRunAt(task);
+      const timeZone = payload.timeZone?.trim() || 'UTC';
+      const task: ScheduledTask = { id, name: payload.name.trim(), instruction: payload.instruction.trim(), target: payload.target, rule: payload.rule, timeZone, enabled: payload.enabled !== false, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+      const nextRunAt = payload.nextRunAt ?? initialNextRunAt(task);
       const stored = this.scheduledTaskStore.create({
-        id,
-        name,
-        instruction,
-        target,
-        rule,
-        timeZone,
-        enabled: true,
+        ...task,
+        ...(workspaceId ? { workspaceId } : {}),
+        ...(boundGroup ? { conversationId: boundGroup.id } : payload.automation?.conversation?.mode === 'existing' ? { conversationId: payload.automation.conversation.conversationId } : {}),
+        ...(payload.automation ? { automation: payload.automation } : {}),
+        ...(payload.skillVersionIds ? { skillVersionIds: payload.skillVersionIds } : {}),
         ...(nextRunAt ? { nextRunAt } : {}),
       });
       this.publishTaskEvent('scheduledTask.updated', id, { taskId: id, action: 'create' });
-      return {
-        ok: true,
-        content: JSON.stringify({
-          created: true,
-          taskId: stored.id,
-          name: stored.name,
-          nextRunAt: stored.nextRunAt ?? null,
-        }),
-      };
+      return { ok: true, content: JSON.stringify({ created: true, taskId: stored.id, name: stored.name, task: stored, nextRunAt: stored.nextRunAt ?? null, note: '可通过 task_schedule get/update 或定时任务编辑器修改执行配置；不要删除重建。' }) };
     } catch (error) {
-      return {
-        ok: false,
-        error: `task_schedule failed: ${error instanceof Error ? error.message : String(error)}`,
-      };
+      return { ok: false, error: `task_schedule failed: ${error instanceof Error ? error.message : String(error)}` };
     }
   }
 
@@ -23417,6 +24343,7 @@ export class Runtime {
     }
     const browserPermissionInput = {
       toolName: call.tool,
+      profileId: this.resolveBrowserProfileForThread(run.threadId),
       argumentsJson,
       workspaceId: this.resolveEventWorkspaceId(run.threadId),
       runId,
@@ -23487,6 +24414,7 @@ export class Runtime {
     signal?: AbortSignal,
   ): Promise<string> {
     const name = toolCall.name;
+
     if (CHAT_TASK_PLAN_TOOL_NAMES.has(name) && this.taskPlanStore) {
       const workspaceId = this.resolveEventWorkspaceId(run.threadId);
       if (name === 'TaskCreate') {
@@ -23597,12 +24525,12 @@ export class Runtime {
       argumentsJson: JSON.stringify(call.input ?? {}),
     };
     const approvalArguments = call.input ?? {};
-    const allowedScopes = AGENT_DEFINITION_MUTATIONS.has(call.tool) ? ['once' as ToolApprovalScope] : toolApprovalScopesFor({
+    const allowedScopes = LIBRARY_DEFINITION_MUTATIONS.has(call.tool) ? ['once' as ToolApprovalScope] : toolApprovalScopesFor({
       toolName: call.tool,
       arguments: approvalArguments,
     });
     if (
-      !AGENT_DEFINITION_MUTATIONS.has(call.tool) && this.toolApprovalPolicy.isAllowed({
+      !LIBRARY_DEFINITION_MUTATIONS.has(call.tool) && this.toolApprovalPolicy.isAllowed({
         conversationId: this.resolveConversationIdForThread(threadId) ?? threadId,
         toolName: call.tool,
         arguments: approvalArguments,
@@ -23671,6 +24599,7 @@ export class Runtime {
         summary,
         arguments: approvalArguments,
         allowedScopes,
+        applyApprovedArguments: (args) => { call.input = args; },
         resolve: (decision) => {
           call.signal.removeEventListener('abort', onAbort);
           resolve(decision === 'approve' ? 'approve' : 'deny');
@@ -24178,6 +25107,15 @@ export class Runtime {
     event: Extract<KernelEvent, { type: 'tool-call' | 'tool-result' }>,
   ): void {
     try {
+      if (event.type === 'tool-result') {
+        const prior = this.demoRuns.get(runId)?.kernelToolEvents?.find(item => item.kind === 'tool-call' && item.toolId === event.toolId);
+        const name = prior?.kind === 'tool-call' ? prior.name : undefined;
+        const shortName = name?.split('__').at(-1);
+        if (shortName && CHAT_BROWSER_TOOL_NAMES.has(shortName)) {
+          const output = this.sanitizeBrowserResultForPersistence(event.output);
+          event = {...event, output, structuredOutput: JSON.parse(output)};
+        }
+      }
       const occurredAt = new Date().toISOString();
       if (type === 'tool.requested') {
         // §12.17.20: a tool boundary reclassifies every preceding text as
@@ -25028,7 +25966,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
 
     // Approved/active project memory (�?0.1 layer 2) �?explicit durable entries only.
     let memoryEvidenceRefs: string[] = [];
-    if (this.memoryStore) {
+    if (this.memoryStore && !this.collaborationThreadScopes.get(input.threadId)?.input.snapshot.conversation.room) {
       try {
         const taskId = task?.id as import('@sync-think/shared').TaskId | undefined;
         const entries = this.memoryStore.listActiveEntries({
@@ -25241,6 +26179,8 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     credentialRefId?: string;
     agentVersionId?: string;
     track?: 'model' | 'agent' | 'team';
+    /** Host-only direct-chat capability; never read from user/model payloads. */
+    definitionProposalsAllowed?: boolean;
     /** Bound global Agent (mutable agent table) for persona / default model. */
     globalAgentId?: string;
     /** Bound team (team-track conversations) �?coordinator drives the model. */
@@ -25408,10 +26348,14 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     });
     const requestedSkillVersionIds = skillSelection.requestedSkillVersionIds;
     const effectiveSkillIds = skillSelection.skillVersionIds;
-    const effectiveMcpIds = this.resolveEffectiveMcpServerIds(
-      workspaceId,
-      globalAgent ? globalAgent.mcpServerIds : agentMeta.mcpServerIds,
-    );
+    const effectiveMcpIds = this.resolveMcpServerIdsForRun({
+      threadId: input.threadId,
+      agentVersionId,
+      track,
+      globalAgentId: globalAgent?.id,
+      teamId: teamRecord?.id,
+      mcpServerIds: [...(globalAgent ? globalAgent.mcpServerIds : agentMeta.mcpServerIds), ...this.scheduledAutomationMcpIds(input.threadId)],
+    });
 
     const planActRoute: PlanActRoute = globalAgent
       ? { applied: false, role: null }
@@ -25588,6 +26532,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       mcpServerIds: effectiveMcpIds,
       contextWindow,
       modelContextWindow,
+      modelMaxOutputTokens: initialBinding.modelMaxOutputTokens,
       contextWindowEstimated,
       projectContextPromptBlocks,
       contextSources,
@@ -25601,6 +26546,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       useFakeProvider: useFake,
     });
 
+    run.definitionProposalsAllowed = input.definitionProposalsAllowed === true;
     const effective = this.effectiveContextWindowForRun(run);
     run.effectiveContextWindow = effective.window;
     run.contextWindowSource = effective.source;
@@ -26121,9 +27067,16 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     });
 
     const reboundModelId = (modelRecord?.id ?? modelId) as string;
+    const limits = resolveContextWindow(modelRecord);
+    const effective = this.effectiveContextWindowForRun({...run,contextWindow:limits.modelContextWindow,...limits});
     return {
       ...visibleRun,
       modelId: reboundModelId,
+      modelMaxOutputTokens: parseModelOutputLimit(modelRecord?.limitsJson),
+      contextWindow:limits.modelContextWindow,...limits,
+      effectiveContextWindow:effective.window,contextWindowSource:effective.source,kernelContextWindowLimit:effective.kernelLimit,
+      nativeContextCheckpoint: undefined,
+      contextSnapshot: undefined,
       providerModelId: modelRecord?.providerModelId ?? modelId,
       protocol: modelRecord?.protocol ?? run.protocol,
       baseUrl: provider?.baseUrl ?? run.baseUrl,
@@ -26156,7 +27109,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
   private persistDemoRunPaused(
     runId: RunId,
     details: {
-      reason: 'no_fallback_configured' | 'fallback_exhausted' | 'recovery_expired';
+      reason: 'no_fallback_configured' | 'fallback_exhausted' | 'recovery_expired' | 'scheduled_recovery_blocked' | 'scheduled_recovery_context_missing';
       failedModelId: ModelId | string;
       failureClass: FailureClass;
       errorMessage?: string;
@@ -26273,13 +27226,13 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
 
   private listDurableContextMessages(
     threadId: string,
-    contextWindow: number,
-    compact?: { compactedAt: string },
+    _contextWindow: number,
+    compact?: import('./conversation-compact-boundary-cache.js').ConversationCompactBoundary,
+    _forCompaction = false,
   ): Message[] {
     if (!this.messageStore) return [];
     const collected: Message[] = [];
     let beforeSequence: number | undefined;
-    let roughTokens = 0;
     const compactedAtMs = compact ? Date.parse(compact.compactedAt) : Number.NaN;
     for (let pageIndex = 0; pageIndex < 100; pageIndex += 1) {
       const page = this.messageStore.listMessages(threadId as ThreadId, {
@@ -26287,14 +27240,12 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         limit: 100,
       });
       collected.unshift(...page.messages);
-      roughTokens += page.messages.reduce(
-        (sum, message) => sum + Math.ceil(JSON.stringify(message.blocks).length / 4),
-        0,
-      );
-      const crossedCompact =
-        Number.isFinite(compactedAtMs) &&
-        page.messages.some((message) => Date.parse(message.createdAt) <= compactedAtMs);
-      if (!page.hasMore || crossedCompact || roughTokens >= contextWindow * 1.25) break;
+      const crossedCompact = compact?.coveredThroughMessageSequence !== undefined
+        ? page.messages.some(message => message.sequence <= compact.coveredThroughMessageSequence!)
+        : Number.isFinite(compactedAtMs) && page.messages.filter(message =>
+            Date.parse(message.createdAt) <= compactedAtMs).length > (compact?.keepRecent ?? 0);
+      if (!page.hasMore || crossedCompact) break;
+      if (pageIndex === 99) throw new Error('历史超过单次读取上限，原始记录已保留，请先分段整理。');
       beforeSequence = page.nextCursor;
       if (beforeSequence === undefined) break;
     }
@@ -26307,7 +27258,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     const compact = this.compactBoundaryCache.get(run.threadId);
     const resolvedImages = run.images
       ?.map((image) => {
-        const dataUrl = resolveAppendMessageImageDataUrl(image);
+        const dataUrl = resolveAppendMessageImageDataUrl(image, { workspaceRoot: this.resolveChatWorkspaceRoot(run.threadId), conversationId: this.resolveConversationIdForThread(run.threadId) });
         return dataUrl ? { name: image.name, mimeType: image.mimeType, dataUrl } : undefined;
       })
       .filter((image): image is { name: string; mimeType: string; dataUrl: string } =>
@@ -26325,6 +27276,22 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       toolTracesByRunId: this.collectInterruptedRunToolTraces(durableMessages),
       delegatedRuns: this.delegationService.listByThread(run.threadId),
     });
+    if (!this.messageStore) {
+      // Legacy stores still expose the same raw retained tail. Keep replacement
+      // coverage in Event.sequence space, separate from canonical Message.sequence.
+      const task = this.workspaceStore?.getTaskByThreadId(run.threadId as ThreadId);
+      const events = task && this.stateStore?.listEventsByTask
+        ? this.stateStore.listEventsByTask(task.id)
+        : this.stateStore?.listAllEvents?.(0) ?? this.events;
+      const legacy = collectThreadChatHistory(events, run.threadId).messages
+        .filter(message => !message.checkpoint)
+        .map(message => ({ role: message.role, content: message.content }));
+      const lastLegacy = legacy.at(-1);
+      const currentReplacesTail = lastLegacy?.role === 'user' && (lastLegacy.content === run.userText ||
+        (run.imagesMode === 'described' && run.userText.startsWith(lastLegacy.content + '\n')));
+      if (currentReplacesTail && built.messages.at(-1)?.role === 'user') legacy.pop();
+      built.messages.unshift(...legacy);
+    }
     // NewMax-style: the persisted task checklist is part of the model context
     // so the model can read back its own plan every turn (not just a UI
     // signal). Prefer the workspace-scoped persisted plan (TaskCreate/
@@ -26348,19 +27315,16 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         total: persistedPlan.length,
         completed: persistedPlan.filter((row) => row.status === 'completed').length,
       };
-      built.messages.unshift({ role: 'system', content: formatTaskPlanForModel(plan) });
+      built.messages = withCurrentTaskPlan(built.messages, formatTaskPlanForModel(plan));
     } else {
       const taskPlan = extractLatestTaskPlanFromEvents(this.events, run.threadId);
       if (taskPlan) {
-        built.messages.unshift({ role: 'system', content: formatTaskPlanForModel(taskPlan) });
+        built.messages = withCurrentTaskPlan(built.messages, formatTaskPlanForModel(taskPlan));
       }
     }
     run.compactSummary = built.compactSummary;
     run.compactedAt = built.compactedAt;
-    return selectRecentMessagesWithinBudget(
-      built.messages,
-      Math.max(1, Math.floor((run.effectiveContextWindow ?? run.contextWindow ?? 128_000) * 0.82)),
-    );
+    return built.messages; // All trimming/compaction happens after fixed costs are known.
   }
 
   /**
@@ -26448,17 +27412,77 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     );
   }
 
+  /** Only direct ordinary model chats inherit the global enabled MCP registry. */
+  private usesGlobalChatMcp(run: Pick<DemoRunState,
+    'track' | 'threadId' | 'agentVersionId' | 'globalAgentId' | 'teamId' |
+    'delegationParentRunId' | 'delegatedReadOnly'>): boolean {
+    if (run.track !== 'model' || run.globalAgentId || run.teamId ||
+        run.delegationParentRunId || run.delegatedReadOnly ||
+        this.collaborationThreadScopes.has(run.threadId) ||
+        this.scheduledAutomationForThread(run.threadId)) return false;
+    const agentId = this.agentStore
+      ? this.agentStore.getVersion(run.agentVersionId)?.agentId
+      : run.agentVersionId;
+    return agentId === DEFAULT_CONVERSATION_AGENT_ID;
+  }
+
+  private resolveMcpServerIdsForRun(run: Pick<DemoRunState,
+    'track' | 'threadId' | 'agentVersionId' | 'globalAgentId' | 'teamId' |
+    'delegationParentRunId' | 'delegatedReadOnly' | 'mcpServerIds'>): string[] {
+    if (!this.mcpStore) return [];
+    if (this.usesGlobalChatMcp(run)) {
+      // Discovery schemas are required; an enabled placeholder is not callable.
+      return this.mcpStore.listEnabled(500)
+        .filter((server) => server.tools.length > 0)
+        .map((server) => server.id);
+    }
+    return this.resolveEffectiveMcpServerIds(
+      this.resolveEventWorkspaceId(run.threadId), run.mcpServerIds,
+    );
+  }
+
   private executeChatMcpCatalogTool(run: DemoRunState): string {
+    // Ordinary chat follows the live registry; scoped runs retain their allowlists.
+    const globalChat = this.usesGlobalChatMcp(run);
+    const accessMode = globalChat ? 'global-enabled' : 'agent-allowlist';
+    const scope = 'current-run';
+    const scopeNote =
+      'serverCount/toolCount describe MCP access in the current run. Ordinary model chat ' +
+      'inherits enabled servers with discovered tools; custom Agents and scoped tasks keep their allowlists. ' +
+      'registeredServers and registered/enabled counts describe the global registry, ' +
+      'not current-run permission. Registered tool schemas do not prove a live connection.';
     if (!this.mcpStore) {
       return JSON.stringify({
         ok: true,
         catalogState: 'store-unavailable',
+        scope,
+      accessMode,
+        scopeNote,
+        registeredServerCount: 0,
+        enabledServerCount: 0,
+        registeredServers: [],
         servers: [],
         serverCount: 0,
         toolCount: 0,
       });
     }
-    const servers = (run.mcpServerIds ?? [])
+    const effectiveIds = this.resolveMcpServerIdsForRun(run);
+    if (globalChat) run.mcpServerIds = effectiveIds;
+    const boundIds = new Set(run.mcpServerIds ?? []);
+    const registeredServers = this.mcpStore.list(500).map((server) => ({
+      mcpServerId: server.id,
+      name: server.name,
+      transport: server.transport,
+      enabled: server.enabled,
+      boundToCurrentRun: boundIds.has(server.id),
+      registeredToolCount: server.tools.length,
+      reasons: [
+        ...(!server.enabled ? ['disabled'] : []),
+        ...(!globalChat && !boundIds.has(server.id) ? ['not-bound-to-current-run'] : []),
+        ...(!server.tools.length ? ['no-registered-tools'] : []),
+      ],
+    }));
+    const servers = [...boundIds]
       .map((id) => this.mcpStore?.get(id))
       .filter((server): server is NonNullable<typeof server> => Boolean(server?.enabled))
       .map((server) => ({
@@ -26474,14 +27498,156 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       }));
     return JSON.stringify({
       ok: true,
-      catalogState: servers.length > 0 ? 'ready' : 'no-enabled-servers',
+      catalogState: servers.length > 0 ? 'ready' : globalChat ? 'no-enabled-servers-with-tools' : 'no-enabled-servers-bound-to-current-run',
+      scope,
+        accessMode,
+      scopeNote,
+      registeredServerCount: registeredServers.length,
+      enabledServerCount: registeredServers.filter((server) => server.enabled).length,
+      registeredServers,
       servers,
       serverCount: servers.length,
       toolCount: servers.reduce((total, server) => total + server.toolCount, 0),
     });
   }
-
   private async executeChatBoundMcpTool(input: {
+    run: DemoRunState;
+    mcpServerId: string;
+    toolName: string;
+    toolCallId: string;
+    argumentsJson?: string;
+    signal?: AbortSignal;
+  }): Promise<string> {
+    const binding = this.scheduledAutomationForThread(input.run.threadId);
+    const delivery = binding?.task.automation?.delivery;
+    if (!binding || !delivery || input.mcpServerId !== delivery.mcpServerId)
+      return this.executeChatBoundMcpToolUnchecked(input);
+    const selectedTool = delivery.toolName ?? 'send_email';
+    if (input.toolName !== selectedTool) {
+      const tool = this.mcpStore
+        ?.get(input.mcpServerId)
+        ?.tools.find((tool) => tool.name === input.toolName);
+      if (tool?.readOnly === true) return this.executeChatBoundMcpToolUnchecked(input);
+      return JSON.stringify({
+        ok: false,
+        error: '该发件连接器本轮只允许明确选择的发件工具和只读工具',
+      });
+    }
+    const evidenceKey = this.automationEvidenceKey(binding);
+    const evidenceRevision = this.appSettingStore?.get(evidenceKey)?.value;
+    const evidence = this.readAutomationEvidence(binding);
+    if (evidence.delivery?.state === 'sent')
+      return JSON.stringify({
+        ok: true,
+        replayed: true,
+        receiptId: evidence.delivery.receiptId,
+        note: '本轮邮件已确认发送，未重复发件',
+      });
+    if (evidence.delivery)
+      return JSON.stringify({
+        ok: false,
+        error: '邮件发送结果待核对，本轮停止自动重发以免重复发送',
+      });
+    let args: Record<string, unknown>;
+    try {
+      args = JSON.parse(input.argumentsJson ?? '{}') as Record<string, unknown>;
+    } catch {
+      return JSON.stringify({ ok: false, error: '发件参数应为JSON对象' });
+    }
+    if (!isPlainRecord(args) || !automationRecipientMatches(args, delivery.recipient))
+      return JSON.stringify({
+        ok: false,
+        error: '发件地址须精确匹配本轮配置；不接受新增抄送/密送',
+      });
+    const pending = this.automationAcceptanceForBinding(binding, false);
+    if (pending) return JSON.stringify({ ok: false, error: '发件前验收未通过：' + pending });
+    if (binding.task.automation?.outputs?.length) {
+      const files: Array<{
+        path: string;
+        fileName: string;
+        base64: string;
+        mimeType: string;
+      }> = [];
+      for (const output of evidence.outputs) {
+        try {
+          const bytes = await readFileAsync(output.path);
+          if (
+            bytes.length !== output.bytes ||
+            createHash('sha256').update(bytes).digest('hex') !== output.sha256
+          )
+            return JSON.stringify({
+              ok: false,
+              error: '交付文件已改变，发件前请重新导出并核对',
+            });
+          files.push({
+            path: output.path,
+            fileName: output.path.split(/[\\/]/).at(-1)!,
+            base64: bytes.toString('base64'),
+            mimeType:
+              output.format === 'spreadsheet'
+                ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+                : 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+          });
+        } catch {
+          return JSON.stringify({ ok: false, error: '交付附件不存在，邮件尚未发送' });
+        }
+      }
+      const tool = this.mcpStore
+        ?.get(input.mcpServerId)
+        ?.tools.find((tool) => tool.name === input.toolName);
+      let schema: unknown;
+      try {
+        schema = JSON.parse(tool?.inputSchemaJson ?? '{}');
+      } catch {
+        /* Explicit schema adapter required. */
+      }
+      const attached = bindAutomationMailAttachments(schema, args, files);
+      if (!attached)
+        return JSON.stringify({
+          ok: false,
+          error:
+            '发件工具尚无受支持的附件字段，请选择声明attachmentPaths或attachments结构的连接器；真实产物已保留',
+        });
+      args = attached;
+    }
+    evidence.delivery = { state: 'sending', toolCallId: input.toolCallId };
+    if (!this.appSettingStore) return JSON.stringify({ok:false,error:'发件所需的持久化回执服务尚未就绪'});
+    if (!this.appSettingStore.compareAndSet(evidenceKey, evidenceRevision, evidence)) {
+      const latest = this.readAutomationEvidence(binding);
+      return latest.delivery?.state === 'sent'
+        ? JSON.stringify({ok:true,replayed:true,receiptId:latest.delivery.receiptId,note:'本轮邮件已确认发送，未重复发件'})
+        : JSON.stringify({ok:false,error:'本轮证据已更新或邮件正在发送，请核对状态；本次未重复发件'});
+    }
+    this.scheduledAutomationEvidence.set(evidenceKey,structuredClone(evidence));
+    let result: string;
+    try {
+      result = await this.executeChatBoundMcpToolUnchecked({
+        ...input,
+        argumentsJson: JSON.stringify(args),
+      });
+    } catch (error) {
+      result = JSON.stringify({
+        ok: false,
+        error: error instanceof Error ? error.message : '发件连接中断',
+      });
+    }
+    const receiptId = extractAutomationMailReceipt(result);
+    evidence.delivery = {
+      state: receiptId ? 'sent' : 'unknown',
+      ...(receiptId ? { receiptId } : {}),
+      toolCallId: input.toolCallId,
+    };
+    this.saveAutomationEvidence(binding, evidence);
+    return receiptId
+      ? result
+      : JSON.stringify({
+          ok: false,
+          error: '发件结果缺少可验证回执，请先核对邮箱，产物已保留',
+          connectorResult: result,
+        });
+  }
+
+  private async executeChatBoundMcpToolUnchecked(input: {
     run: DemoRunState;
     mcpServerId: string;
     toolName: string;
@@ -26497,11 +27663,17 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         toolName: input.toolName,
       });
     }
-    // The frozen Run allowlist is authoritative, including an explicitly empty list.
-    if (!(input.run.mcpServerIds ?? []).includes(input.mcpServerId)) {
+    // Recheck ordinary-chat access against live enablement, including new servers.
+    // Explicit Agent/task allowlists (including an empty list) remain authoritative.
+    const allowedIds = this.usesGlobalChatMcp(input.run)
+      ? this.resolveMcpServerIdsForRun(input.run)
+      : (input.run.mcpServerIds ?? []);
+    if (!allowedIds.includes(input.mcpServerId)) {
       return JSON.stringify({
         ok: false,
-        error: `MCP server ${input.mcpServerId} is not on this Agent's allowlist`,
+        error: this.usesGlobalChatMcp(input.run)
+          ? `MCP server ${input.mcpServerId} is not available; it must be enabled with discovered tools`
+          : `MCP server ${input.mcpServerId} is not on this Agent's allowlist`,
         mcpServerId: input.mcpServerId,
         toolName: input.toolName,
       });
@@ -26743,17 +27915,40 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     const folder = workspace?.folderPath?.trim();
     if (!folder) return undefined;
     try {
-      return existsSync(folder) && statSync(folder).isDirectory() ? folder : undefined;
+      if (!existsSync(folder) || !statSync(folder).isDirectory()) return undefined;
+      // A room belongs to its bound project; its archive directory is not the
+      // filesystem/tool root or the external kernel's working directory.
+      return folder;
     } catch {
       return undefined;
     }
   }
 
+  private resolveCollaborationArtifactStorageRoot(threadId: string): string | undefined {
+    const root = this.resolveChatWorkspaceRoot(threadId);
+    if (!root) return undefined;
+    const scope = this.collaborationThreadScopes.get(threadId);
+    return scope?.input.snapshot.conversation.room ? ensureTaskRoomDirectory(root, scope.conversationId) : root;
+  }
+
+  private resolveBrowserProfileForThread(threadId: string): string | undefined {
+    const automated = this.scheduledAutomationForThread(threadId)?.task.automation?.browser;
+    if (!this.collaborationThreadScopes.has(threadId) && !automated) return undefined;
+    const profileId = automated?.profileId ?? this.collaborationThreadScopes.get(threadId)?.input.snapshot.conversation.policy.browserProfileId ?? 'default';
+    if (this.browserStore && !this.browserStore.getProfile(profileId)) throw new Error('browser.profile_not_found');
+    return profileId;
+  }
+
   /** Resolve conversation.executionMode for the task/thread (default workspace). */
   private resolveChatExecutionMode(threadId: string): string {
+    const automation = this.scheduledAutomationForThread(threadId)?.task.automation;
+    if (automation) return automation.executionMode ?? 'workspace';
     const task = this.workspaceStore?.getTaskByThreadId(threadId as ThreadId);
     if (!task || !this.conversationStore) return 'workspace';
-    if (this.collaborationThreadScopes.get(threadId)?.readOnly) return 'ask';
+    const scope = this.collaborationThreadScopes.get(threadId);
+    // Group read-only is a capability fence, not a hidden change to the user's
+    // permission mode. Browser origin approval still follows the chosen mode.
+    if (scope?.readOnly && !scope.input.snapshot.conversation.room) return 'ask';
     const conversation = this.resolveConversationForThread(threadId);
     return normalizeChatExecutionMode(conversation?.executionMode);
   }
@@ -26954,6 +28149,8 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       if (Array.isArray(result.links)) sanitized.linkCount = result.links.length;
       if (Array.isArray(result.buttons)) sanitized.buttonCount = result.buttons.length;
       if (Array.isArray(result.inputs)) sanitized.inputCount = result.inputs.length;
+      if (Number.isSafeInteger(result.controlCount) && (result.controlCount as number) >= 0) sanitized.controlCount = result.controlCount;
+      else if (Array.isArray(result.controls)) sanitized.controlCount = result.controls.length;
       return JSON.stringify(sanitized);
     } catch {
       return JSON.stringify({ ok: false, error: 'Malformed Browser Worker result.' });
@@ -26971,8 +28168,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
 
   /**
    * Agent-management chat tools: list_agent_resources / create_agent.
-   * create_agent reaches here only after the permission gate passed
-   * (full-access, or user approved the tool card in other modes).
+   * Definition mutations reach here only after fresh one-shot confirmation.
    */
   private async executeDynamicAgentDelegation(input: {
     run: DemoRunState;
@@ -26983,7 +28179,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     if (this.runtimeStopped) {
       return JSON.stringify({ ok: false, error: 'agent_delegate: Runtime is shutting down.' });
     }
-    if (this.managementIntentForRun(input.run) !== 'none' || input.run.delegationParentRunId) {
+    if (this.isDefinitionManagementTurn(input.run) || input.run.delegationParentRunId) {
       return JSON.stringify({ ok: false, error: 'agent_delegation.scope_required：管理轮次只保存配置，不自动启动；委派成员不自行扩展协作范围。' });
     }
     const admission = this.delegationAdmission.prepare({
@@ -27260,10 +28456,46 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     return reconcileDelegatedRecord(record, events, this.demoRuns.has(record.childRunId));
   }
 
+  private canProposeAgentDefinitions(run: DemoRunState): boolean {
+    if (run.delegationParentRunId || run.planningMode) return false;
+    const scope = this.collaborationThreadScopes.get(run.threadId);
+    if (!scope) return run.definitionProposalsAllowed === true;
+    if (scope.taskKind !== 'reply') return false;
+    const message = scope.input.snapshot.messages.find(item => item.id === scope.input.task.originMessageId);
+    const sender = scope.input.snapshot.members.find(member => member.id === message?.senderMemberId);
+    return sender?.kind === 'user' && message?.kind === 'chat';
+  }
+
+  private isDefinitionManagementTurn(run: DemoRunState): boolean {
+    return run.definitionManagementStarted === true || this.managementIntentForRun(run) !== 'none';
+  }
+
+  private markDefinitionManagement(run: DemoRunState): void {
+    run.definitionManagementStarted = true;
+    const live = this.demoRuns.get(run.runId);
+    if (live) live.definitionManagementStarted = true;
+  }
+
+  private recordDefinitionApproval(run: DemoRunState, call: ProviderToolCall): void {
+    if (!this.canProposeAgentDefinitions(run) || !LIBRARY_DEFINITION_MUTATIONS.has(call.name)) return;
+    this.markDefinitionManagement(run);
+    const approvals = this.definitionApprovals.get(run) ?? new Map<string, string>();
+    approvals.set(call.id, JSON.stringify([call.name, call.argumentsJson]));
+    this.definitionApprovals.set(run, approvals);
+  }
+
+  private consumeDefinitionApproval(run: DemoRunState, call: ProviderToolCall): boolean {
+    const approvals = this.definitionApprovals.get(run);
+    const expected = JSON.stringify([call.name, call.argumentsJson]);
+    if (approvals?.get(call.id) !== expected) return false;
+    approvals.delete(call.id);
+    return true;
+  }
+
   private managementIntentForRun(run: DemoRunState): AgentManagementIntent {
     if (run.delegationParentRunId || run.planningMode) return 'none';
     const scope = this.collaborationThreadScopes.get(run.threadId);
-    if (!scope) return agentManagementIntent(run.userText);
+    if (!scope) return run.definitionProposalsAllowed === true ? agentManagementIntent(run.userText) : 'none';
     if (scope.taskKind !== 'reply') return 'none';
     const message = scope.input.snapshot.messages.find(item => item.id === scope.input.task.originMessageId);
     const sender = scope.input.snapshot.members.find(member => member.id === message?.senderMemberId);
@@ -27271,11 +28503,61 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       ? agentManagementIntent(message.blocks.filter(block => block.type === 'text').map(block => block.text ?? '').join('\n')) : 'none';
   }
 
-  private isCollaborationControlToolAllowed(run: DemoRunState, name: string): boolean {
-    if (managementToolAllowed(this.managementIntentForRun(run), name)) return true;
-    if (this.managementIntentForRun(run) !== 'none') return false;
+  private isTaskRoomToolAllowed(run: DemoRunState, name: string): boolean {
     const scope = this.collaborationThreadScopes.get(run.threadId);
-    if (!scope || run.planningMode) return false;
+    if (scope?.input.task.conversationPlanning) return false;
+    if (this.scheduledAutomationForThread(run.threadId)?.waitingLogin) return false;
+    if (name === 'automation_report_outcome') {
+      const binding = this.scheduledAutomationForThread(run.threadId);
+      return Boolean(binding?.task.automation && binding.task.target.kind !== 'team' && !run.planningMode);
+    }
+    if (this.isDefinitionManagementTurn(run) && ['agent_run', 'agent_delegate', 'collaboration_start_workflow', 'collaboration_dispatch_tasks', 'collaboration_handoff', 'collaboration_submit_artifact'].includes(name)) return false;
+    if (!scope?.input.snapshot.conversation.room) return true;
+    if (scope.blocker && name !== 'collaboration_read_context') return false;
+    if (name === 'automation_export_artifact' && (!this.mayExportAutomationArtifact(run) || scope.input.task.kind !== 'task' || !['work', 'coordination'].includes(scope.input.task.purpose ?? ''))) return false;
+    if (name === 'browser_workflow_execute' && (scope.input.task.kind !== 'task' || !['work', 'coordination'].includes(scope.input.task.purpose ?? ''))) return false;
+    if (['agent_run', 'agent_delegate', 'agent_send_message', 'agent_send_task', 'collaboration_send_direct_message'].includes(name)) return false;
+    if (name.startsWith('collaboration_')) return this.isCollaborationControlToolAllowed(run, name);
+    return true;
+  }
+
+  /** Workspace read-only does not disable opted-in public-page rendering for a group.
+   * Keep child Agents, page interactions, downloads and file-producing screenshots fenced. */
+  private isReadOnlyRunToolAllowed(run: DemoRunState, name: string, explicitReadOnly?: boolean): boolean {
+    if (this.collaborationThreadScopes.get(run.threadId)?.input.task.conversationPlanning) return false;
+    if (isDelegatedReadOnlyTool(name, explicitReadOnly) || this.isCollaborationControlToolAllowed(run, name)) return true;
+    const scheduled = this.scheduledAutomationForThread(run.threadId)?.task.automation;
+    if (name === 'automation_report_outcome') return this.isTaskRoomToolAllowed(run, name);
+    if (name === 'automation_export_artifact') return this.mayExportAutomationArtifact(run);
+    if (scheduled?.delivery && !run.planningMode) {
+      const dispatch = parseMcpProviderToolName(name);
+      if (dispatch?.mcpServerId === scheduled.delivery.mcpServerId && dispatch.toolName === (scheduled.delivery.toolName ?? 'send_email')) return true;
+    }
+    if (scheduled?.browser?.workflowTaskId && ['browser_workflow_list', 'browser_workflow_get', 'browser_workflow_execute'].includes(name) && !run.planningMode) return true;
+    const scope = this.collaborationThreadScopes.get(run.threadId);
+    if (scope?.input.snapshot.conversation.policy.browserWorkflowTaskId && scope.input.snapshot.conversation.policy.networkEnabled === true && ['browser_workflow_list', 'browser_workflow_get', 'browser_workflow_execute'].includes(name)) return true;
+    return Boolean(scope?.input.snapshot.conversation.room &&
+      scope.input.snapshot.conversation.policy.networkEnabled === true &&
+      run.networkEnabled === true && this.browserController && !run.planningMode &&
+      (name === 'browser_open' || name === 'browser_read'));
+  }
+
+  private isCollaborationControlToolAllowed(run: DemoRunState, name: string): boolean {
+    if (this.collaborationThreadScopes.get(run.threadId)?.input.task.conversationPlanning) return false;
+    if (managementToolAllowed(this.managementIntentForRun(run), name, this.canProposeAgentDefinitions(run))) return true;
+    if (this.isDefinitionManagementTurn(run)) return false;
+    const scope = this.collaborationThreadScopes.get(run.threadId);
+    if (!scope || run.planningMode || scope.input.task.conversationPlanning) return false;
+    if (scope.input.snapshot.conversation.room) {
+      if (name === 'collaboration_read_context' || name === 'collaboration_send_message') return true;
+      if (name === 'collaboration_report_blocker' || name === 'collaboration_request_login') return scope.input.task.kind === 'task' && (scope.input.task.purpose === 'work' || scope.input.task.purpose === 'coordination');
+      if (name === 'collaboration_start_workflow') return scope.input.task.workflowStartAllowed === true && !scope.input.task.consultation &&
+        scope.input.task.assigneeMemberId === scope.input.snapshot.conversation.coordinatorMemberId;
+      if (name === 'collaboration_handoff') return !scope.input.task.consultation && ['work', 'coordination'].includes(scope.input.task.purpose ?? '');
+      if (name === 'collaboration_dispatch_tasks') return scope.input.task.purpose === 'coordination';
+      if (name === 'collaboration_submit_artifact') return scope.input.task.purpose === 'work' && Boolean(scope.input.task.deliverable);
+      return false;
+    }
     if (name === 'collaboration_submit_artifact') return scope.taskKind === 'task' && Boolean(scope.input.task.deliverable);
     return scope.taskKind === 'reply' && (name === 'collaboration_start_workflow' ||
       (name === 'collaboration_dispatch_tasks' && scope.input.task.assigneeMemberId === scope.input.snapshot.conversation.coordinatorMemberId));
@@ -27285,8 +28567,8 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     run: DemoRunState;
     toolCall: import('@sync-think/adapters').ProviderToolCall;
     args: Record<string, unknown>;
-  }): string {
-    if (this.managementIntentForRun(input.run) !== 'none') return JSON.stringify({ ok: false, error: '智能体定义管理轮次只保存配置；执行或派发请另行发起。' });
+  }): string | Promise<string> {
+    if (this.isDefinitionManagementTurn(input.run)) return JSON.stringify({ ok: false, error: '智能体定义管理轮次只保存配置；执行或派发请另行发起。' });
     const host = this.collaborationChatHost;
     const conversationId = this.resolveConversationIdForThread(input.run.threadId);
     if (!host || !conversationId) {
@@ -27305,18 +28587,66 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     try {
       let command: CollaborationCommand;
       const scope = this.collaborationThreadScopes.get(input.run.threadId);
+      if (scope?.input.snapshot.conversation.room) {
+        if (!this.isTaskRoomToolAllowed(input.run, input.toolCall.name)) throw new Error('task_room.tool_not_allowed');
+        const current = host.command({ action: 'get', conversationId }, actorMemberId).snapshot!;
+        const live = current.tasks.find(t => t.id === scope.input.task.id);
+        if (!live || live.currentAttemptId !== scope.input.attempt.id || !current.attempts.some(a => a.id === live.currentAttemptId && ['running', 'waiting_input'].includes(a.status))) throw new Error('task_room.execution_no_longer_active');
+        if (current.attempts.find(a => a.id === live.currentAttemptId)?.workHandoff &&
+          ['collaboration_submit_artifact', 'collaboration_dispatch_tasks', 'collaboration_send_message', 'collaboration_report_blocker'].includes(input.toolCall.name)) throw new Error('task_room.handoff_already_selected: 交接已保存，请结束当前轮次。');
+        if (['collaboration_submit_artifact', 'collaboration_dispatch_tasks', 'collaboration_handoff', 'collaboration_start_workflow', 'collaboration_report_blocker'].includes(input.toolCall.name) &&
+          current.tasks.some(t => t.consultation?.requesterAttemptId === scope.input.attempt.id)) throw new Error('task_room.peer_reply_pending: 请结束本轮，咨询回应后宿主会继续原任务。');
+        if (input.toolCall.name === 'collaboration_send_message' && (input.args.deliveryMode === 'consult' || input.args.deliveryMode === undefined && input.args.expectsResponse === true) &&
+          (scope.artifacts?.length || current.tasks.some(t => t.parentTaskId === live.id && t.kind === 'task' && !t.consultation))) {
+          throw new Error('task_room.consult_before_delivery: 先咨询再派工或交付；本轮已有交付或子工作，请结束当前轮次。');
+        }
+        if (input.toolCall.name === 'collaboration_read_context') return JSON.stringify({ ok: true, roomId: conversationId, data: readTaskRoomContext(current, input.args) });
+      }
+      if (input.toolCall.name === 'collaboration_request_login') return (async () => {
+        if (!scope || !this.browserController || !this.isCollaborationControlToolAllowed(input.run, input.toolCall.name)) throw new Error('collaboration.work_task_required');
+        const requestedOutcome = typeof input.args.requestedOutcome === 'string' ? input.args.requestedOutcome.trim() : '';
+        const reason = input.args.reason ?? 'login';
+        if (!requestedOutcome || requestedOutcome.length > 1000 || !['login', 'captcha', 'device-confirmation'].includes(String(reason))) throw new Error('browser.handoff-arguments-invalid');
+        const response = await this.browserController.requestHandoff({
+          workspaceId: scope.input.snapshot.conversation.workspaceId, runId: input.run.runId, ownerId: input.run.threadId,
+          profileId: this.resolveBrowserProfileForThread(input.run.threadId), idempotencyKey: requestId,
+          reason: reason as 'login' | 'captcha' | 'device-confirmation', requestedOutcome, onCancel: 'keep-open',
+          groupBinding: { conversationId, taskId: scope.input.task.id, attemptId: scope.input.attempt.id, goalRevision: scope.input.snapshot.conversation.room!.goalRevision },
+        });
+        scope.blocker = { code: 'browser.login_required', category: 'permission', message: requestedOutcome,
+          nextStep: '请在此群绑定的浏览器 Profile 完成登录，然后点击继续。将续做原任务，不重建工作目标。', retryable: true, traceId: input.run.runId };
+        return JSON.stringify({ ok: true, ...response, hint: 'End this turn now. The task remains unfinished; do not dispatch new work or submit a completion.' });
+      })().catch(error => JSON.stringify({ ok: false, code: 'browser.handoff-failed', error: error instanceof Error ? error.message : String(error), hint: 'Open a page in the selected Profile before requesting login.' }));
+      if (input.toolCall.name === 'collaboration_report_blocker') {
+        if (!scope || !this.isCollaborationControlToolAllowed(input.run, input.toolCall.name)) throw new Error('collaboration.work_task_required');
+        const reason = typeof input.args.reason === 'string' ? input.args.reason.trim() : '';
+        const nextStep = typeof input.args.nextStep === 'string' ? input.args.nextStep.trim() : '';
+        if (!reason || !nextStep || reason.length > 2000 || nextStep.length > 2000) throw new Error('collaboration.invalid_blocker');
+        scope.blocker = { code: 'work_blocked', category: 'execution', message: reason, nextStep, retryable: true, traceId: input.run.runId };
+        return JSON.stringify({ ok: true, status: 'blocked', reason, nextStep, hint: 'End this turn. The goal remains unfinished.' });
+      }
       if (input.toolCall.name === 'collaboration_submit_artifact') {
         if (!scope || !this.isCollaborationControlToolAllowed(input.run, input.toolCall.name)) throw new Error('collaboration.artifact_task_required');
         const artifact = submitCollaborationArtifact({ task: scope.input.task, attempt: scope.input.attempt,
-          content: input.args.content, workspaceRoot: this.resolveChatWorkspaceRoot(input.run.threadId), previousHash: scope.previousArtifactHash });
+          content: input.args.content, workspaceRoot: this.resolveChatWorkspaceRoot(input.run.threadId),
+          artifactStorageRoot: this.resolveCollaborationArtifactStorageRoot(input.run.threadId), previousHash: scope.previousArtifactHash });
         scope.artifacts = [artifact];
         scope.input.onProgress({ artifacts: scope.artifacts });
-        return JSON.stringify({ ok: true, artifact: { id: artifact.id, title: artifact.title, sha256: artifact.sha256, bytes: artifact.bytes } });
+        return JSON.stringify({ ok: true, submissionMode: 'replace-complete-document', hint: 'Saved this complete replacement, not an appended chunk. This latest version counts toward the contracted delivery.', artifact: { id: artifact.id, title: artifact.title, kind: artifact.kind, storedPath: artifact.storedPath, textMetrics: artifact.textMetrics, sha256: artifact.sha256, bytes: artifact.bytes } });
       }
       if (input.toolCall.name === 'collaboration_start_workflow') {
         if (!scope || !this.isCollaborationControlToolAllowed(input.run, input.toolCall.name)) throw new Error('collaboration.workflow_reply_required');
         command = { action: 'start-workflow', conversationId, clientRequestId: requestId,
           goal: String(input.args.goal ?? ''), parentTaskId: scope.input.task.id, originMessageId: scope.input.task.originMessageId };
+      } else if (input.toolCall.name === 'collaboration_handoff') {
+        if (!scope || !this.isCollaborationControlToolAllowed(input.run, input.toolCall.name)) throw new Error('task_room.production_execution_required');
+        command = { action: 'handoff', conversationId, clientRequestId: requestId,
+          handoff: { kind: input.args.kind as 'work' | 'review' | 'report',
+            recipientMemberId: input.args.recipientMemberId as string, text: input.args.text as string,
+            ...(input.args.artifactIds !== undefined ? { artifactIds: input.args.artifactIds as string[] } : {}),
+            ...(input.args.title !== undefined ? { title: input.args.title as string } : {}),
+            ...(input.args.deliverable !== undefined ? { deliverable: input.args.deliverable as import('@sync-think/shared').CollaborationDeliverable } : {}),
+          } };
       } else if (input.toolCall.name === 'collaboration_send_message') {
         const text = typeof input.args.text === 'string' ? input.args.text.trim() : '';
         if (!text) return JSON.stringify({ ok: false, error: 'text is required.' });
@@ -27332,9 +28662,9 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
                 ),
               }
             : {}),
-          ...(typeof input.args.replyToMessageId === 'string'
-            ? { replyToMessageId: input.args.replyToMessageId }
-            : {}),
+          replyToMessageId: typeof input.args.replyToMessageId === 'string' ? input.args.replyToMessageId : scope?.input.task.originMessageId,
+          ...(input.args.visibility !== undefined ? { visibility: input.args.visibility as 'public' | 'private' } : {}),
+          ...(input.args.deliveryMode !== undefined ? { deliveryMode: input.args.deliveryMode as import('@sync-think/shared').CollaborationMessageDeliveryMode } : {}),
           ...(typeof input.args.expectsResponse === 'boolean'
             ? { expectsResponse: input.args.expectsResponse }
             : {}),
@@ -27387,13 +28717,29 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         };
       }
       if (command.action === 'dispatch' && scope) {
-        if (scope.taskKind !== 'reply' || scope.input.task.assigneeMemberId !== scope.input.snapshot.conversation.coordinatorMemberId) throw new Error('collaboration.coordinator_reply_required');
+        if (!this.isCollaborationControlToolAllowed(input.run, 'collaboration_dispatch_tasks')) throw new Error('collaboration.coordinator_reply_required');
         command.parentTaskId = scope.input.task.id;
         command.originMessageId = scope.input.task.originMessageId;
-        command.tasks = command.tasks.map(task => ({ ...task, deliverable: task.deliverable ?? { kind: 'document', title: task.title } }));
+        if (!scope.input.snapshot.conversation.room) command.tasks = command.tasks.map(task => ({ ...task, deliverable: task.deliverable ?? { kind: 'document', title: task.title } }));
       }
-      if (!parseCollaborationCommand(command)) throw new Error('collaboration.invalid_command');
-      const response = host.command(command, actorMemberId);
+      if (!parseCollaborationCommand(command)) {
+        const issues = command.action === 'dispatch' ? collaborationDispatchIssues(command.tasks) : [];
+        return JSON.stringify({ ok: false, error: 'collaboration.invalid_command', issues, hint: 'Correct the indicated arguments and retry. This is a parameter error, not a missing-tool or offline-member error.' });
+      }
+      const response = host.command(command, actorMemberId, scope ? { taskId: scope.input.task.id, attemptId: scope.input.attempt.id } : undefined);
+      if (scope && command.action === 'handoff') return JSON.stringify({ ok: true, message: '交接意图已保存。请结束本轮；本轮成功交付后才会 @并唤醒接收者。失败、暂停或取消不会派出后续工作。' });
+      if (scope && command.action === 'send' && response.snapshot) {
+        const receipt = response.snapshot.receipts['send:' + command.clientRequestId];
+        const messageId = receipt ? (JSON.parse(receipt) as { reference: string }).reference : undefined;
+        const delivered = response.snapshot.messages.find(m => m.id === messageId);
+        const deliveryMode = delivered?.deliveryMode ?? (command.expectsResponse ? 'consult' : 'notify');
+        return JSON.stringify({ ok: true, conversationId, messageId, deliveryMode,
+          publicReplyPublished: response.snapshot.attempts.find(a => a.id === scope.input.attempt.id)?.chatDeliveryMessageId === messageId,
+          deliveries: response.snapshot.deliveries.filter(d => d.messageId === messageId).map(d => ({ recipientMemberId: d.recipientMemberId, status: d.status })),
+          message: deliveryMode === 'consult' ? '咨询已投递。请结束本轮，回应后宿主会继续原任务。'
+            : deliveryMode === 'handoff' ? '聊天已转达，接收者将回应。本轮到此结束，不等待回执、不恢复发送者；不要另发确认。'
+            : '消息已投递，不自动唤醒接收者。已答复原请求者时不要重复发送最终回执。' });
+      }
       if (scope && response.snapshot && ['start-workflow', 'dispatch'].includes(command.action)) {
         return JSON.stringify({ ok: true, conversationId, tasks: response.snapshot.tasks.filter(task => task.parentTaskId === scope.input.task.id)
           .map(task => ({ id: task.id, title: task.title, assigneeMemberId: task.assigneeMemberId, dependsOnTaskIds: task.dependsOnTaskIds })), message: '任务已入队，调度器将自动推进。请简短确认，不再次派发，也不代替成员执行。' });
@@ -27410,9 +28756,12 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
   private executeChatAgentTool(input: {
     run: DemoRunState;
     toolCall: import('@sync-think/adapters').ProviderToolCall;
-  }): string {
-    if (AGENT_DEFINITION_TOOLS.has(input.toolCall.name) && !managementToolAllowed(this.managementIntentForRun(input.run), input.toolCall.name)) {
+  }): string | Promise<string> {
+    if (LIBRARY_DEFINITION_TOOLS.has(input.toolCall.name) && !managementToolAllowed(this.managementIntentForRun(input.run), input.toolCall.name, this.canProposeAgentDefinitions(input.run))) {
       return JSON.stringify({ ok: false, error: 'agent_management.user_request_required：请由用户明确提出创建或修改要求；执行任务不自行招募新智能体。' });
+    }
+    if (LIBRARY_DEFINITION_MUTATIONS.has(input.toolCall.name) && !this.consumeDefinitionApproval(input.run, input.toolCall)) {
+      return JSON.stringify({ ok: false, error: 'definition_management.fresh_confirmation_required：本次配置尚未获得用户逐次确认。' });
     }
     let args: Record<string, unknown> = {};
     try {
@@ -27422,11 +28771,15 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     }
 
     if (
+      input.toolCall.name === 'collaboration_read_context' ||
       input.toolCall.name === 'collaboration_send_message' ||
       input.toolCall.name === 'collaboration_send_direct_message' ||
       input.toolCall.name === 'collaboration_dispatch_tasks' ||
+      input.toolCall.name === 'collaboration_handoff' ||
       input.toolCall.name === 'collaboration_start_workflow' ||
-      input.toolCall.name === 'collaboration_submit_artifact'
+      input.toolCall.name === 'collaboration_submit_artifact' ||
+      input.toolCall.name === 'collaboration_report_blocker' ||
+      input.toolCall.name === 'collaboration_request_login'
     ) {
       return this.executeChatCollaborationTool({ ...input, args });
     }
@@ -27600,54 +28953,6 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       };
     };
 
-    // Accept an emoji / short decorative text (≤ 8 chars) or a small
-    // data:image data URL (UI avatars are a few KB). Reject remote URLs (the
-    // shell CSP blocks them anyway and they leak the model's browsing input)
-    // and control characters.
-    const resolveAgentAvatar = (
-      raw: unknown,
-    ): { ok: true; avatar?: string } | { ok: false; error: string } => {
-      if (raw === undefined || raw === null) return { ok: true };
-      if (typeof raw !== 'string') return { ok: false, error: 'avatar must be a string' };
-      const trimmed = raw.trim();
-      if (!trimmed) return { ok: true, avatar: '' };
-      if (
-        [...trimmed].some((char) => {
-          const code = char.charCodeAt(0);
-          return code <= 0x1f || code === 0x7f;
-        })
-      ) {
-        return { ok: false, error: 'avatar contains control characters' };
-      }
-      if (trimmed.startsWith('data:image/')) {
-        if (trimmed.length > 200_000) {
-          return { ok: false, error: 'avatar data URL is too large (max ~200KB)' };
-        }
-        return { ok: true, avatar: trimmed };
-      }
-      // Procedural avatar seed written by the desktop avatar picker, e.g.
-      // "gen:v1:blob:red". The picker owns the shape/color enums and degrades an
-      // unrecognised value to a derived face, so this only bounds the value's
-      // shape — compact, single-line, and never a remote URL.
-      if (trimmed.startsWith('gen:v1:')) {
-        if (!/^gen:v1:[a-z]+:[a-z]+$/.test(trimmed)) {
-          return { ok: false, error: 'avatar seed must look like gen:v1:<shape>:<color>' };
-        }
-        return { ok: true, avatar: trimmed };
-      }
-      if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
-        return {
-          ok: false,
-          error:
-            'avatar must be an emoji, short text, or a data:image URL (remote URLs are not allowed)',
-        };
-      }
-      if (trimmed.length > 8) {
-        return { ok: false, error: 'avatar text must be at most 8 characters' };
-      }
-      return { ok: true, avatar: trimmed };
-    };
-
     if (input.toolCall.name === 'create_agent') {
       const name = typeof args.name === 'string' ? args.name.trim() : '';
       if (!name) {
@@ -27690,8 +28995,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         });
       }
       const reasoningEffort =
-        typeof args.reasoningEffort === 'string' &&
-        ['auto', 'off', 'low', 'medium', 'high'].includes(args.reasoningEffort)
+        isReasoningEffort(args.reasoningEffort)
           ? args.reasoningEffort
           : undefined;
       try {
@@ -27703,7 +29007,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         }
         const created = this.globalAgentStore.create({
           name,
-          avatar: avatarResult.avatar,
+          avatar: defaultAgentAvatar(avatarResult.avatar),
           defaultModelId: defaultModelId as ModelId,
           persona: typeof args.persona === 'string' ? args.persona : undefined,
           description: typeof args.description === 'string' ? args.description : undefined,
@@ -27793,8 +29097,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         changedFields.push('description');
       }
       const nextReasoningEffort =
-        typeof args.reasoningEffort === 'string' &&
-        ['auto', 'off', 'low', 'medium', 'high'].includes(args.reasoningEffort)
+        isReasoningEffort(args.reasoningEffort)
           ? args.reasoningEffort
           : undefined;
       if (nextReasoningEffort !== undefined && nextReasoningEffort !== current.reasoningEffort) {
@@ -27921,13 +29224,19 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
   /**
    * Skill-management chat tools: list_skills / read_skill / create_skill /
    * update_skill / delete_skill. Mutations reach here only after the
-   * permission gate passed (full-access, or approved on the approval card).
+   * host-owned direct-chat boundary and fresh one-shot confirmation passed.
    * Import parses text only �?scripts are never executed (§9.2).
    */
   private async executeChatSkillTool(input: {
     run: DemoRunState;
     toolCall: import('@sync-think/adapters').ProviderToolCall;
   }): Promise<string> {
+    if (!this.canProposeAgentDefinitions(input.run)) {
+      return JSON.stringify({ ok: false, error: 'definition_management.direct_user_required' });
+    }
+    if (LIBRARY_DEFINITION_MUTATIONS.has(input.toolCall.name) && !this.consumeDefinitionApproval(input.run, input.toolCall)) {
+      return JSON.stringify({ ok: false, error: 'definition_management.fresh_confirmation_required' });
+    }
     let args: Record<string, unknown> = {};
     try {
       args = JSON.parse(input.toolCall.argumentsJson || '{}') as Record<string, unknown>;
@@ -28194,8 +29503,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
 
   /**
    * Team-management chat tools: list_teams / create_team / update_team /
-   * delete_team. Mutations reach here only after the permission gate passed
-   * (full-access, or user approved the tool card in other modes).
+   * delete_team. Mutations require explicit user intent and one-shot approval.
    */
   private executeChatTeamTool(input: {
     run: DemoRunState;
@@ -28206,6 +29514,12 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       args = JSON.parse(input.toolCall.argumentsJson || '{}') as Record<string, unknown>;
     } catch {
       return JSON.stringify({ ok: false, error: 'Invalid tool arguments JSON' });
+    }
+    if (LIBRARY_DEFINITION_TOOLS.has(input.toolCall.name) && !managementToolAllowed(this.managementIntentForRun(input.run), input.toolCall.name, this.canProposeAgentDefinitions(input.run))) {
+      return JSON.stringify({ ok: false, error: '本轮没有对应的小队管理请求。请由用户明确说明要创建或修改的小队。' });
+    }
+    if (LIBRARY_DEFINITION_MUTATIONS.has(input.toolCall.name) && !this.consumeDefinitionApproval(input.run, input.toolCall)) {
+      return JSON.stringify({ ok: false, error: 'definition_management.fresh_confirmation_required：本次配置尚未获得用户逐次确认。' });
     }
     if (!this.teamStore) {
       return JSON.stringify({ ok: false, error: 'Team store is not configured on this Runtime.' });
@@ -28655,13 +29969,13 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     signal: AbortSignal;
   }): Promise<{ decision: 'approve' | 'deny'; approvalId: string }> {
     const rawArguments = parseToolApprovalArguments(input.toolCall.argumentsJson);
-    const allowedScopes = AGENT_DEFINITION_MUTATIONS.has(input.toolCall.name) ? ['once' as ToolApprovalScope] : toolApprovalScopesFor({
+    const allowedScopes = LIBRARY_DEFINITION_MUTATIONS.has(input.toolCall.name) ? ['once' as ToolApprovalScope] : toolApprovalScopesFor({
       toolName: input.toolCall.name,
       arguments: rawArguments,
       risk: input.approvalRisk,
     });
     if (
-      !AGENT_DEFINITION_MUTATIONS.has(input.toolCall.name) && this.toolApprovalPolicy.isAllowed({
+      !LIBRARY_DEFINITION_MUTATIONS.has(input.toolCall.name) && this.toolApprovalPolicy.isAllowed({
         conversationId: this.resolveConversationIdForThread(input.threadId) ?? input.threadId,
         toolName: input.toolCall.name,
         arguments: rawArguments,
@@ -28805,11 +30119,14 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     const scope = payload.scope ?? 'once';
     let result: ReturnType<typeof decideActiveToolApproval>;
     try {
+      const approvedArguments = payload.excludedSkillTools?.length
+        ? narrowSkillApprovalArguments(pending.toolCall.name, parseToolApprovalArguments(pending.toolCall.argumentsJson), payload.excludedSkillTools) : undefined;
       result = decideActiveToolApproval({
         lifecycle: this.activeToolApprovals,
         approvalId: payload.approvalId,
         decision: payload.decision,
         scope,
+        approvedArguments,
         commit: (approval: ActiveToolApproval) =>
           commitToolApprovalDecision({
             policy: this.toolApprovalPolicy,
@@ -28842,6 +30159,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
                     scope,
                     toolCallId: approval.toolCall.id,
                     toolName: approval.toolCall.name,
+                    ...(approvedArguments ? { excludedSkillTools: payload.excludedSkillTools, approvedArguments } : {}),
                   },
                 },
               ])[0]!,
@@ -29064,6 +30382,318 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
    * allow grant. When a grant is missing, the tool returns approval-required
    * (or, in full-access, records an auto grant) before any browser side effect.
    */
+  private scheduledAutomationFingerprint(task: ScheduledTask): string {
+    return createHash('sha256')
+      .update(
+        JSON.stringify({
+          target: task.target,
+          workspaceId: task.workspaceId,
+          instruction: task.instruction,
+          automation: task.automation,
+          skillVersionIds: task.skillVersionIds ?? [],
+        }),
+      )
+      .digest('hex');
+  }
+
+  private executeAutomationOutcomeTool(run: DemoRunState, argumentsJson: string): string {
+    const binding = this.scheduledAutomationForThread(run.threadId);
+    if (!binding?.task.automation || binding.task.target.kind === 'team' || binding.waitingLogin || run.planningMode)
+      return JSON.stringify({ok: false, error: '本工具只用于正在执行的模型/智能体自动化轮次，登录等待须先完成交接'});
+    let args: ReturnType<typeof parseAutomationOutcome>;
+    try { args = parseAutomationOutcome(JSON.parse(argumentsJson)); } catch { /* Invalid tool input. */ }
+    if (!args) return JSON.stringify({ok: false, error: 'outcome 需要 status=success/failed/blocked 与非空 reason（至多2000字符）'});
+    const evidence = this.readAutomationEvidence(binding);
+    evidence.outcome = {...args, runId: String(run.runId), reportedAt: new Date().toISOString()};
+    this.saveAutomationEvidence(binding, evidence);
+    const failure = automationOutcomeFailure(binding.task.automation, evidence, String(run.runId));
+    return JSON.stringify({ok: true, outcome: args, ...(failure ? {acceptance: failure} : {})});
+  }
+
+  private async executeAutomationLoginTool(
+    run: DemoRunState,
+    argumentsJson: string,
+  ): Promise<string> {
+    const binding = this.scheduledAutomationForThread(run.threadId);
+    if (
+      !binding?.task.automation?.browser ||
+      this.collaborationThreadScopes.has(run.threadId) ||
+      !this.browserController
+    )
+      return JSON.stringify({
+        ok: false,
+        error:
+          '本工具适用于配置了Browser Profile的模型/智能体定时任务；小队使用collaboration_request_login',
+      });
+    try {
+      const args = JSON.parse(argumentsJson || '{}') as {
+        reason?: string;
+        requestedOutcome?: string;
+      };
+      if (
+        !['login', 'captcha'].includes(args.reason ?? '') ||
+        typeof args.requestedOutcome !== 'string' ||
+        !args.requestedOutcome.trim() ||
+        args.requestedOutcome.length > 2000
+      )
+        return JSON.stringify({ ok: false, error: '登录交接参数无效' });
+      const conversation = this.resolveConversationForThread(run.threadId);
+      if (!conversation) return JSON.stringify({ ok: false, error: '定时任务会话尚未就绪' });
+      const result = await this.browserController.requestHandoff({
+        workspaceId: this.resolveEventWorkspaceId(run.threadId),
+        runId: String(run.runId),
+        ownerId: run.threadId,
+        profileId: binding.task.automation.browser.profileId,
+        idempotencyKey:
+          'scheduled-login:' +
+          binding.task.id +
+          ':' +
+          binding.firedAt +
+          ':' +
+          String(run.runId),
+        reason: args.reason as 'login' | 'captcha',
+        requestedOutcome: args.requestedOutcome,
+        onCancel: 'keep-open',
+        scheduledBinding: {
+          taskId: binding.task.id,
+          firedAt: binding.firedAt,
+          threadId: run.threadId,
+          conversationId: conversation.id,
+          fingerprint: this.scheduledAutomationFingerprint(binding.task),
+        },
+      });
+      binding.waitingLogin = true;
+      this.appSettingStore?.set(
+        'automation:login:' + binding.task.id + ':' + binding.firedAt,
+        binding,
+      );
+      this.publishTaskEvent('scheduledTask.updated', binding.task.id, {
+        taskId: binding.task.id,
+        action: 'login-required',
+      });
+      return JSON.stringify({
+        ok: true,
+        waiting_input: true,
+        ...result,
+        note: '本轮暂停，登录后继续仍须读取页面核对',
+      });
+    } catch (error) {
+      return JSON.stringify({
+        ok: false,
+        error: error instanceof Error ? error.message : '登录交接失败',
+      });
+    }
+  }
+
+  private async continueScheduledAutomationLogin(
+    context: import('./browser/runtime-browser-controller.js').RuntimeBrowserHandoffContext,
+    payload: import('@sync-think/protocol').ContinueBrowserHandoffPayload,
+  ): Promise<ContinueBrowserHandoffResponse> {
+    const pending = this.scheduledLoginContinuations.get(context.handoffId);
+    if (pending) return { ...(await pending), replayed: true };
+    const continuation = this.resumeScheduledAutomationLogin(context, payload);
+    this.scheduledLoginContinuations.set(context.handoffId, continuation);
+    try {
+      return await continuation;
+    } finally {
+      this.scheduledLoginContinuations.delete(context.handoffId);
+    }
+  }
+
+  private async resumeScheduledAutomationLogin(
+    context: import('./browser/runtime-browser-controller.js').RuntimeBrowserHandoffContext,
+    payload: import('@sync-think/protocol').ContinueBrowserHandoffPayload,
+  ): Promise<ContinueBrowserHandoffResponse> {
+    const saved = context.scheduledBinding!;
+    const current = this.scheduledTaskStore?.get(saved.taskId);
+    if (
+      !current ||
+      this.scheduledAutomationFingerprint(current) !== saved.fingerprint ||
+      current.conversationId !== saved.conversationId ||
+      context.profileId !== current.automation?.browser?.profileId ||
+      context.ownerId !== saved.threadId
+    )
+      throw new Error(
+        'browser.handoff-stale-scheduled-task：任务范围或配置已改变，请重新核对后试运行',
+      );
+    if (this.activeRuns.has(context.runId) || this.demoRuns.has(context.runId as RunId))
+      throw new Error('browser.handoff-run-still-active');
+    const binding = this.appSettingStore?.get(
+      'automation:login:' + saved.taskId + ':' + saved.firedAt,
+    )?.value as ScheduledAutomationBinding | undefined;
+    if (!binding || !binding.task.automation || binding.firedAt !== saved.firedAt)
+      throw new Error('browser.handoff-scheduled-snapshot-missing');
+    // A manually tested draft stays disabled until Publish; only a published
+    // schedule disabled after admission revokes continuation.
+    if (!current.enabled && binding.task.enabled) {
+      throw new Error('browser.handoff-scheduled-task-disabled：定时任务已禁用，请先重新启用');
+    }
+    // Replays do not need another execution slot. A new continuation does.
+    if (['approved', 'running', 'completed'].includes(context.state)) {
+      return {
+        ...(await this.browserController!.continueHandoff(payload)),
+        runId: context.runId as RunId,
+      };
+    }
+    if (
+      this.scheduledTaskAdmissions.has(saved.taskId) ||
+      this.scheduledTaskAdmissions.size +
+        this.scheduledTaskRunRegistry.activeCount() +
+        this.scheduledGroupAdmissions.size >=
+        this.taskMaxConcurrent()
+    ) {
+      throw new Error(
+        'browser.handoff-admission-busy：并发执行名额已占用，请稍后继续；登录交接仍保留',
+      );
+    }
+    const busy = [...this.demoRuns.values()].some(
+      (run) => run.threadId === saved.threadId && this.activeRuns.has(String(run.runId)),
+    );
+    if (busy || !this.canStartModelRun())
+      throw new Error('browser.handoff-admission-busy：会话或模型正在准备，请稍后继续');
+    this.scheduledTaskAdmissions.add(saved.taskId);
+    try {
+      // Probe before consuming the durable handoff; a disconnected MCP must not lose Continue.
+      const prepared = await this.prepareScheduledAutomation(binding.task, binding.firedAt);
+      if (!prepared.ready)
+        throw new Error('browser.handoff-preflight-failed：' + prepared.reasons.join('；'));
+      const checkedTask = this.scheduledTaskStore?.get(saved.taskId);
+      if (
+        !checkedTask ||
+        (binding.task.enabled && !checkedTask.enabled) ||
+        this.scheduledAutomationFingerprint(checkedTask) !== saved.fingerprint ||
+        checkedTask.conversationId !== saved.conversationId
+      ) {
+        throw new Error(
+          'browser.handoff-stale-scheduled-task：预检期间任务配置已改变，登录交接仍保留',
+        );
+      }
+      if (
+        [...this.demoRuns.values()].some(
+          (run) => run.threadId === saved.threadId && this.activeRuns.has(String(run.runId)),
+        )
+      ) {
+        throw new Error('browser.handoff-admission-busy：会话忙，请稍后继续');
+      }
+      const decision = await this.browserController!.continueHandoff(payload);
+      if (decision.replayed) return { ...decision, runId: context.runId as RunId };
+      await this.browserController!.requestHandoff({
+        workspaceId: context.workspaceId,
+        runId: context.runId,
+        ownerId: context.ownerId,
+        idempotencyKey: context.idempotencyKey,
+        profileId: context.profileId,
+        reason: context.reason,
+        requestedOutcome: context.requestedOutcome,
+        onCancel: context.onCancel,
+        scheduledBinding: saved,
+      });
+      this.resumedScheduledAutomation.set(saved.taskId, { ...binding, waitingLogin: false });
+      const result = await this.fireScheduledTaskAdmitted({...binding.task, conversationId:saved.conversationId}, new Date(), prepared);
+      if (!result.fired) throw new Error(result.reason ?? 'browser.handoff-resume-failed');
+      return { ...decision, runId: context.runId as RunId };
+    } finally {
+      this.scheduledTaskAdmissions.delete(saved.taskId);
+    }
+  }
+
+  private mayExportAutomationArtifact(run: DemoRunState): boolean {
+    const binding = this.scheduledAutomationForThread(run.threadId);
+    if (!binding?.task.automation?.outputs?.length || binding.waitingLogin || run.planningMode ||
+      normalizeChatExecutionMode(binding.task.automation.executionMode) === 'ask') return false;
+    // Frozen workspace authority never overrides an Agent's own write fence.
+    return !run.globalAgentId || this.globalAgentStore?.get(run.globalAgentId as AgentId)?.writePolicy === 'inherit';
+  }
+
+  private async executeAutomationArtifactTool(
+    run: DemoRunState,
+    argumentsJson: string,
+  ): Promise<string> {
+    const binding = this.scheduledAutomationForThread(run.threadId);
+    if (!binding?.task.automation?.outputs?.length || !this.mayExportAutomationArtifact(run))
+      return JSON.stringify({ ok: false, error: '本轮未配置产物导出能力或当前智能体只读' });
+    try {
+      const currentEvidence = this.readAutomationEvidence(binding);
+      if (currentEvidence.delivery)
+        return JSON.stringify({
+          ok: false,
+          error: '邮件已发起或已发送，本轮产物已锁定；更新后的内容请另开一轮交付',
+        });
+      const args = JSON.parse(argumentsJson || '{}') as AutomationBusinessAcceptanceInput & {fileName?: string};
+      if (!binding.task.automation.outputs.some((format) => format === args.format))
+        return JSON.stringify({ ok: false, error: '产物格式不在本轮声明中' });
+      const checks = binding.task.automation.acceptanceChecks;
+      const expectedLocalDate = automationExpectedLocalDate(binding.firedAt, binding.task.timeZone);
+      const acceptance = checks ? evaluateAutomationBusinessAcceptance(checks, args, expectedLocalDate) : undefined;
+      if (acceptance && !acceptance.passed) return JSON.stringify({ok:false,code:'automation.acceptance_failed',error:'实际导出数据未通过本轮结构化验收，请修正数据后重试',checks:acceptance.checks});
+      const root = this.resolveChatWorkspaceRoot(run.threadId);
+      if (!root) return JSON.stringify({ ok: false, error: '本轮工作区路径尚未就绪' });
+      const safeTaskId = binding.task.id.replace(/[^a-zA-Z0-9_-]/g, '_');
+      const safeRound = binding.firedAt.replace(/[^a-zA-Z0-9_-]/g, '_');
+      let directory = resolveAutomationPath(
+        root,
+        '.sync-think',
+        'automations',
+        safeTaskId,
+        safeRound,
+      );
+      const contract = this.collaborationThreadScopes.get(run.threadId)?.input.task.deliverable;
+      if (contract?.kind === 'file') {
+        // The contract is task-scoped authority, not a caller-selected absolute export path.
+        const path = contract.path;
+        if (!path || automationIsAbsolute(path) || /^[a-z]:/i.test(path))
+          return JSON.stringify({ ok: false, error: 'collaboration.artifact_path_invalid' });
+        const target = resolveAutomationPath(root, path);
+        const inside = automationRelative(root, target);
+        if (
+          !inside || inside === '..' || inside.startsWith('..' + automationPathSeparator) ||
+          automationIsAbsolute(inside)
+        )
+          return JSON.stringify({ ok: false, error: 'collaboration.artifact_outside_workspace' });
+        if (args.fileName !== automationBasename(target))
+          return JSON.stringify({ ok: false, error: 'collaboration.artifact_contract_mismatch' });
+        directory = automationDirname(target);
+      }
+      // Check each existing parent before creating descendants; aliases must not escape the room.
+      let parent = root;
+      const components = automationRelative(root, directory).split(automationPathSeparator).filter(Boolean);
+      for (const component of components) {
+        parent = resolveAutomationPath(parent, component);
+        if (!existsSync(parent)) mkdirSync(parent);
+        const entry = lstatSync(parent);
+        if (entry.isSymbolicLink() || !entry.isDirectory())
+          return JSON.stringify({ ok: false, error: 'artifact.directory_alias' });
+      }
+      const result = await exportAutomationArtifact(args, {
+        workspaceRoot: root,
+        workingDirectory: directory,
+        runId: String(run.runId),
+      });
+      const evidence = this.readAutomationEvidence(binding);
+      if (evidence.delivery) return JSON.stringify({ok:false,error:'导出期间邮件已发起，本文件未加入交付；请另开一轮'});
+      evidence.outputs = evidence.outputs.filter((output) => output.format !== result.format);
+      evidence.outputs.push({
+        format: result.format,
+        path: result.path,
+        sha256: result.sha256,
+        bytes: result.size,
+        ...(acceptance?.passed ? {businessAcceptance: {passed: true as const, contractHash: automationAcceptanceContractHash(checks, binding.firedAt, binding.task.timeZone)!, expectedLocalDate}} : {}),
+      });
+      this.saveAutomationEvidence(binding, evidence);
+      return JSON.stringify({
+        ok: true,
+        artifact: result,
+        ...(acceptance ? {businessAcceptance: acceptance} : {}),
+        note: '真实产物已生成；邮件交付单独验收',
+      });
+    } catch (error) {
+      return JSON.stringify({
+        ok: false,
+        error: error instanceof Error ? error.message : '产物导出失败',
+      });
+    }
+  }
+
   private async executeChatBrowserWorkflowReplay(input: {
     runId: RunId;
     threadId: string;
@@ -29103,7 +30733,12 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         failureClass: 'acceptance',
       });
     }
-    let variables: Record<string, string> | undefined;
+    const automation = this.scheduledAutomationForThread(input.threadId);
+    const automatedBrowser = automation?.task.automation?.browser;
+    const groupPolicy = this.collaborationThreadScopes.get(input.threadId)?.input.snapshot.conversation.policy;
+    const policy = automatedBrowser ? { browserProfileId: automatedBrowser.profileId, browserWorkflowTaskId: automatedBrowser.workflowTaskId, browserWorkflowVariables: automatedBrowser.variables } : groupPolicy;
+    if (policy && taskId !== policy.browserWorkflowTaskId) return JSON.stringify({ ok: false, code: 'browser.workflow-not-bound', error: 'Select this published workflow in group settings before executing it.' });
+    let variables: Record<string, string> | undefined = policy?.browserWorkflowVariables;
     if (parsed.variables !== undefined) {
       if (!isPlainRecord(parsed.variables)) {
         return JSON.stringify({
@@ -29126,7 +30761,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         }
         normalized[name] = value;
       }
-      variables = normalized;
+      variables = { ...policy?.browserWorkflowVariables, ...normalized };
     }
     let workflow;
     try {
@@ -29139,6 +30774,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         failureClass: 'unknown',
       });
     }
+    if (policy && workflow.task.profileId !== (policy.browserProfileId ?? 'default')) return JSON.stringify({ ok: false, code: 'browser.workflow-profile-mismatch', error: 'The workflow Profile differs from the group Profile.' });
     if (!workflow.version) {
       return JSON.stringify({
         ok: false,
@@ -29148,7 +30784,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         failureClass: 'acceptance',
       });
     }
-    const versionId = workflow.version.id;
+    const versionId = automation?.workflowVersionId ?? workflow.version.id;
     let permission;
     try {
       permission = this.browserWorkflowRunner.checkPermissions(versionId, taskId);
@@ -29192,6 +30828,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         signal: input.signal,
         ...(variables ? { variables } : {}),
       });
+      if (result.ok && automation) { const evidence = this.readAutomationEvidence(automation); evidence.browserWorkflowCompleted = true; this.saveAutomationEvidence(automation, evidence); }
       return JSON.stringify(result);
     } catch (error) {
       const isVariablesError =
@@ -29229,7 +30866,10 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       });
     }
     const requestId = `brw-${ulid()}`;
-    const rendererWorker = this.useEmbeddedBrowser
+    // Read-only group research is background work: do not depend on a mounted
+    // chat, the foreground workspace, or the user's currently active WebView.
+    const embeddedBrowser = this.useEmbeddedBrowser && !this.scheduledAutomationForThread(input.threadId) && !this.collaborationThreadScopes.get(input.threadId)?.readOnly;
+    const rendererWorker = embeddedBrowser
       ? new RendererBrowserWorker({
           toolName: input.toolCall.name,
           runId: String(input.runId),
@@ -29238,7 +30878,8 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
           onRequest: (request) => this.requestEmbeddedBrowserCommand(request),
         })
       : undefined;
-    return this.browserController.execute({
+    const result = await this.browserController.execute({
+      profileId: this.resolveBrowserProfileForThread(input.threadId),
       toolName: input.toolCall.name,
       argumentsJson: input.toolCall.argumentsJson || '{}',
       workspaceId: this.resolveEventWorkspaceId(input.threadId),
@@ -29258,7 +30899,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         }
         this.liveChatBrowserPages.set(input.runId, {
           runId: String(input.runId), taskId: input.threadId, ownerId: input.threadId,
-          embedded: this.useEmbeddedBrowser, profileId: intent.profileId,
+          embedded: embeddedBrowser, profileId: intent.profileId,
           workspaceId: this.resolveEventWorkspaceId(input.threadId),
           name: this.conversationStore?.get(input.threadId)?.title || `AI 浏览器任务 · ${input.threadId.slice(-6)}`,
           startedAt: previous?.startedAt ?? new Date().toISOString(),
@@ -29291,6 +30932,26 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         this.publishEvent(event);
       },
     });
+    // Host observation, scoped to the frozen round/Profile and this run. Opening,
+    // clicking, screenshots, failed reads and actor-supplied outcome prose do not qualify.
+    const binding = this.scheduledAutomationForThread(input.threadId);
+    if (input.toolCall.name === 'browser_read' && binding?.task.automation?.browser && !input.signal.aborted) {
+      try {
+        const page = JSON.parse(result) as Record<string, unknown>;
+        if (page.ok === true && page.profileId === binding.task.automation.browser.profileId &&
+          page.ownerId === input.threadId && typeof page.commandId === 'string' && !!page.commandId &&
+          typeof page.url === 'string' && /^https?:\/\//.test(page.url) && typeof page.text === 'string') {
+          const url = new URL(page.url);
+          url.username = ''; url.password = ''; url.search = ''; url.hash = '';
+          const evidence = this.readAutomationEvidence(binding);
+          evidence.browserRead = {runId: String(input.runId), toolCallId: input.toolCall.id,
+            commandId: page.commandId, ownerId: input.threadId,
+            profileId: page.profileId as string, url: url.toString(), observedAt: new Date().toISOString()};
+          this.saveAutomationEvidence(binding, evidence);
+        }
+      } catch (error) { console.warn('[runtime] automation browser-read evidence could not be saved', error); }
+    }
+    return input.toolCall.name === 'browser_read' ? projectBrowserReadResultForModel(result) : result;
   }
 
   private requestEmbeddedBrowserCommand(
@@ -30475,6 +32136,10 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       return;
     }
     try {
+      if (payload.enabled && this.browserWorkflowRunner) {
+        const flow = this.browserWorkflowService.getWorkflow({ taskId: payload.taskId });
+        if (flow.version && !this.browserWorkflowRunner.checkPermissions(flow.version.id, flow.task.id).allowed) throw new RuntimeBrowserWorkflowError('browser.workflow-origin-approval-required', '请先试运行此流程并批准所需网站，再启用定时运行。');
+      }
       const response: UpdateBrowserWorkflowScheduleResponse =
         this.browserWorkflowService.updateSchedule(payload);
       this.writeBrowserWorkflowResponse(socket, frame, response);
@@ -30555,12 +32220,15 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     }
     try {
       const response: ListWaitingBrowserHandoffsResponse = {
-        handoffs: this.browserController.listWaitingHandoffs(payload).map((handoff) => {
+        handoffs: this.browserController.listWaitingHandoffs(payload).filter(handoff => !payload.conversationId || handoff.conversationId === payload.conversationId).map((handoff) => {
           const run = this.orchestrationStore?.getRun(handoff.runId as RunId);
           const task = run ? this.workspaceStore?.getTask(run.taskId) : undefined;
           const taskId = task?.workspaceId === handoff.workspaceId ? run?.taskId : undefined;
           return {
             handoffId: handoff.handoffId,
+            ...(handoff.profileId ? { profileId: handoff.profileId } : {}),
+            ...(handoff.scheduledTaskId ? { scheduledTaskId: handoff.scheduledTaskId } : {}),
+            ...(handoff.conversationId ? { conversationId: handoff.conversationId } : {}),
             revision: handoff.revision,
             workspaceId: handoff.workspaceId as WorkspaceId,
             ...(taskId ? { taskId } : {}),
@@ -30601,6 +32269,13 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       return;
     }
     try {
+      const context = this.browserController?.inspectHandoff(payload.handoffId);
+      if (context?.scheduledBinding) { const response = await this.continueScheduledAutomationLogin(context,payload); socket.write(encodeFrame({id:frame.id,kind:'response',type:'browser.handoff.continue',payload:response})); return; }
+      if (context?.groupBinding) {
+        const response = await this.continueGroupBrowserHandoff(context, payload);
+        socket.write(encodeFrame({ id: frame.id, kind: 'response', type: 'browser.handoff.continue', payload: response }));
+        return;
+      }
       const binding = this.resolveBrowserHandoffBinding(payload.handoffId, 'approved');
       const handoffDecision = await this.browserController!.continueHandoff(payload);
       if (binding.handoff.reason === 'login' && this.browserProfileService) {
@@ -30659,6 +32334,12 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       return;
     }
     try {
+      const context = this.browserController?.inspectHandoff(payload.handoffId);
+      if (context?.groupBinding || context?.scheduledBinding) {
+        const result = await this.browserController!.cancelHandoff(payload);
+        socket.write(encodeFrame({ id: frame.id, kind: 'response', type: 'browser.handoff.cancel', payload: result }));
+        return;
+      }
       const binding = this.resolveBrowserHandoffBinding(payload.handoffId, 'rejected');
       const handoffDecision = await this.browserController!.cancelHandoff(payload);
       const approvalDecision = this.scheduler!.decideApproval({
@@ -30695,6 +32376,30 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     } catch (error) {
       this.writeBrowserHandoffCommandError(socket, frame, error);
     }
+  }
+
+  private async continueGroupBrowserHandoff(context: RuntimeBrowserHandoffContext, payload: { handoffId: string; expectedRevision: number }): Promise<ContinueBrowserHandoffResponse> {
+    const binding = context.groupBinding!;
+    const host = this.collaborationChatHost;
+    const snapshot = host?.command({ action: 'get', conversationId: binding.conversationId }).snapshot;
+    const task = snapshot?.tasks.find(task => task.id === binding.taskId);
+    const attempt = snapshot?.attempts.find(attempt => attempt.id === binding.attemptId);
+    if (!host || !snapshot || !task || !attempt || snapshot.conversation.workspaceId !== context.workspaceId || attempt.runId !== context.runId)
+      throw new RuntimeBrowserHandoffError('browser.handoff-binding-invalid', 'Group handoff ownership changed.');
+    if (context.state === 'completed' && task.currentAttemptId !== attempt.id)
+      return { status: 'continued', handoffId: context.handoffId, runId: context.runId as RunId, replayed: true };
+    if (snapshot.conversation.room?.goalRevision !== binding.goalRevision || task.replacedByTaskId || (snapshot.conversation.policy.browserProfileId ?? 'default') !== context.profileId)
+      throw new RuntimeBrowserHandoffError('browser.handoff-goal-changed', 'The group goal or Profile changed; inspect this task before continuing.');
+    if (['paused', 'pausing', 'completed'].includes(snapshot.conversation.room?.state ?? ''))
+      throw new RuntimeBrowserHandoffError('browser.handoff-room-paused', 'Resume the group before continuing this login handoff.');
+    if (!['failed', 'interrupted', 'cancelled'].includes(attempt.status) || task.currentAttemptId !== attempt.id)
+      throw new RuntimeBrowserHandoffError('browser.handoff-task-finishing', 'Wait for the current task to finish yielding before continuing.');
+    const decision = await this.browserController!.continueHandoff(payload);
+    await this.browserController!.requestHandoff({ workspaceId: context.workspaceId, runId: context.runId, ownerId: context.ownerId,
+      profileId: context.profileId, idempotencyKey: context.idempotencyKey, reason: context.reason,
+      requestedOutcome: context.requestedOutcome, onCancel: context.onCancel, groupBinding: binding });
+    host.command({ action: 'retry', conversationId: binding.conversationId, taskId: task.id, clientRequestId: 'browser-handoff:' + context.handoffId });
+    return { status: 'continued', handoffId: context.handoffId, runId: context.runId as RunId, replayed: decision.replayed };
   }
 
   private resolveBrowserHandoffBinding(
@@ -30931,6 +32636,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       workspaceRoot?: string;
       executionMode?: string;
       networkEnabled?: boolean;
+      reservedOutputTokens?: number;
       /** Host platform tool schemas (ask_user_question / plan_submit / ...). */
       platformSchemas?: import('@sync-think/adapters').ProviderToolSchema[];
       toolAllowlist?: readonly string[];
@@ -30947,16 +32653,13 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
           dispatch: new Map<string, { mcpServerId: string; toolName: string }>(),
         };
       }
-      const effectiveMcpIds = this.resolveEffectiveMcpServerIds(
-        this.resolveEventWorkspaceId(run.threadId),
-        run.mcpServerIds,
-      );
+      const effectiveMcpIds = this.resolveMcpServerIdsForRun(run);
       run.mcpServerIds = effectiveMcpIds;
       const servers = effectiveMcpIds
         .map((id) => this.mcpStore?.get(id))
         .filter((row): row is NonNullable<typeof row> => Boolean(row))
         .map((row) => ({ id: row.id, name: row.name, tools: row.tools }));
-      return mcpToolsToProviderSchemas(servers, { maxTools: 16 });
+      return mcpToolsToProviderSchemas(servers, { maxTools: this.usesGlobalChatMcp(run) ? 32 : 16 });
     })();
     (
       run as DemoRunState & {
@@ -30971,7 +32674,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     );
     const delegatedReadOnly = run.delegatedReadOnly === true;
     const agentToolsEnabled = Boolean(
-      options.toolsEnabled && this.globalAgentStore && (run.track === 'model' || this.managementIntentForRun(run) !== 'none') && (!delegatedReadOnly || this.managementIntentForRun(run) !== 'none'),
+      options.toolsEnabled && this.globalAgentStore && (run.track === 'model' || this.canProposeAgentDefinitions(run)) && (!delegatedReadOnly || this.canProposeAgentDefinitions(run)),
     );
     const dynamicAgentToolsEnabled = Boolean(
       options.toolsEnabled &&
@@ -30983,7 +32686,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       options.toolsEnabled && !delegatedReadOnly && this.isComputerUsePluginEnabled(),
     );
     const browserWorkflowToolsEnabled = Boolean(
-      options.toolsEnabled && !delegatedReadOnly && this.browserWorkflowService,
+      options.toolsEnabled && (!delegatedReadOnly || Boolean(this.collaborationThreadScopes.get(run.threadId)?.input.snapshot.conversation.policy.browserWorkflowTaskId) || Boolean(this.scheduledAutomationForThread(run.threadId)?.task.automation)) && (this.browserWorkflowService || Boolean(this.scheduledAutomationForThread(run.threadId)?.task.automation)),
     );
     const mcpCatalogToolsEnabled = Boolean(
       options.toolsEnabled && !delegatedReadOnly && this.mcpStore,
@@ -31015,7 +32718,9 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
             includeWebSearchTools: webSearchMode === 'external',
             includeProjectTools: hasProjectTools,
             includeAgentTools: agentToolsEnabled,
+            includeSkillTools: Boolean(this.skillStore),
             agentManagementIntent: this.managementIntentForRun(run),
+            allowAgentDefinitionProposals: this.canProposeAgentDefinitions(run),
             collaborationEnabled: this.isCollaborationConversationForThread(run.threadId),
             includeDesktopTools: desktopToolsEnabled,
             includeBrowserWorkflowTools: browserWorkflowToolsEnabled,
@@ -31038,7 +32743,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
             ).mcpToolDispatch?.get(tool.name);
             return (
               run.delegatedReadOnly === true &&
-              (isDelegatedReadOnlyTool(tool.name, dispatch?.readOnly) || this.isCollaborationControlToolAllowed(run, tool.name))
+              this.isReadOnlyRunToolAllowed(run, tool.name, dispatch?.readOnly)
             );
           })
         : tools;
@@ -31048,14 +32753,18 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         : webSearchMode === 'external'
           ? 'Use web_search for current facts; configured providers fail over in priority order.'
           : 'Keyword search is not configured. web_fetch can still read a known public URL; do not claim keyword search succeeded.';
+    const browserReadingAvailable = Boolean(this.browserController && filteredTools?.some(tool => tool.name === 'browser_open') && filteredTools?.some(tool => tool.name === 'browser_read'));
     const networkPrompt = networkEnabled
       ? [
           `Web access is ENABLED for this turn. ${searchRoutePrompt}`,
-          'Use web_fetch to READ a static page after finding or receiving a URL. If it returns RENDER_REQUIRED, use browser_open followed by browser_read to read the JavaScript-rendered page, then cite the URL.',
-          'Built-in browser panel: browser_open SHOWS a page to the user beside the chat (e.g. 用户说「打开/看看这个网站」).',
-          'To OPERATE that live page: browser_click clicks an element (CSS selector or x/y), browser_type fills an input (selector + text), browser_read returns the live page title/URL/visible text and link+button summary (works on logged-in / JS-rendered pages where web_fetch cannot).',
-          'ALWAYS browser_open the page first and browser_read to locate elements before clicking/typing. These actions run visibly in front of the user and need no approval.',
-          'browser_screenshot saves a PNG under the project folder and returns embedUrl + path — embed it in your markdown reply as ![说明](embedUrl). 典型用法：操作网页后输出带截图的评审报告（每个关键步骤截一张图并配文字说明）。',
+          'Use web_fetch to READ a static page after finding or receiving a URL. A 404 or one failed endpoint proves only that attempted URL failed, not that the platform has no public chart or every entrance requires login.',
+          ...(browserReadingAvailable ? [
+            'If web_fetch returns RENDER_REQUIRED, use browser_open followed by browser_read to read the JavaScript-rendered page, then cite the URL.',
+            'Built-in browser panel: browser_open opens a public page beside the chat; browser_read returns the live title, URL, visible text and link summary. Open before reading; these tools still enforce browser profile and permission checks.',
+            ...(delegatedReadOnly ? ['Only public-page opening and reading are available in this read-only group turn; do not log in, send, click, fill, download or save screenshots.'] : [
+              'To OPERATE that live page when the corresponding tools are provided: browser_click clicks an element (CSS selector or x/y), browser_type fills an input, browser_screenshot saves a PNG. ALWAYS browser_open and browser_read first to locate elements and verify changes afterwards.',
+            ]),
+          ] : ['Rendered browser reading is unavailable in this turn. RENDER_REQUIRED means page content was not obtained; try other readable public sources or public APIs and report the exact evidence gap, without claiming a rendered page was read.']),
         ].join('\n')
       : 'Web tools are DISABLED. Do not claim you browsed the live web; answer from knowledge or ask the user to enable 联网.';
     const desktopPrompt = desktopToolsEnabled
@@ -31070,21 +32779,41 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
             : 'Permission mode is workspace/full-access: ordinary Computer Use actions execute without an extra approval card.',
         ].join('\n')
       : undefined;
-    const agentCreationPrompt = agentToolsEnabled && this.managementIntentForRun(run) !== 'none'
+    const managementIntent = this.managementIntentForRun(run);
+    const managementCapabilitiesPrompt = this.globalAgentStore ? [
+      '智能体与小队配置是应用内置功能，不是 MCP 插件，也不是动态 Agent 委派；创建配置不依赖动态派工开关。',
+      '当前宿主支持 list_agent_resources/create_agent/update_agent：直接用户聊天持续提供资源查询与配置提案入口。理解用户的完整对话意图，保存前逐次确认。',
+      '创建智能体默认使用内置经典头像：省略 avatar，不自动填写 emoji，不为创建智能体调用图片生成；只有用户明确要求自定义头像或提供图片时才覆盖。',
+      '定时任务支持 task_schedule resources/list/get/create/update/cancel。创建前先查 resources，用 ask_user_question 确认执行内容、执行者/模型、工作区、会话方式（任务专属/每次新建/已有会话）、时间与时区；推荐默认值要明确告知用户。修改已有任务时先 get，再只对指定字段 update 原地修改，保留 ID 和历史，不用取消重建。',
+      this.teamStore ? '当前宿主也支持 list_teams/create_team/update_team/delete_team：直接用户聊天持续提供小队（team/squad）配置提案入口，不要求用户使用固定关键词或语序；保存前逐次确认。' : '当前宿主未配置小队存储，小队配置变更尚未就绪。',
+      '能力询问只提供资源查询，不授权配置变更或派工。用户要求创建配置时直接使用内置管理工具；不要用能力搜索、外部 MCP、桌面点击或仓库草稿代替创建。工具返回创建结果前不声称已保存。',
+      '复用已有成员只是省去新建智能体的确认，小队保存本身仍需一次新确认；不承诺零审批。没有 approvedSkills 不妨碍创建未绑定 Skill 的智能体或小队：明确说明未绑定，禁止伪造技能版本 ID。',
+      '以上是本次宿主的实际能力。历史回复中的旧工具清单可能已过期，不把历史的“没有入口”沿用为本轮结论；以当前说明和实际工具结果为准。',
+    ].join('\n') : undefined;
+    const agentCreationPrompt = agentToolsEnabled && managementIntent === 'inspect'
+      ? '用户本轮在询问智能体或小队管理能力、或查看资源。可以调用 list_agent_resources/list_teams 核对现有资源；只读查询，不提交任何配置变更，不启动或派发工作。说明支持的功能与逐次确认流程，缺少名称、成员或职责时询问这些具体信息。'
+      : agentToolsEnabled && managementIntent !== 'none'
       ? [
-          '用户本轮明确要求创建或修改智能体。先用 list_agent_resources 核对实际模型、技能和目标 ID，再使用对应的 create_agent 或 update_agent。',
+          '用户本轮明确要求管理智能体或小队。先用 list_agent_resources 和 list_teams 核对实际资源、成员和目标 ID，再调用当前提供的管理工具。建队优先复用已有成员；缺少用户要求的角色时才创建智能体，再用创建结果中的真实 ID 调用 create_team。',
           '提交配置草稿后等待用户逐次审批；即使完全访问模式也要确认。拒绝或取消后不重试同一变更。',
           'update_agent 仅提交变更字段；skillIds 是完整替换。共享智能体修改会影响后续使用，必须说明范围。',
-          '创建/修改配置与执行任务分离：禁止为自己的任务自行创建助手；保存后不自动运行、不自动加入小队。不得改用终端、文件或其他接口绕过管理授权。',
+          '创建/修改配置与执行任务分离：禁止为自己的任务自行创建助手；保存配置不自动执行工作；仅在用户明确建队时把所需智能体加入新小队。不得改用终端、文件或其他接口绕过管理授权。',
         ].join('\n')
-      : '本轮没有用户发起的智能体定义管理请求。不创建或修改智能体配置；如确有需要，先向用户说明并等待其明确要求。';
+      : this.canProposeAgentDefinitions(run) ? '用户正在直接聊天。管理入口始终可用，但不因工具可见就主动创建或修改。根据当前请求与同一聊天历史理解意图；如用户说“按刚才的方案创建吧”或在问答中确认成员，就继续整理配置提案。能力查询直接回答，普通任务不招募新助手。成员和职责有疑问时先询问。实际保存必须等待逐次确认。' : '本轮是后台、委派或规划执行，不提供智能体、小队或 Skill 定义管理权限。';
+    const skillManagementPrompt = options.toolsEnabled && this.skillStore && this.canProposeAgentDefinitions(run) ? [
+      '技能管理是应用内置能力。当前直接用户聊天提供 list_skills/read_skill/create_skill/update_skill/delete_skill/import_remote_skill，不依赖 MCP 搜索、动态派工开关或聊天类型。',
+      '先用 list_skills 核对是否已登记；项目目录里的 SKILL.md 只是文件，不等于能力中心已登记或审批失败。新建可读取该文件并用 create_skill 提交完整源文；更新先用 read_skill 读取原版本，同名提升版本，旧版本保留。远程导入使用 import_remote_skill，只解析，不执行脚本。',
+      '用户要求登记并绑定时，在同一聊天继续完成：查询 → 读取/编写 → 登记 → 核对真实版本和权限状态 → update_agent 绑定。每次 Skill 保存和智能体绑定都需新的单次确认，即使完全访问也一样；拒绝或取消后停止，不换接口重试。',
+      '仅在用户要求绑定的成员上操作；skillIds 是完整替换，追加能力须保留原有绑定。修改共享成员会影响其后续使用，提交前说明范围。多个独立成员更新可同批提出，各操作分别确认，不用一张确认覆盖整个小队。',
+      '权限升级是否待审批以导入返回的 requiresReapproval 和查询返回的 permissionApproved 为准；未批准时不绑定。联网关闭只限制联网执行，不妨碍登记 Skill，不据此猜测有额外审批。不要伪造 skillVersionId，也不把需要审批说成必须手动登记。',
+      '查询功能或讨论 Skill 不授权写入；先理解当前请求与同一聊天历史，缺少目标成员或内容时询问。登记/绑定配置不自动启动小队或派发任务。工具返回成功前不声称落库或绑定成功；没有要求补齐时，可以明确未绑定而先保存成员。',
+    ].join('\n') : undefined;
     const libraryResourcesPrompt = agentToolsEnabled && run.track === 'model' && !delegatedReadOnly ? [
       '已有智能体目录：查询激活状态用 list_available_agents，查看配置用 get_agent；不从仓库文件猜测目录状态。agent_run 仅复用已激活的已有智能体，返回 childRunId 后等待回写，不轮询或重复启动；定义管理轮次不派发执行。',
       'archive_agent 是可恢复归档，不是永久删除。精确定位目标 ID，当前对话绑定的智能体不归档。',
-      '技能管理使用 list_skills/read_skill/create_skill/update_skill/delete_skill/import_remote_skill；编辑前读取原文并提升版本，旧版本保留；导入只解析不执行脚本，权限扩展另行审批。',
       '小队管理使用 list_teams/create_team/update_team/delete_team；成员 ID 从 list_available_agents 获取，只引用已有成员。members 是完整替换，删除被历史或会话引用的小队会失败。',
       '远程 MCP 注册使用 register_remote_mcp，只传端点元数据；密钥由用户在能力中心密码框配置，不放入聊天和工具参数。发现失败不宣称工具就绪。',
-      executionMode === 'full-access' ? '技能/小队/归档沿用完全访问授权；create_agent/update_agent 仍逐次确认。' : '技能、小队和归档变更等待权限审批；被拒绝后不重试同一变更。',
+      executionMode === 'full-access' ? '归档沿用完全访问授权；智能体、小队和 Skill 配置变更仍逐次确认。' : '配置与归档变更等待权限审批；被拒绝后不重试同一变更。',
     ].join('\n') : undefined;
     const planToolPrompt = delegatedReadOnly ? 'Workspace tools are read-only; update_task_plan and file mutations are not available. Use supplied collaboration controls for orchestration and artifact delivery, otherwise reply in chat.' : [
       'Task checklist (update_task_plan):',
@@ -31129,9 +32858,12 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       'Product capability boundaries (SYNC-THINK / this desktop shell):',
       CODEX_STYLE_COMMENTARY_PROMPT,
       HTML_PREVIEW_OUTPUT_CONTRACT,
+      BOARD_DATA_OUTPUT_CONTRACT,
       ...(isExplicitExcalidrawRequest(run.userText) ? [EXCALIDRAW_OUTPUT_CONTRACT] : []),
       INLINE_VISUALIZATION_OUTPUT_CONTRACT,
+      managementCapabilitiesPrompt,
       agentCreationPrompt,
+      skillManagementPrompt,
       libraryResourcesPrompt,
       dynamicDelegationPrompt,
       planToolPrompt,
@@ -31173,13 +32905,17 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
               .map((part) => part.text)
               .join('\n')
           : '';
+    // Source inclusion must describe the tools actually sent after all policy gates.
+    const providerTools = filteredTools?.filter((tool) =>
+      this.isTaskRoomToolAllowed(run, tool.name),
+    );
     const actualSources = (run.contextSources ?? []).map((source) => {
       if (source.disposition !== 'included') return source;
       if (
         source.section === 'tools' &&
-        (!filteredTools ||
+        (!providerTools ||
           !source.toolName ||
-          !filteredTools.some((tool) => tool.name === source.toolName))
+          !providerTools.some((tool) => tool.name === source.toolName))
       ) {
         return { ...source, disposition: 'audit-only' as const, tokens: 0 };
       }
@@ -31199,6 +32935,9 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       kernelId: run.kernelId,
       contextWindow: run.effectiveContextWindow ?? run.contextWindow ?? 128_000,
       modelContextWindow: run.modelContextWindow ?? run.contextWindow ?? 128_000,
+      modelMaxOutputTokens: run.modelMaxOutputTokens,
+      meterBindingKey: this.contextMeterBindingKey(run),
+      usageAnchor: this.contextUsageAnchor(run.threadId),
       contextWindowSource:
         run.contextWindowSource === 'kernel-capped' ? 'kernel-limit' : 'model-default',
       kernelContextWindowLimit: run.kernelContextWindowLimit,
@@ -31212,10 +32951,144 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       projectContext,
       compactSummary: run.compactSummary,
       messages: options.messages,
-      tools: filteredTools,
+      tools: providerTools,
       sources: actualSources,
       compactedAt: run.compactedAt,
+      reservedOutputTokens: options.reservedOutputTokens,
     });
+  }
+
+
+  /** Routed, text-only maintenance call; original tools/prefix stay cache-friendly. */
+  private async generateNativeRequestCheckpoint(run: DemoRunState, request: NativeContextRequest,
+    maxOutputTokens: number, signal: AbortSignal): Promise<string | undefined> {
+    const compactRun = { ...run, runId: ulid() as RunId, reasoningEffort: 'off' };
+    const timeout = AbortSignal.timeout(90_000);
+    const compactSignal = AbortSignal.any([signal, timeout]);
+    const stream = await this.openProviderStream(compactRun, {
+      messages: [...request.messages, { role: 'user', content: COMPACT_SUMMARY_USER_PROMPT_PREFIX }],
+      // Checkpoint generation is text-only; carrying execution schemas can make the summary request itself overflow.
+      systemPromptOverride: request.systemPrompt, toolsOverride: [],
+      toolsEnabled: false, toolChoice: 'none', contextMaintenance: true,
+      maxOutputTokens, signal: compactSignal,
+    });
+    if (!stream) return undefined;
+    let text = '';
+    let stoppedNormally = false;
+    for await (const event of stream) {
+      if (compactSignal.aborted) return undefined;
+      if (event.type === 'text-delta') text += event.text;
+      else if (event.type === 'assistant-message-delta' && event.phase === 'final_answer') text += event.text;
+      else if (event.type === 'error' || event.type === 'tool-call') return undefined;
+      else if (event.type === 'usage') {
+        this.publishEvent(this.appendEvent('provider', 'provider.usage', {
+          threadId: run.threadId, modelId: run.modelId, purpose: 'compaction',
+          tokensIn: event.tokensIn, tokensOut: event.tokensOut, cachedTokensHit: event.cachedTokensHit,
+          cachedTokensCreated: event.cachedTokensCreated, totalTokens: event.totalTokens,
+        }, undefined, compactRun.runId, this.workspaceStore?.getTaskByThreadId(run.threadId as ThreadId)?.id));
+      } else if (event.type === 'finished') {
+        stoppedNormally = event.reason === 'stop'; break;
+      }
+    }
+    return stoppedNormally && isStructuredCompactSummary(text) ? text.trim() : undefined;
+  }
+
+
+  private promoteNativeCheckpoint(run:DemoRunState,source:{compact:ReturnType<ConversationCompactBoundaryCache['get']>;lineage:NativeCheckpointLineage[]},
+    checkpoint:import('./native-context-maintenance.js').NativeContextCheckpoint,beforeTokens:number,afterTokens:number):void {
+    if (!this.messageStore || !this.stateStore || !this.conversationStore || this.activeCompactions.has(run.threadId)) return;
+    const selected=selectNativeCheckpointMessages(source.lineage,checkpoint.sourceMessageCount);
+    if (!selected?.length) return; // Transient tool chains, images, or cuts inside one canonical message stay run-scoped.
+    const task=this.workspaceStore?.getTaskByThreadId(run.threadId as ThreadId);
+    const conversation=task && this.conversationStore.getByTaskId(task.id);
+    if (!task || !conversation) return;
+    let saved:Event|undefined;
+    this.runInUnitOfWork(()=>{
+      if (JSON.stringify(this.compactBoundaryCache.get(run.threadId))!==JSON.stringify(source.compact)) return;
+      if (selected.some(message=>JSON.stringify(this.messageStore!.getMessage(message.id))!==JSON.stringify(message)))
+        throw new Error('摘要期间所选规范消息已变化，原始记录已保留，请重试。');
+      const ids=new Set(selected.map(message=>String(message.id)));
+      const events=this.stateStore!.listEventsByTask?.(task.id) ?? [];
+      const coveredEventSequences=[...new Set([...(source.compact?.coveredEventSequences ?? []),...events.filter(event=>event.payload.threadId===run.threadId &&
+        (ids.has(String(event.payload.messageId??'')) || event.type==='run.completed' && selected.some(message=>message.runId===event.runId)))
+        .map(event=>event.sequence)])];
+      saved=this.appendEvent('context','context.compacted',{
+        threadId:run.threadId,conversationId:conversation.id,operationId:'native-'+run.runId,mode:'auto',origin:'native-preflight',
+        modelId:run.modelId,summaryText:checkpoint.summary,summarySource:'model',beforeTokens,afterTokens,foldedCount:selected.length,
+        sourceFingerprint:checkpoint.sourcePrefixFingerprint,coveredMessageIds:[...ids],coveredEventSequences,
+        coveredThroughMessageSequence:Math.max(source.compact?.coveredThroughMessageSequence ?? 0,...selected.map(m=>m.sequence)),
+      },undefined,run.runId,task.id);
+    });
+    if (!saved) return;
+    this.compactBoundaryCache.record(run.threadId,{summaryText:checkpoint.summary,compactedAt:saved.occurredAt,
+      coveredThroughMessageSequence:Number(saved.payload.coveredThroughMessageSequence),coveredEventSequences:saved.payload.coveredEventSequences as number[]});
+    this.invalidateConversationContextSnapshot(run.threadId);this.publishEvent(saved);
+    // Keep this run's stable system prefix unchanged; new runs consume the canonical checkpoint instead.
+  }
+
+  private contextMeterBindingKey(run: DemoRunState): string {
+    return createHash('sha256').update(JSON.stringify([run.threadId,run.modelId,run.providerModelId,
+      run.providerId,run.protocol,run.baseUrl,run.reasoningEffort,run.networkEnabled,
+      run.networkEnabled ? this.resolveWebSearchModeForRun(run) : 'disabled'])).digest('hex');
+  }
+
+  private contextUsageAnchor(threadId: string): ContextUsageAnchor | undefined {
+    if (!this.contextUsageAnchors.has(threadId)) {
+      const task = this.workspaceStore?.getTaskByThreadId(threadId as ThreadId);
+      const events = task && this.stateStore?.listEventsByTask ? this.stateStore.listEventsByTask(task.id) : [];
+      let latest: {sequence:number; anchor:ContextUsageAnchor} | undefined;
+      for (const event of events) {
+        if (event.type !== 'context.usage_calibrated' || event.payload.threadId !== threadId) continue;
+        const anchor = parseContextUsageAnchor(event.payload.anchor);
+        if (anchor && (!latest || event.sequence > latest.sequence)) latest = {sequence:event.sequence,anchor};
+      }
+      this.contextUsageAnchors.set(threadId,latest?.anchor);
+    }
+    return this.contextUsageAnchors.get(threadId);
+  }
+
+  private async *calibrateNativeProviderStream(run: DemoRunState, request: NativeContextRequest,
+    stream: AsyncIterable<import('@sync-think/adapters').AdapterEvent>): AsyncIterable<import('@sync-think/adapters').AdapterEvent> {
+    let usage: import('@sync-think/adapters').ProviderUsage | undefined;
+    for await (const event of stream) {
+      if (event.type === 'usage') usage = event;
+      if (!run.useFakeProvider && event.type === 'finished' && (event.reason === 'stop' || event.reason === 'tool-requests') && usage) {
+        const anchor = createUsageAnchor(request,this.contextMeterBindingKey(run),usage);
+        if (anchor) {
+          try {
+            // Persist the request-bound meter fact independently of billed usage. No transcript or credential is stored.
+            const saved = this.appendEvent('context','context.usage_calibrated',{
+              threadId:run.threadId,modelId:run.modelId,anchor,
+            },undefined,run.runId,this.workspaceStore?.getTaskByThreadId(run.threadId as ThreadId)?.id);
+            this.contextUsageAnchors.set(run.threadId,anchor);
+            this.invalidateConversationContextSnapshot(run.threadId);
+            this.publishEvent(saved);
+          } catch { /* Advisory calibration must not interrupt an otherwise completed answer. */ }
+        }
+      }
+      yield event;
+    }
+  }
+
+  private nativeStreamWithContextRecovery(run: DemoRunState, request: NativeContextRequest,
+    call: (request: NativeContextRequest) => AsyncIterable<import('@sync-think/adapters').AdapterEvent>,
+    signal: AbortSignal, reservedOutputTokens: number): AsyncIterable<import('@sync-think/adapters').AdapterEvent> {
+    const trackedCall = (candidate: NativeContextRequest) => this.calibrateNativeProviderStream(run, candidate, call(candidate));
+    return streamWithContextOverflowRecovery({ request, call:trackedCall, signal, recover: async original => {
+      const recovered = await prepareNativeContextRequest({ request: original,
+        contextWindow: run.effectiveContextWindow ?? run.contextWindow ?? 128_000,
+        reservedOutputTokens, bindingKey: run.threadId + ':' + run.modelId + ':overflow', signal, forceCompaction: true,
+        meterBindingKey:this.contextMeterBindingKey(run), usageAnchor:this.contextUsageAnchor(run.threadId),
+        summarize: (selected, output) => this.generateNativeRequestCheckpoint(run, selected, output, signal),
+      });
+      if (!recovered.compacted && !recovered.prunedCount) return undefined;
+      this.publishEvent(this.appendEvent('context', 'context.request_overflow_recovered', {
+        threadId: run.threadId, modelId: run.modelId,
+        prunedCount: recovered.prunedCount, compacted: recovered.compacted,
+        estimatedUsedTokens: recovered.estimatedUsedTokens, budget: recovered.budget,
+      }, undefined, run.runId));
+      return recovered.request;
+    } });
   }
 
   private async openProviderStream(
@@ -31229,6 +33102,9 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       executionMode?: string;
       networkEnabled?: boolean;
       signal?: AbortSignal;
+      /** Maintenance calls reuse the stable prefix but never recursively compact. */
+      contextMaintenance?: boolean;
+      toolsOverride?: import('@sync-think/adapters').ProviderToolSchema[];
       /** When set, replaces the default coding/chat system prompt (used by compact). */
       systemPromptOverride?: string;
       /** Native 内核的平台工具 schema（ask_user_question / task_schedule 等）。 */
@@ -31237,6 +33113,11 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     } = {},
   ): Promise<AsyncIterable<import('@sync-think/adapters').AdapterEvent> | undefined> {
     const signal = options.signal ?? new AbortController().signal;
+    options.maxOutputTokens = resolveContextBudget({
+      contextWindow: run.effectiveContextWindow ?? run.contextWindow ?? 128_000,
+      reservedOutputTokens: options.maxOutputTokens, modelMaxOutputTokens: run.modelMaxOutputTokens,
+    }).reservedOutputTokens;
+    if (options.maxOutputTokens < 1) throw new Error('模型输出预算必须大于零。');
     const executionMode = normalizeChatExecutionMode(options.executionMode);
     const networkEnabled = options.networkEnabled === true || run.networkEnabled === true;
     const webSearchMode = networkEnabled ? this.resolveWebSearchModeForRun(run) : 'disabled';
@@ -31249,10 +33130,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
           dispatch: new Map<string, { mcpServerId: string; toolName: string }>(),
         };
       }
-      const effectiveMcpIds = this.resolveEffectiveMcpServerIds(
-        this.resolveEventWorkspaceId(run.threadId),
-        run.mcpServerIds,
-      );
+      const effectiveMcpIds = this.resolveMcpServerIdsForRun(run);
       run.mcpServerIds = effectiveMcpIds;
       const servers = effectiveMcpIds
         .map((id) => this.mcpStore?.get(id))
@@ -31262,7 +33140,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
           name: row.name,
           tools: row.tools,
         }));
-      return mcpToolsToProviderSchemas(servers, { maxTools: 16 });
+      return mcpToolsToProviderSchemas(servers, { maxTools: this.usesGlobalChatMcp(run) ? 32 : 16 });
     })();
     // Stash dispatch on the run for the tool loop (in-memory only).
     (
@@ -31278,7 +33156,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     );
     const delegatedReadOnly = run.delegatedReadOnly === true;
     const agentToolsEnabled = Boolean(
-      options.toolsEnabled && this.globalAgentStore && (run.track === 'model' || this.managementIntentForRun(run) !== 'none') && (!delegatedReadOnly || this.managementIntentForRun(run) !== 'none'),
+      options.toolsEnabled && this.globalAgentStore && (run.track === 'model' || this.canProposeAgentDefinitions(run)) && (!delegatedReadOnly || this.canProposeAgentDefinitions(run)),
     );
     const dynamicAgentToolsEnabled = Boolean(
       options.toolsEnabled &&
@@ -31290,7 +33168,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       options.toolsEnabled && !delegatedReadOnly && this.isComputerUsePluginEnabled(),
     );
     const browserWorkflowToolsEnabled = Boolean(
-      options.toolsEnabled && !delegatedReadOnly && this.browserWorkflowService,
+      options.toolsEnabled && (!delegatedReadOnly || Boolean(this.collaborationThreadScopes.get(run.threadId)?.input.snapshot.conversation.policy.browserWorkflowTaskId) || Boolean(this.scheduledAutomationForThread(run.threadId)?.task.automation)) && (this.browserWorkflowService || Boolean(this.scheduledAutomationForThread(run.threadId)?.task.automation)),
     );
     const mcpCatalogToolsEnabled = Boolean(
       options.toolsEnabled && !delegatedReadOnly && this.mcpStore,
@@ -31318,7 +33196,9 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
               includeWebSearchTools: webSearchMode === 'external',
               includeProjectTools: hasProjectTools,
               includeAgentTools: agentToolsEnabled,
+              includeSkillTools: Boolean(this.skillStore),
             agentManagementIntent: this.managementIntentForRun(run),
+            allowAgentDefinitionProposals: this.canProposeAgentDefinitions(run),
               collaborationEnabled: this.isCollaborationConversationForThread(run.threadId),
               includeDesktopTools: desktopToolsEnabled,
               includeBrowserWorkflowTools: browserWorkflowToolsEnabled,
@@ -31340,7 +33220,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
                 >;
               }
             ).mcpToolDispatch?.get(tool.name);
-            return delegatedReadOnly && (isDelegatedReadOnlyTool(tool.name, dispatch?.readOnly) || this.isCollaborationControlToolAllowed(run, tool.name));
+            return delegatedReadOnly && this.isReadOnlyRunToolAllowed(run, tool.name, dispatch?.readOnly);
           })
         : tools;
     let requestExtras: {
@@ -31354,26 +33234,75 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     if (typeof options.systemPromptOverride === 'string' && options.systemPromptOverride.trim()) {
       requestExtras = {
         messages: options.messages,
-        tools: filteredTools,
+        tools: options.toolsOverride ?? filteredTools?.filter(tool => this.isTaskRoomToolAllowed(run, tool.name)),
         systemPrompt: options.systemPromptOverride.trim(),
         ...(options.maxOutputTokens ? { maxOutputTokens: options.maxOutputTokens } : {}),
       };
     } else {
       this.hydrateRunSkillContext(run);
-      const snapshot = this.buildDefaultProviderContextSnapshot(run, {
+      const outputReserve = resolveContextBudget({ contextWindow: run.effectiveContextWindow ?? run.contextWindow ?? 128_000,
+        reservedOutputTokens: options.maxOutputTokens }).reservedOutputTokens;
+      let snapshot = this.buildDefaultProviderContextSnapshot(run, {
         messages: options.messages ?? [{ role: 'user', content: run.userText }],
         toolsEnabled: options.toolsEnabled === true,
         workspaceRoot: options.workspaceRoot,
-        executionMode,
-        networkEnabled,
-        platformSchemas: options.platformSchemas,
-        toolAllowlist: options.toolAllowlist,
+        executionMode, networkEnabled,
+        platformSchemas: options.platformSchemas, toolAllowlist: options.toolAllowlist,
+        reservedOutputTokens: outputReserve,
       });
+      if ((!run.kernelId || run.kernelId === 'native') && !options.contextMaintenance) {
+        const canonical = this.messageStore && snapshot.status.shouldAutoCompact && !run.nativeContextCheckpoint && !run.delegationParentRunId && !this.collaborationThreadScopes.has(run.threadId)
+          ? (() => {
+              const compact=this.compactBoundaryCache.get(run.threadId);
+              const history=this.listDurableContextMessages(run.threadId,snapshot.status.contextWindow,compact,true);
+              return {compact,lineage:captureNativeCheckpointLineage({history,compact,messages:snapshot.providerRequest.messages,currentUserText:run.userText})};
+            })() : undefined;
+        const maintained = await prepareNativeContextRequest({
+          request: snapshot.providerRequest,
+          contextWindow: snapshot.status.contextWindow,
+          reservedOutputTokens: outputReserve,
+          bindingKey: run.threadId + ':' + run.modelId + ':' + run.runId,
+          checkpoint: run.nativeContextCheckpoint, signal,
+          meterBindingKey: this.contextMeterBindingKey(run), usageAnchor:this.contextUsageAnchor(run.threadId),
+          summarize: (request, maxOutputTokens) => this.generateNativeRequestCheckpoint(run, request, maxOutputTokens, signal),
+        });
+        if (maintained.compacted && maintained.checkpoint && canonical) this.promoteNativeCheckpoint(run,canonical,
+          maintained.checkpoint,snapshot.status.estimatedUsedTokens,maintained.estimatedUsedTokens);
+        run.nativeContextCheckpoint = maintained.checkpoint;
+        this.updateDemoRun(run.runId, { nativeContextCheckpoint: maintained.checkpoint });
+        snapshot = this.buildDefaultProviderContextSnapshot(run, {
+          messages: maintained.request.messages, toolsEnabled: options.toolsEnabled === true,
+          workspaceRoot: options.workspaceRoot, executionMode, networkEnabled,
+          platformSchemas: options.platformSchemas, toolAllowlist: options.toolAllowlist,
+          reservedOutputTokens: outputReserve,
+        });
+        if (maintained.compacted || maintained.prunedCount || maintained.warning) {
+          this.publishEvent(this.appendEvent('context', 'context.request_maintained', {
+            threadId: run.threadId, modelId: run.modelId,
+            compacted: maintained.compacted, prunedCount: maintained.prunedCount,
+            estimatedUsedTokens: snapshot.status.estimatedUsedTokens,
+            budget: snapshot.status.budget, warning: maintained.warning,
+            run: serializeDemoRun(run),
+          }, undefined, run.runId, this.workspaceStore?.getTaskByThreadId(run.threadId as ThreadId)?.id));
+        }
+      }
+      options.maxOutputTokens = outputReserve;
       run.contextSnapshot = snapshot;
       this.recordProviderContextCapabilityUsage(run, snapshot);
       this.contextSnapshotCache.set(run.threadId, snapshot);
       requestExtras = snapshot.providerRequest;
       if (options.maxOutputTokens) requestExtras.maxOutputTokens = options.maxOutputTokens;
+    }
+    if (options.contextMaintenance || options.systemPromptOverride) {
+      const checked = await prepareNativeContextRequest({
+        request: { systemPrompt: requestExtras.systemPrompt, messages: requestExtras.messages ?? [], tools: requestExtras.tools },
+        contextWindow: run.effectiveContextWindow ?? run.contextWindow ?? 128_000,
+        reservedOutputTokens: options.maxOutputTokens,
+        bindingKey: run.threadId + ':maintenance',
+        summarize: async () => undefined, maintenanceDisabled: true,
+      });
+      // Auxiliary calls have a hard gate, but no recursive pruning or summary.
+      requestExtras.maxOutputTokens = checked.budget.reservedOutputTokens;
     }
     if (options.toolChoice) requestExtras.toolChoice = options.toolChoice;
     if (options.toolsEnabled && webSearchMode === 'native' && run.protocol === 'openai-responses') {
@@ -31402,9 +33331,13 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
 
     if (run.useFakeProvider) {
       if (!this.demoProvider) return undefined;
-      return this.demoProvider.call(
-        createDemoProviderRequest(run, 'fake-provider-no-secret', signal, requestExtras),
+      const call = (request: NativeContextRequest) => this.demoProvider!.call(
+        createDemoProviderRequest(run, 'fake-provider-no-secret', signal, { ...requestExtras, ...request }),
       );
+      const request = { systemPrompt: requestExtras.systemPrompt, messages: requestExtras.messages ?? [], tools: requestExtras.tools };
+      return (!run.kernelId || run.kernelId === 'native') && !options.contextMaintenance && !options.systemPromptOverride
+        ? this.nativeStreamWithContextRecovery(run, request, call, signal, requestExtras.maxOutputTokens ?? 8192)
+        : call(request);
     }
     if (!run.providerId || !this.providerStore || !this.secureStore || !run.credentialRefId) {
       throw new Error('MODEL_CREDENTIAL_UNAVAILABLE: 模型连接或凭据已失效，请检查模型设置。');
@@ -31420,7 +33353,11 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     if (!apiKey || apiKey.trim().length === 0) {
       throw new Error('Credential secret empty for live provider call');
     }
-    return adapter.call(createDemoProviderRequest(run, apiKey, signal, requestExtras));
+    const call = (request: NativeContextRequest) => adapter.call(createDemoProviderRequest(run, apiKey, signal, { ...requestExtras, ...request }));
+    const request = { systemPrompt: requestExtras.systemPrompt, messages: requestExtras.messages ?? [], tools: requestExtras.tools };
+    return (!run.kernelId || run.kernelId === 'native') && !options.contextMaintenance && !options.systemPromptOverride
+      ? this.nativeStreamWithContextRecovery(run, request, call, signal, requestExtras.maxOutputTokens ?? 8192)
+      : call(request);
   }
 
   /**
@@ -32295,7 +34232,8 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     run: DemoRunState,
     payload: Record<string, unknown>,
   ): void {
-    if (!this.memoryStore) return;
+    // Room progress belongs to its checkpoint, never to workspace/global Agent memory.
+    if (!this.memoryStore || this.collaborationThreadScopes.get(run.threadId)?.input.snapshot.conversation.room) return;
     const assistantText =
       typeof payload.assistantText === 'string' ? payload.assistantText : run.assistantText;
     const snippet = (assistantText || '').trim().replace(/\s+/g, ' ').slice(0, 240);
@@ -32340,6 +34278,68 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     }
   }
 
+  /** Restore the occurrence before its provider; recovery never creates a new firedAt. */
+  private async recoverScheduledTaskRun(run: DemoRunState): Promise<void> {
+    const context = run.scheduledTaskContext!;
+    const { task, firedAt } = context;
+    this.scheduledTaskRunRegistry.register(String(run.runId), {task, firedAt, run});
+    this.scheduledTaskDispatches.bindRun(String(run.runId), task.id);
+    if (context.daemonDispatched) this.scheduledTaskDispatches.start(task.id);
+    const binding: ScheduledAutomationBinding = { task, firedAt,
+      ...(context.workflowVersionId ? {workflowVersionId:context.workflowVersionId} : {}) };
+    if (task.automation) this.scheduledAutomationThreads.set(run.threadId, binding);
+    const block = (reason: string, status: 'blocked' | 'waiting_input' = 'blocked'): void => {
+      if (this.runtimeStopped) return;
+      this.persistDemoRunPaused(run.runId, {reason:'scheduled_recovery_blocked',
+        failedModelId:run.modelId, failureClass:'unknown', errorMessage:reason});
+      this.scheduledTaskRunRegistry.finishExecution(String(run.runId));
+      this.scheduledTaskRunRegistry.takeMetadata(String(run.runId));
+      const dispatch = this.scheduledTaskDispatches.completeRun(String(run.runId));
+      this.scheduledAutomationThreads.delete(run.threadId);
+      this.preparedAutomationPrompts.delete(task.id+':'+firedAt);
+      if (this.scheduledTaskStore?.get(task.id)) {
+        this.recordTaskHistory(task,status,firedAt,String(run.runId),reason);
+        this.scheduledTaskStore.update(task.id,{lastResult:{status,firedAt,runId:String(run.runId),reason}});
+        this.publishTaskEvent('scheduledTask.updated',task.id,{taskId:task.id,action:'recovery-blocked'});
+      }
+      if (dispatch.wasDispatched) this.daemonCompletionRegistry.track(sendTaskCompletionToDaemon({
+        installId:this.installId,helloSecret:this.handlers.expectedSecret,appVersion:'sync-think-runtime',handshakeTimeoutMs:2000,
+      },{taskId:task.id,runId:String(run.runId),status:'failed',reason}));
+    };
+    try {
+      const events = this.stateStore?.listEventsByRun?.(run.runId) ?? this.events.filter(event => event.runId === run.runId);
+      if (isDemoRunRecoveryExpired({lastActivityAt: events.at(-1)?.occurredAt, now: new Date().toISOString()})) {
+        this.browserController?.expireRunCommands(run.runId,new Date().toISOString());
+        block('历史请求已过期，本轮结果已保留；请核对后手动重新执行');return;
+      }
+      const current = this.scheduledTaskStore?.get(task.id);
+      if (!current || (task.enabled && !current.enabled) || current.conversationId !== task.conversationId ||
+        this.scheduledAutomationFingerprint(current) !== this.scheduledAutomationFingerprint(task)) {
+        block('原定时任务已停用、移除或关键配置已改变；已保留本轮结果，请核对后重新执行'); return;
+      }
+      if (this.resolveConversationThreadId(task.conversationId!) !== run.threadId) {
+        block('原定时任务的会话绑定已改变，恢复已暂停'); return;
+      }
+      if (task.automation) {
+        const prepared = await this.prepareScheduledAutomation(task,firedAt);
+        if (this.runtimeStopped) return;
+        if (!this.demoRuns.has(run.runId)) {this.attachTaskRunCleanup(String(run.runId));return;}
+        if (!prepared.ready) {block(prepared.reasons.join('；'),prepared.status);return;}
+        const after = this.scheduledTaskStore?.get(task.id);
+        if (!after || (task.enabled && !after.enabled) || after.conversationId !== task.conversationId ||
+          this.scheduledAutomationFingerprint(after) !== this.scheduledAutomationFingerprint(task)) {
+          block('恢复预检期间任务配置已改变；请核对本轮配置');return;
+        }
+        this.preparedAutomationPrompts.set(task.id+':'+firedAt,prepared.prompt);
+      }
+      if (this.runtimeStopped) return;
+      this.attachTaskRunCleanup(String(run.runId));
+      await this.executeKernelRun(run.runId);
+    } catch (error) {
+      block(error instanceof Error ? error.message : '定时任务恢复未通过');
+    }
+  }
+
   private resumeDemoRuns(): void {
     if (!this.canStartModelRun()) return;
     const now = new Date().toISOString();
@@ -32351,6 +34351,33 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         this.demoRuns.delete(run.runId);
         continue;
       }
+      const task = this.workspaceStore?.getTaskByThreadId(run.threadId as ThreadId);
+      if (String(task?.id ?? '').startsWith('collaboration-task:')) {
+        // The collaboration host owns recovery/admission and the frozen task
+        // scope. Restoring this raw provider Run would bypass its pause, goal,
+        // roster and tool fences and can duplicate an already resumed attempt.
+        const projectedRuns = new Map(this.demoRuns);
+        projectedRuns.delete(run.runId);
+        try {
+          this.browserController?.expireRunCommands(run.runId, now);
+          if (this.stateStore) {
+            const event = this.persistProjectedEvent({
+              id: ulid() as Event['id'], workspaceId: this.resolveEventWorkspaceId(run.threadId),
+              runId: run.runId, category: 'run', type: 'run.cancelled', occurredAt: now,
+              payload: { threadId: run.threadId, reason: 'collaboration_host_recovery', idempotencyKey: run.runId },
+            }, projectedRuns);
+            this.publishEvent(event);
+          }
+        } catch {
+          console.warn('[runtime] collaboration provider recovery retirement failed; the host still owns admission');
+        }
+        this.demoRuns.delete(run.runId);
+        continue;
+      }
+      if (run.scheduledTaskContext) {
+        this.trackBackgroundTask(this.recoverScheduledTaskRun(run));
+        continue;
+      }
       const lastActivityAt = events.at(-1)?.occurredAt;
       if (isDemoRunRecoveryExpired({ lastActivityAt, now })) {
         this.browserController?.expireRunCommands(run.runId, now);
@@ -32360,6 +34387,14 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
           failureClass: 'unknown',
           errorMessage: '历史请求已过期，已暂停自动恢复。',
         });
+        continue;
+      }
+      // Older scheduled runs have no frozen context: never silently resume as ordinary chat.
+      const legacyScheduled = events.some(event => event.type==='message.appended' &&
+        typeof event.payload.text==='string' && event.payload.text.startsWith('【定时任务 · '));
+      if (legacyScheduled) {
+        this.persistDemoRunPaused(run.runId,{reason:'scheduled_recovery_context_missing',
+          failedModelId:run.modelId,failureClass:'unknown',errorMessage:'旧定时轮次缺少冻结恢复信息，结果已保留；请核对后重新执行'});
         continue;
       }
       void this.executeKernelRun(run.runId);
@@ -32491,6 +34526,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       const committed = this.stateStore.commitTransition({ events: [draft] });
       const event = committed.events[0];
       if (!event) throw new Error('The event store returned an empty transition');
+      if (event.type !== 'context.compacted') this.compactionJobs.apply(event);
       this.rememberRecentEvents([event]);
       this.eventSequence = Math.max(this.eventSequence, event.sequence);
       return event;
@@ -32500,11 +34536,21 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       ...draft,
       sequence: ++this.eventSequence,
     };
+    if (event.type !== 'context.compacted') this.compactionJobs.apply(event);
     this.rememberRecentEvents([event]);
     return event;
   }
 
   private publishEvent(event: Event): void {
+    if (event.runId && (event.type === 'tool.approval_requested' || event.type === 'tool.approval_decided')) {
+      const run = this.demoRuns.get(event.runId);
+      const publisher = this.collaborationProgress.get(String(event.runId));
+      if (run && publisher) {
+        publisher.update({ ...projectCollaborationRunProgress(run),
+          status: event.type === 'tool.approval_requested' || this.activeToolApprovals.matchingRun(String(event.runId)).length > 0 ? 'waiting_input' : 'running' });
+        publisher.flush();
+      }
+    }
     this.eventSubscriptions.visit((streamId, sub) => {
       // Live browser requests are not in the durable event log. They must not
       // advance its cursor: the next committed event may reuse this sequence.
@@ -33267,6 +35313,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         // has finished binding; await the bind while keeping the pipe alive.
         void browserExtensionReady.finally(() => {
           this.handlers.onReady(path);
+          this.reconcileInterruptedCompactions();
           this.resumeDemoRuns();
           // Open gateway: bind on boot when the persisted setting has it enabled,
           // so external CLIs pointed at the fixed port work without opening the UI.
@@ -33295,6 +35342,18 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       });
       this.server.on('error', (e) => reject(e));
     });
+  }
+
+  private reconcileInterruptedCompactions(): void {
+    // Only after this installation acquires its primary pipe; daemon workers never settle another owner's job.
+    for (const job of this.compactionJobs.pending()) {
+      if (!job.ownerId.startsWith(this.installId+':') || job.ownerId === this.compactionOwnerId) continue;
+      this.publishEvent(this.appendEvent('context','context.compaction_failed',{
+        threadId:job.threadId,conversationId:job.conversationId,operationId:job.operationId,
+        reason:'runtime-restarted',originalHistoryPreserved:true,
+        error:'上次摘要生成被运行时重启中断，原始记录已保留；按需重试，不会自动重复调用模型。',
+      },undefined,undefined,job.taskId as TaskId));
+    }
   }
 
   private seedBuiltinGlobalAgents(): void {
@@ -33355,6 +35414,8 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
 
   async stop(): Promise<void> {
     this.runtimeStopped = true;
+
+    for (const controller of this.activeCompactions.values()) controller.abort(new Error('Runtime 正在关闭，摘要作业已取消。'));
     await this.conversationHistory?.close();
     this.rendererBrowserCommands.cancelAll('Runtime 正在关闭，内置浏览器命令已取消');
     await this.botGatewayManager.stopAll();
@@ -33497,6 +35558,17 @@ function browserWorkflowErrorCode(error: unknown): string | undefined {
 }
 
 function browserFailureMessage(code: unknown, failureClass: unknown): string {
+  const locatorErrors: Record<string, string> = {
+    'browser.invalid-selector': 'Browser selector is invalid. Use a controls.selector from browser_read, plain text, text=, :has-text(), or :text-is().',
+    'browser.ambiguous-target': 'Multiple browser targets matched; nothing was clicked. Read the page and use a unique controls.selector.',
+    'browser.disabled-target': 'Browser target is disabled; nothing was clicked. Check input validation and page readiness.',
+    'browser.target-not-found': 'Browser target was not found. Read the current page before retrying.',
+    'browser.occluded-target': 'Browser target is covered or moved; nothing was clicked. Read the current page before retrying.',
+    'browser.page-not-ready': 'The conversation browser page is closed or not ready. Reopen the conversation browser and read it.',
+    'browser.trusted-click-failed': 'Browser trusted input delivery failed. No duplicate synthetic click was sent; read the page before retrying.',
+    'browser.input-target-invalid': 'Browser input target is not editable; nothing was entered. Use an input selector from browser_read.',
+  };
+  if (typeof code === 'string' && Object.hasOwn(locatorErrors, code)) return locatorErrors[code]!;
   if (code === 'browser.origin-denied') return 'Browser origin was denied.';
   if (code === 'browser.profile-path-invalid') return 'Browser Profile path was rejected.';
   if (failureClass === 'timeout') return 'Browser action timed out.';

@@ -1,5 +1,7 @@
 import {
   createContext,
+  lazy,
+  Suspense,
   memo,
   useCallback,
   useContext,
@@ -13,12 +15,12 @@ import remarkGfm from 'remark-gfm';
 import { CodeBlock as AgentCodeBlock, type CodeBlockReadingState } from './CodeBlock.js';
 import { Check, ChevronDown, Copy, FolderOpen } from 'lucide-react';
 import { MermaidChart } from './MermaidChart.js';
-import { HtmlSandbox } from './HtmlSandbox.js';
-import { ExcalidrawDraftPreview } from './ExcalidrawDraftPreview.js';
-import { InlineVisualizationPreview } from './InlineVisualizationPreview.js';
-import { parseInlineVisualizationSegments } from './inline-visualization.js';
+import type { ComponentProps } from 'react';
+import type { HtmlSandbox as HtmlSandboxComponent } from './HtmlSandbox.js';
+import type { InlineVisualizationPreview as InlineVisualizationComponent } from './InlineVisualizationPreview.js';
+import { parseInlineVisualizationSegments } from './inline-visualization-parser.js';
 import { IncrementalMarkdownParser } from './incremental-markdown.js';
-import type { OpenHtmlInBrowser } from './html-browser.js';
+import { htmlSourcePathFromMarkdown, type OpenHtmlInBrowser } from './html-browser.js';
 import type { ProjectTextLocation } from '../../workspace-tools-contract.js';
 import { FileTypeIcon } from './FileTypeIcon.js';
 import { WebTextLink } from './WebTextLink.js';
@@ -32,6 +34,21 @@ import {
   repairGeneratedImageMarkdown,
 } from './markdown-image-gallery.js';
 import { MarkdownImageGallery } from './MarkdownImageGallery.js';
+
+// Draft-generation controls load only for an interactive drawing, not every chat.
+const ExcalidrawDraftPreview = lazy(() => import('./ExcalidrawDraftPreview.js').then(module => ({ default: module.ExcalidrawDraftPreview })));
+
+// Chart engines and spreadsheet controls are cold until an HTML/data block is actually shown.
+const LazyHtmlSandbox = lazy(() => import('./HtmlSandbox.js').then(module => ({ default: module.HtmlSandbox })));
+const LazyInlineVisualization = lazy(() => import('./InlineVisualizationPreview.js').then(module => ({ default: module.InlineVisualizationPreview })));
+function HtmlSandbox(props: ComponentProps<typeof HtmlSandboxComponent>) {
+  return <Suspense fallback={<div role="status">正在加载数据展示…</div>}><LazyHtmlSandbox {...props} /></Suspense>;
+}
+function InlineVisualizationPreview(props: ComponentProps<typeof InlineVisualizationComponent>) {
+  return <Suspense fallback={<div role="status">正在加载可视化…</div>}><LazyInlineVisualization {...props} /></Suspense>;
+}
+
+const HtmlSourcePathContext = createContext<string | undefined>(undefined);
 
 const InlineReferencesContext = createContext<ReadonlyMap<string, ReactNode> | undefined>(undefined);
 
@@ -349,6 +366,7 @@ const MarkdownRenderer = memo(function MarkdownRenderer({
   skipVisualizations?: boolean;
   sourceOffset?: number;
 }) {
+  const htmlSourcePath = useContext(HtmlSourcePathContext);
   const streamingRef = useRef(streaming);
   streamingRef.current = streaming;
   const visualizationSegments = useMemo(
@@ -383,12 +401,14 @@ const MarkdownRenderer = memo(function MarkdownRenderer({
             );
           }
           return (
+            <Suspense fallback={<p role="status">正在加载画布预览…</p>}>
             <ExcalidrawDraftPreview
               code={raw}
               projectFolder={projectFolder}
               modelId={modelId}
               onOpenInBrowser={onOpenHtmlInBrowser}
             />
+            </Suspense>
           );
         }
         if (language === 'html' || language === 'htm' || language === 'design-html') {
@@ -399,7 +419,14 @@ const MarkdownRenderer = memo(function MarkdownRenderer({
               </CodeBlock>
             );
           }
-          return <HtmlSandbox code={raw} onOpenInBrowser={onOpenHtmlInBrowser} />;
+          return (
+            <HtmlSandbox
+              code={raw}
+              onOpenInBrowser={htmlSourcePath && onOpenHtmlInBrowser
+                ? (html) => onOpenHtmlInBrowser(html, { sourcePath: htmlSourcePath })
+                : onOpenHtmlInBrowser}
+            />
+          );
         }
         return (
           <CodeBlock language={language} streaming={isStreaming} sourceOffset={readingOffset}>
@@ -407,7 +434,7 @@ const MarkdownRenderer = memo(function MarkdownRenderer({
           </CodeBlock>
         );
       },
-    [interactiveEmbeds, projectFolder, modelId, onOpenHtmlInBrowser, sourceOffset],
+    [interactiveEmbeds, projectFolder, modelId, onOpenHtmlInBrowser, sourceOffset, htmlSourcePath],
   );
   if (
     !skipVisualizations &&
@@ -680,12 +707,16 @@ export function MarkdownContent({
     () => repairGeneratedImageMarkdown(text, generatedImageModels, streaming),
     [text, generatedImageModels, streaming],
   );
+  const htmlSourcePath = useMemo(
+    () => htmlSourcePathFromMarkdown(displayText, projectFolder),
+    [displayText, projectFolder],
+  );
   const sections = useMemo(
     () => (streaming ? [] : splitMarkdownSections(displayText)),
     [displayText, streaming],
   );
   return (
-    <InlineReferencesContext.Provider value={inlineReferences}><CodeReadingContext.Provider value={readingState.states}>
+    <HtmlSourcePathContext.Provider value={htmlSourcePath}><InlineReferencesContext.Provider value={inlineReferences}><CodeReadingContext.Provider value={readingState.states}>
       <GeneratedImageModelsContext.Provider value={generatedImageModels}>
         <div className={`shell-md ${className ?? ''}`} data-streaming={streaming ? '1' : '0'}>
           {useIncrementalRenderer ? (
@@ -736,6 +767,6 @@ export function MarkdownContent({
           {streaming ? <span className="shell-md-cursor" aria-hidden="true" /> : null}
         </div>
       </GeneratedImageModelsContext.Provider>
-    </CodeReadingContext.Provider></InlineReferencesContext.Provider>
+    </CodeReadingContext.Provider></InlineReferencesContext.Provider></HtmlSourcePathContext.Provider>
   );
 }

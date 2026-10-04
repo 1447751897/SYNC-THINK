@@ -4,6 +4,7 @@ import {
   normalizeReasoningEffort,
   openAiReasoningBodyFields,
   shouldOmitReasoningEffort,
+  wireReasoningEffort,
 } from './reasoning.js';
 
 describe('reasoning helpers', () => {
@@ -28,6 +29,21 @@ describe('reasoning helpers', () => {
     });
     expect(openAiReasoningBodyFields('off')).toEqual({ enable_thinking: false });
     expect(openAiReasoningBodyFields(undefined)).toEqual({});
+  });
+
+  it.each(['minimal', 'low', 'medium', 'high', 'xhigh', 'max'])(
+    'preserves explicitly selected %s effort on the wire',
+    (effort) => {
+      expect(wireReasoningEffort(effort)).toBe(effort);
+      expect(openAiReasoningBodyFields(` ${effort.toUpperCase()} `)).toEqual({
+        reasoning_effort: effort,
+        enable_thinking: true,
+      });
+    },
+  );
+
+  it('retains the product default only for automatic effort', () => {
+    expect(wireReasoningEffort('auto')).toBe('high');
   });
 
   it('maps Anthropic thinking budget by effort', () => {

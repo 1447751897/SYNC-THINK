@@ -1,11 +1,18 @@
+import { REASONING_OPTIONS, REASONING_LABELS } from './reasoning-options.js';
+export { REASONING_OPTIONS, REASONING_LABELS } from './reasoning-options.js';
 import { ModelPickerPanel } from './ModelPickerPanel.js';
+import type { FloatingAnchorRect, KernelInstallState, ReasoningEffort } from './composer-toolbar-types.js';
+export type { FloatingAnchorRect, KernelInstallState, ReasoningEffort } from './composer-toolbar-types.js';
 // NewMax-style Compose toolbar menus: permission / reasoning / model picker.
 // Menus render via portal + fixed position so parent overflow cannot clip them.
 import {
   forwardRef,
+  lazy,
+  Suspense,
   useCallback,
   useEffect,
   useLayoutEffect,
+  useId,
   useRef,
   useState,
   type MutableRefObject,
@@ -33,14 +40,11 @@ import {
   type KernelDetectionResult,
 } from '@sync-think/shared';
 import { AgentAvatarView } from './AgentAvatarView.js';
-import { AgentLimitsCard } from './agent-limits-card.js';
+import { HOST_SYSTEM_NAME, HostSystemAvatar } from './HostSystemAvatar.js';
+const AgentLimitsCard = lazy(() => import('./agent-limits-card.js').then(module => ({default:module.AgentLimitsCard})));
 import type { ModelOption } from './NewConversationDialog.js';
 
 export type PermissionMode = 'ask' | 'workspace' | 'full-access';
-/** Fixed NewMax-style effort ladder (full set always shown). */
-export type ReasoningEffort =
-  'auto' | 'minimal' | 'off' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
-
 export const PERMISSION_MODE_COLLAPSED_TOOLBAR_LEVEL = 1;
 export const SKILL_COLLAPSED_TOOLBAR_LEVEL = 2;
 export type ComposerToolbarCollapseLevel = 0 | 1 | 2;
@@ -183,32 +187,6 @@ export const PERMISSION_OPTIONS: Array<{
   },
 ];
 
-/** Compact text-only ladder (no icons / no long descriptions — NewMax dense list). */
-export const REASONING_OPTIONS: Array<{
-  value: ReasoningEffort;
-  title: string;
-}> = [
-  { value: 'auto', title: '自动' },
-  { value: 'minimal', title: '极低' },
-  { value: 'off', title: '关闭' },
-  { value: 'low', title: '低' },
-  { value: 'medium', title: '中' },
-  { value: 'high', title: '高' },
-  { value: 'xhigh', title: '超高' },
-  { value: 'max', title: '最高' },
-];
-
-export const REASONING_LABELS: Record<ReasoningEffort, string> = {
-  auto: '自动',
-  minimal: '极低',
-  off: '关闭',
-  low: '低',
-  medium: '中',
-  high: '高',
-  xhigh: '超高',
-  max: '最高',
-};
-
 /** Full fixed ladder — always show every rung (no per-model filtering). */
 export function reasoningLevelsForModel(_modelId?: string): readonly ReasoningEffort[] {
   return REASONING_OPTIONS.map((o) => o.value);
@@ -283,15 +261,6 @@ export function formatTokenCount(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n % 1_000_000 === 0 ? 0 : 1)}M`;
   if (n >= 1000) return `${(n / 1000).toFixed(n % 1000 === 0 ? 0 : 1)}k`;
   return String(n);
-}
-
-export interface FloatingAnchorRect {
-  top: number;
-  bottom: number;
-  left: number;
-  right: number;
-  width: number;
-  height: number;
 }
 
 function rectFromEl(el: HTMLElement | null): FloatingAnchorRect | null {
@@ -502,14 +471,15 @@ export function ComposerIdentity(props: {
   testId?: string;
 }) {
   const Icon = props.track === 'agent' ? Bot : props.track === 'team' ? Users : MessageSquare;
+  const label = props.track === 'model' ? HOST_SYSTEM_NAME : props.label;
   return (
-    <span className="shell-compose__identity" data-testid={props.testId} title={`对话对象：${props.label}`}>
-      {props.avatar?.avatar?.trim() ? (
+    <span className="shell-compose__identity" data-testid={props.testId} title={`对话对象：${label}`}>
+      {props.track === 'model' ? <HostSystemAvatar size={22} animate /> : props.avatar?.avatar?.trim() ? (
         <AgentAvatarView name={props.avatar.name} avatar={props.avatar.avatar} size={18} />
       ) : (
         <Icon size={15} />
       )}
-      <span className="shell-compose__identity-label">{props.label}</span>
+      <span className="shell-compose__identity-label">{label}</span>
     </span>
   );
 }
@@ -554,7 +524,7 @@ export function IdentityPickerMenu(props: {
           aria-checked={props.currentTrack === 'model'}
           className={`shell-menu__item ${props.currentTrack === 'model' ? 'is-active' : ''}`}
           onClick={() => {
-            props.onPick({ track: 'model', targetRef: '', name: '直接跟模型聊' });
+            props.onPick({ track: 'model', targetRef: '', name: HOST_SYSTEM_NAME });
             props.onClose();
           }}
         >
@@ -562,10 +532,10 @@ export function IdentityPickerMenu(props: {
             className="shell-menu__item-icon-wrap"
             data-active={props.currentTrack === 'model' ? '1' : '0'}
           >
-            <MessageSquare size={15} />
+            <HostSystemAvatar size={22} />
           </span>
           <div className="shell-menu__item-text">
-            <div className="shell-menu__item-title">直接跟模型聊</div>
+            <div className="shell-menu__item-title">{HOST_SYSTEM_NAME}</div>
             <div className="shell-menu__item-desc">
               不经过智能体人设，右侧模型选择器决定用哪个模型
             </div>
@@ -729,13 +699,6 @@ export function SkillPickerMenu(props: {
  * the provider row and model panel in one menu tree avoids the stale DOMRect and
  * hover-gap races that made the old hand-positioned portal drift across viewports.
  */
-export type KernelInstallState =
-  | { status: 'checking' }
-  | { status: 'installing' }
-  | { status: 'verifying' }
-  | { status: 'success' }
-  | { status: 'error'; error: string };
-
 /**
  * Compact transparent kernel mark used by the picker and the compose chip.
  * The fixed box normalises optical size without adding a tile or border.
@@ -788,15 +751,17 @@ export function ContextRing(props: {
   contextWindowSource?: 'configured' | 'kernel-capped' | 'estimated' | 'kernel-reported';
   /** Runtime-computed ratio; may exceed 1 when the request is over the window. */
   usageRatio?: number;
-  /** Runtime-owned auto-compact threshold (currently 70%). */
+  /** Runtime-owned auto-compact threshold (Native default 85%, constrained by input budget). */
   compactThreshold?: number;
+  budget?: import('@sync-think/protocol').ConversationGetContextStatusResponse['budget'];
+  measurement?: import('@sync-think/protocol').ConversationGetContextStatusResponse['measurement'];
   /** Timestamp of the latest successful durable context compact. */
   compactedAt?: string;
   /** Audit-only Runtime breakdown. It contains category names and token counts only. */
   sections?: ContextStatusSection[];
   /**
    * True when `used` comes from an external kernel's reported occupancy
-   * (claude-code / codex) instead of the host estimate. Host 70% auto-compact
+   * (claude-code / codex) instead of the host estimate. Host automatic compaction
    * copy stays hidden; kernel-reported category rows still show when present.
    */
   kernelSelfManaged?: boolean;
@@ -815,6 +780,9 @@ export function ContextRing(props: {
   const [open, setOpen] = useState(false);
   const [anchor, setAnchor] = useState<FloatingAnchorRect | null>(null);
   const btnRef = useRef<HTMLButtonElement>(null);
+  const tipRef = useRef<HTMLDivElement>(null);
+  const focusPopup = useRef(false);
+  const popupId = useId();
   const closeTimer = useRef<number | null>(null);
 
   const rawRatio =
@@ -833,7 +801,7 @@ export function ContextRing(props: {
     Number.isFinite(props.compactThreshold) &&
     props.compactThreshold > 0
       ? Math.min(1, props.compactThreshold)
-      : 0.7;
+      : 0.85;
   const usedLabel = formatTokenCount(props.used);
   const limitLabel = formatTokenCount(props.limit);
 
@@ -853,17 +821,50 @@ export function ContextRing(props: {
     closeTimer.current = window.setTimeout(() => setOpen(false), 120);
   };
   useEffect(() => () => cancelClose(), []);
+  useLayoutEffect(() => {
+    if (open && focusPopup.current) {
+      focusPopup.current = false;
+      tipRef.current?.querySelector<HTMLButtonElement>('button')?.focus();
+    }
+  }, [open]);
+  useEffect(() => {
+    if (!open) return;
+    const dismiss = () => { cancelClose(); setOpen(false); };
+    const onPointer = (event: PointerEvent) => {
+      if (!(event.target instanceof Node) || btnRef.current?.contains(event.target) || tipRef.current?.contains(event.target)) return;
+      dismiss();
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      if (tipRef.current?.contains(document.activeElement)) btnRef.current?.focus();
+      dismiss();
+    };
+    const reposition = () => setAnchor(rectFromEl(btnRef.current));
+    document.addEventListener('pointerdown', onPointer);
+    document.addEventListener('keydown', onKey);
+    window.addEventListener('resize', reposition);
+    return () => {
+      document.removeEventListener('pointerdown', onPointer);
+      document.removeEventListener('keydown', onKey);
+      window.removeEventListener('resize', reposition);
+    };
+  }, [open]);
 
   let tipStyle: React.CSSProperties | undefined;
   if (open && anchor && typeof window !== 'undefined') {
-    const tipW = Math.min(292, Math.max(0, window.innerWidth - 16));
-    const left = Math.max(8, Math.min(anchor.right - tipW, window.innerWidth - tipW - 8));
+    const scale = Math.max(1, window.devicePixelRatio || 1);
+    const snap = (value: number) => Math.round(value * scale) / scale;
+    const tipW = Math.floor(Math.min(448, Math.max(0, window.innerWidth - 16)) * scale) / scale;
+    const left = snap(Math.max(8, Math.min(anchor.right - tipW, window.innerWidth - tipW - 8)));
     tipStyle = {
       position: 'fixed',
       left,
-      bottom: window.innerHeight - anchor.top + 8,
+      ...(anchor.top >= 196
+        ? { bottom: snap(window.innerHeight - anchor.top + 8) }
+        : { top: snap(Math.min(anchor.bottom + 8, window.innerHeight - 40)) }),
       width: tipW,
-      maxHeight: Math.max(180, anchor.top - 16),
+      maxHeight: Math.floor(Math.max(24, anchor.top >= 196 ? anchor.top - 16 : window.innerHeight - anchor.bottom - 16) * scale) / scale,
       zIndex: 10000,
     };
   }
@@ -883,12 +884,23 @@ export function ContextRing(props: {
         data-testid="context-ring"
         aria-label={`上下文 ${usedLabel} / ${limitLabel}（约 ${pct}%）`}
         aria-expanded={open}
+        aria-haspopup="dialog"
+        aria-controls={open ? popupId : undefined}
         title={props.title}
         onMouseEnter={show}
-        onMouseLeave={hide}
+        onMouseLeave={() => { if (!tipRef.current?.contains(document.activeElement)) hide(); }}
         onFocus={show}
-        onBlur={hide}
+        onBlur={(event) => { if (!tipRef.current?.contains(event.relatedTarget as Node | null)) hide(); }}
         onClick={show}
+        onKeyDown={(event) => {
+          if (!['ArrowDown', 'Enter', ' '].includes(event.key)) return;
+          event.preventDefault();
+          focusPopup.current = true;
+          if (open) {
+            focusPopup.current = false;
+            tipRef.current?.querySelector<HTMLButtonElement>('button')?.focus();
+          } else show();
+        }}
       >
         <svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true">
           <circle
@@ -916,13 +928,19 @@ export function ContextRing(props: {
       {open && tipStyle && typeof document !== 'undefined'
         ? createPortal(
             <div
+              ref={tipRef}
+              id={popupId}
               className="shell-ctx-tooltip"
               style={tipStyle}
-              role="tooltip"
+              role="dialog"
+              aria-label="上下文用量与额度"
               data-testid="context-ring-tooltip"
               onMouseEnter={cancelClose}
-              onMouseLeave={hide}
+              onMouseLeave={() => { if (!tipRef.current?.contains(document.activeElement)) hide(); }}
+              onFocus={cancelClose}
+              onBlur={(event) => { if (!tipRef.current?.contains(event.relatedTarget as Node | null) && !btnRef.current?.contains(event.relatedTarget as Node | null)) hide(); }}
             >
+              <Suspense fallback={<span role="status">载入中…</span>}>
               <AgentLimitsCard
                 used={props.used}
                 limit={props.limit}
@@ -931,6 +949,8 @@ export function ContextRing(props: {
                 contextWindowSource={props.contextWindowSource}
                 usageRatio={props.usageRatio}
                 compactThreshold={props.compactThreshold}
+                budget={props.budget}
+                measurement={props.measurement}
                 compactedAt={props.compactedAt}
                 kernelSelfManaged={props.kernelSelfManaged}
                 kernelLabel={props.kernelLabel}
@@ -940,6 +960,7 @@ export function ContextRing(props: {
                 sessionDurationMs={props.sessionDurationMs}
                 sessionTokens={props.sessionTokens}
               />
+              </Suspense>
             </div>,
             document.body,
           )

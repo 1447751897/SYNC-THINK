@@ -1,4 +1,4 @@
-﻿import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+﻿import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   mkdirSync,
   mkdtempSync,
@@ -18,10 +18,25 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   rmSync(testDirectory, { recursive: true, force: true });
 });
 
 describe('resolveHistoricalMessageImageDataUrl', () => {
+  it('restores old Desktop attachments from the known legacy root with a shared database configured', () => {
+    const desktop = join(testDirectory,'apps','desktop'); mkdirSync(desktop,{recursive:true});
+    writeFileSync(join(testDirectory,'pnpm-workspace.yaml'),'packages: []');
+    writeFileSync(join(desktop,'package.json'),'{}');
+    const legacy = join(desktop,'.data','SYNC-THINK','message-images'); mkdirSync(legacy,{recursive:true});
+    const bytes = Buffer.from([1,2,3]); writeFileSync(join(legacy,'historic-1.jpg'),bytes);
+    vi.spyOn(process,'cwd').mockReturnValue(join(testDirectory,'apps','runtime'));
+    vi.stubEnv('SYNC_THINK_DB_PATH',join(testDirectory,'.data','SYNC-THINK','sync-think.db'));
+    vi.stubEnv('SYNC_THINK_CHAT_MESSAGE_IMAGES','');
+    expect(resolveHistoricalMessageImageDataUrl('historic-1.jpg','image/jpeg')).toBe(`data:image/jpeg;base64,${bytes.toString('base64')}`);
+    expect(resolveHistoricalMessageImageDataUrl('historic-1.jpg','image/jpeg',join(testDirectory,'explicit-missing'))).toBeUndefined();
+  });
+
   it('reads a basename from the configured directory and returns an image data URL', () => {
     const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0xff]);
     writeFileSync(join(testDirectory, 'message.png'), bytes);

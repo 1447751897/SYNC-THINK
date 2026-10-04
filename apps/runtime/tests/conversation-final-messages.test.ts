@@ -89,7 +89,7 @@ describe('durable final message writes', () => {
     });
     const conversation = conversations.create({
       id: 'conv-final' as never,
-      target: { track: 'model', modelId: 'model-final' as never },
+      target: { track: 'model', modelId: 'fake-mini' as never },
     });
     conversations.bindTask(conversation.id, task.taskId);
     seed.raw.close();

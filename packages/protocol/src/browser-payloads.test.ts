@@ -4,6 +4,7 @@ import {
   tryParseCreateBrowserProfilePayload,
   tryParseExecuteBrowserWorkflowPayload,
   tryParseStartBrowserRecordingPayload,
+  tryParseUpdateBrowserWorkflowSchedulePayload,
 } from './browser-payloads.js';
 
 describe('shared browser payload parsing', () => {
@@ -45,4 +46,24 @@ describe('shared browser payload parsing', () => {
       }),
     ).toBeUndefined();
   });
+});
+
+it('accepts bounded non-sensitive workflow schedule parameters and preserves revision', () => {
+  const payload = {
+    taskId: 'flow-1',
+    enabled: true,
+    intervalMinutes: 30,
+    expectedRevision: 2,
+    variables: { keyword: '裤子' },
+  };
+  expect(tryParseUpdateBrowserWorkflowSchedulePayload(payload)).toEqual(payload);
+  for (const variables of [
+    { password: 'credential' },
+    { cookie: 'session' },
+    { token: 'secret' },
+    { keyword: 42 },
+    { keyword: 'x'.repeat(4001) },
+    Object.fromEntries(Array.from({ length: 51 }, (_, i) => ['k' + i, 'value'])),
+  ])
+    expect(tryParseUpdateBrowserWorkflowSchedulePayload({ ...payload, variables })).toBeUndefined();
 });

@@ -1,4 +1,5 @@
 /** Scheduled tasks: calendar projections, workspace filters, editor and execution history. */
+import './TaskExperience.css';
 import * as Dialog from '@radix-ui/react-dialog';
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -30,13 +31,23 @@ import type { WorkspaceSummary, SkillVersionSummary } from '@sync-think/protocol
 import type { ModelOption } from './NewConversationDialog.js';
 import { AgentAvatarView } from './AgentAvatarView.js';
 import { isTaskTime, TaskTemporalPicker, TaskTimeField } from './TaskTemporalPicker.js';
-import { TaskSheet } from './TaskSheet.js';
+import { TaskSheet, useTaskSheetPortalContainer } from './TaskSheet.js';
 import { TaskCalendar } from './TaskCalendar.js';
 import { TaskScopePicker } from './TaskScopePicker.js';
+import { TaskConversationPicker } from './TaskConversationPicker.js';
 import { WeeklyRuleEditor } from './WeeklyRuleEditor.js';
 import { dateString, parseWeeklyRule, weeklyRuleSummary } from '@sync-think/shared/task-schedule';
 import type { TaskRuleWeekly } from '@sync-think/shared';
 import { localDateTimeInput } from './scheduled-calendar.js';
+import { AutomationCenter, AutomationHandoffs, type AutomationFilter } from './AutomationCenter.js';
+import {
+  AutomationBindings,
+  automationFormError,
+  automationIssues,
+  useAutomationResources,
+  type AutomationResources,
+  type AutomationBinding,
+} from './AutomationBindings.js';
 
 function bridge() {
   return window.syncThink?.runtime;
@@ -75,6 +86,15 @@ const TIME_ZONES = [
   'Pacific/Auckland',
 ];
 
+const RUN_RESULT_LABELS = {
+  success: '成功',
+  failed: '失败',
+  skipped: '已跳过',
+  cancelled: '已取消',
+  waiting_input: '等待操作',
+  blocked: '配置阻塞',
+  reconciling: '交付待核对',
+} as const;
 const HISTORY_LIMIT = 20;
 type StatusKey = 'enabled' | 'disabled' | 'last-fail';
 
@@ -107,6 +127,8 @@ function ruleSummary(rule: TaskRule): string {
 }
 
 export interface TaskPanelProps {
+  /** Optional showcase variant; scheduled tasks always enter the existing calendar by default. */
+  initialView?: 'calendar' | 'center';
   agents: readonly GlobalAgent[];
   models: readonly ModelOption[];
   teams: readonly Team[];
@@ -117,6 +139,7 @@ export interface TaskPanelProps {
 }
 
 export function TaskPanel({
+  initialView = 'calendar',
   agents,
   models,
   teams,
@@ -126,6 +149,24 @@ export function TaskPanel({
   onNotify,
 }: TaskPanelProps) {
   const [tasks, setTasks] = useState<ScheduledTask[]>([]);
+  const [view, setView] = useState<'center' | 'calendar'>(initialView);
+  const [automationFilter, setAutomationFilter] = useState<AutomationFilter>('all');
+  const [historyRevision, setHistoryRevision] = useState(0);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const { resources, reload: reloadResources } = useAutomationResources();
+  const refreshSequence = useRef({ value: 0 });
+  const executorReady = (task: ScheduledTask): boolean => {
+    const target = task.target;
+    return target.kind === 'model'
+      ? models.some((model) => model.modelId === target.modelId)
+      : target.kind === 'agent'
+        ? agents.some(
+            (agent) => agent.id === target.agentId && !agent.archived && agent.enabled !== false,
+          )
+        : teams.some((team) => team.id === target.teamId && team.members.length > 0);
+  };
+  const workspaceReady = (task: ScheduledTask) =>
+    !task.workspaceId || workspaces.some((workspace) => workspace.workspaceId === task.workspaceId);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState<ScheduledTask | 'new' | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -141,7 +182,9 @@ export function TaskPanel({
   const [historyTask, setHistoryTask] = useState<ScheduledTask | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
 
-  const refresh = async () => {
+  const refresh = async (showLoading = false) => {
+    const sequence = ++refreshSequence.current.value;
+    if (showLoading) setLoading(true);
     const api = bridge();
     if (!api?.listScheduledTasks) {
       setLoading(false);
@@ -149,38 +192,66 @@ export function TaskPanel({
       return;
     }
     try {
-      const res = await api.listScheduledTasks({});
+      const res = await api.listScheduledTasks({ includeDisabled: true });
+      if (sequence !== refreshSequence.current.value) return;
       setTasks(res.tasks);
       setLoadError(null);
     } catch (error) {
+      if (sequence !== refreshSequence.current.value) return;
       setLoadError(error instanceof Error ? error.message : String(error));
       onNotify?.(
         'error',
         `加载任务失败: ${error instanceof Error ? error.message : String(error)}`,
       );
     } finally {
-      setLoading(false);
+      if (sequence === refreshSequence.current.value) setLoading(false);
     }
   };
 
   useEffect(() => {
+    const requests = refreshSequence.current;
     void refresh();
     const timer = window.setInterval(() => {
       setNow(Date.now());
       if (!document.hidden) void refresh();
     }, 30_000);
-    return () => window.clearInterval(timer);
+    return () => {
+      window.clearInterval(timer);
+      requests.value++;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const toggleEnabled = async (task: ScheduledTask) => {
     const api = bridge();
-    if (!api?.updateScheduledTask) return;
+    if (busyId) return;
+    if (!api?.updateScheduledTask) {
+      setActionError('任务更新服务待连接');
+      return;
+    }
+    if (!task.enabled) {
+      const issues = automationIssues(task.automation, resources, task.workspaceId);
+      if (!executorReady(task)) issues.push('执行者待配置');
+      if (!workspaceReady(task)) issues.push('工作区待配置');
+      if (
+        resources.loading &&
+        (task.automation?.browser ||
+          task.automation?.requiredMcpServerIds?.length ||
+          task.automation?.delivery)
+      )
+        issues.push('能力配置加载中');
+      if (issues.length) {
+        setActionError(issues.join('；'));
+        return;
+      }
+    }
+    setActionError(null);
     setBusyId(task.id);
     try {
       await api.updateScheduledTask({ taskId: task.id, patch: { enabled: !task.enabled } });
       await refresh();
     } catch (error) {
+      setActionError(`切换失败: ${error instanceof Error ? error.message : String(error)}`);
       onNotify?.('error', `切换失败: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
       setBusyId(null);
@@ -189,17 +260,25 @@ export function TaskPanel({
 
   const triggerNow = async (task: ScheduledTask) => {
     const api = bridge();
-    if (!api?.triggerScheduledTask) return;
+    if (busyId) return;
+    if (!api?.triggerScheduledTask) {
+      setActionError('任务触发服务待连接');
+      return;
+    }
+    setActionError(null);
     setBusyId(task.id);
     try {
       const res = await api.triggerScheduledTask({ taskId: task.id });
       if (!res.fired) {
+        setActionError(`未触发：${res.reason ?? '未知原因'}`);
         onNotify?.('error', `未触发：${res.reason ?? '未知原因'}`);
       } else {
         onNotify?.('info', `已触发「${task.name}」`);
       }
+      setHistoryRevision((value) => value + 1);
       await refresh();
     } catch (error) {
+      setActionError(`触发失败: ${error instanceof Error ? error.message : String(error)}`);
       onNotify?.('error', `触发失败: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
       setBusyId(null);
@@ -208,7 +287,12 @@ export function TaskPanel({
 
   const removeTask = async (task: ScheduledTask) => {
     const api = bridge();
-    if (!api?.deleteScheduledTask) return;
+    if (busyId) return;
+    if (!api?.deleteScheduledTask) {
+      setActionError('任务删除服务待连接');
+      return;
+    }
+    setActionError(null);
     setBusyId(task.id);
     try {
       await api.deleteScheduledTask({ taskId: task.id });
@@ -217,6 +301,7 @@ export function TaskPanel({
       setHistoryTask(null);
       await refresh();
     } catch (error) {
+      setActionError(`删除失败: ${error instanceof Error ? error.message : String(error)}`);
       onNotify?.('error', `删除失败: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
       setBusyId(null);
@@ -354,15 +439,13 @@ export function TaskPanel({
                     <span className="task-panel__lr-dot" data-status={task.lastResult.status} />
                     {task.lastResult.status === 'success'
                       ? '✓'
-                      : task.lastResult.status === 'skipped'
-                        ? '⏭'
-                        : '✗'}{' '}
+                      : task.lastResult.status === 'failed'
+                        ? '✗'
+                        : task.lastResult.status === 'skipped'
+                          ? '⏭'
+                          : '…'}{' '}
                     上次 {formatLocal(task.lastRunAt)}
-                    {task.lastResult.status === 'success'
-                      ? ' · 成功'
-                      : task.lastResult.status === 'skipped'
-                        ? ' · 已跳过'
-                        : ' · 失败'}
+                    {' · ' + RUN_RESULT_LABELS[task.lastResult.status]}
                     {task.lastResult.reason ? ` · ${task.lastResult.reason}` : ''}
                   </button>
                 ) : (
@@ -468,224 +551,320 @@ export function TaskPanel({
       setEditing(selectedTask);
     }
   };
+  const centerTasks = shown.filter(
+    (task) =>
+      automationFilter === 'all' ||
+      (automationFilter === 'browser'
+        ? Boolean(task.automation?.browser)
+        : !task.automation?.browser),
+  );
+  const centerSelected = centerTasks.find((task) => task.id === selectedTaskId) ?? centerTasks[0];
   return (
-    <div className="task-panel task-panel--calendar" data-testid="task-panel">
-      {loadError ? (
-        <div className="task-cal__notice" role="alert">
-          加载失败：{loadError}
-          <button type="button" onClick={() => void refresh()}>
-            重试
-          </button>
-        </div>
-      ) : null}
-      <TaskCalendar
-        tasks={shown}
-        allTasks={tasks}
-        workspaces={workspaces}
-        scopes={scopes}
-        onScopesChange={setScopes}
-        targets={targets}
-        onTargetToggle={(kind) =>
-          setTargets((previous) => {
-            const next = new Set(previous);
-            if (next.has(kind)) next.delete(kind);
-            else next.add(kind);
-            return next;
-          })
-        }
-        statusFilters={(
-          [
-            ['enabled', '启用中'],
-            ['disabled', '已停用'],
-            ['last-fail', '上次失败'],
-          ] as const
-        ).map(([key, label]) => (
-          <button
-            key={key}
-            type="button"
-            className="task-cal__status-filter"
-            aria-pressed={statusSel.has(key)}
-            onClick={() => toggleStatus(key)}
-          >
-            <span>{label}</span>
-            <small>{counts[key === 'last-fail' ? 'lastFail' : key]}</small>
-            <span className="task-cal__status-check">{statusSel.has(key) ? '✓' : ''}</span>
-          </button>
-        ))}
-        activeFilterCount={
-          statusSel.size + (3 - targets.size) + (scopes.includes('all') ? 0 : scopes.length)
-        }
-        onResetFilters={() => {
-          setScopes(['all']);
-          setStatusSel(new Set());
-          setTargets(new Set(['agent', 'model', 'team']));
-        }}
-        onCreateTask={() => {
-          setCreateAt(undefined);
-          setEditing('new');
-        }}
-        loadError={loadError}
-        listContent={renderCards(shown)}
-        loading={loading}
-        now={now}
-        onPick={(task) => {
-          setHistoryTask(null);
-          setSelectedTaskId(task.id);
-        }}
-        onEdit={(task) => {
-          closeDetails();
-          setEditing(task);
-        }}
-        onHistory={(task) => {
-          setSelectedTaskId(null);
-          setHistoryTask(task);
-        }}
-        onRun={(task) => void triggerNow(task)}
-        busyTaskId={busyId}
-        taskContext={(task) => ({
-          target: <TargetLine task={task} agents={agents} models={models} teams={teams} />,
-          rule: ruleSummary(task.rule),
-          workspace: workspaceName(task.workspaceId),
-        })}
-        onCreate={(date) => {
-          setCreateAt(date);
-          setEditing('new');
-        }}
-        onRefresh={() => void refresh()}
-      />
-      {selectedTask && !editing ? (
-        <TaskSheet
-          title="任务详情"
-          description="查看计划、管理执行与运行记录"
-          onClose={closeDetails}
-          footer={
-            <>
-              <button
-                type="button"
-                className="task-sheet__button"
-                title="编辑"
-                onClick={editSelected}
-              >
-                <Pencil size={14} />
-                编辑任务
-              </button>
-              <button
-                type="button"
-                className="task-sheet__button is-primary"
-                disabled={busyId === selectedTask.id}
-                onClick={() => void triggerNow(selectedTask)}
-              >
-                <Play size={14} />
-                立即执行
-              </button>
-            </>
-          }
-        >
-          <div className="task-sheet__tabs" aria-label="任务信息">
-            <button
-              type="button"
-              aria-pressed={!historyTask}
-              onClick={() => {
-                setSelectedTaskId(selectedTask.id);
-                setHistoryTask(null);
-              }}
-            >
-              任务详情
-            </button>
-            <button
-              type="button"
-              aria-pressed={Boolean(historyTask)}
-              onClick={() => setHistoryTask(selectedTask)}
-            >
-              运行记录
-            </button>
-          </div>
-          {historyTask ? (
-            <HistoryPanel
-              key={selectedTask.id}
-              task={selectedTask}
-              onClose={closeDetails}
-              onOpenConversation={onOpenConversation}
+    <div
+      className={`task-panel task-panel--${view === 'center' ? 'automation' : 'calendar'}`}
+      data-testid="task-panel"
+      data-workbench-page="tasks"
+    >
+      {view === 'center' ? (
+        <AutomationCenter
+          tasks={centerTasks}
+          totalCount={tasks.length}
+          selected={centerSelected}
+          filter={automationFilter}
+          onFilter={(filter) => {
+            setAutomationFilter(filter);
+            setActionError(null);
+          }}
+          onSelect={(id) => {
+            setSelectedTaskId(id);
+            setActionError(null);
+          }}
+          loading={loading}
+          error={loadError}
+          actionError={actionError}
+          busy={Boolean(busyId)}
+          resources={resources}
+          executor={(task) => (
+            <TargetLine task={task} agents={agents} models={models} teams={teams} />
+          )}
+          executorReady={executorReady}
+          workspaceName={workspaceName}
+          workspaceReady={workspaceReady}
+          ruleSummary={ruleSummary}
+          formatTime={formatLocal}
+          historyRevision={historyRevision}
+          onCreate={() => {
+            setCreateAt(undefined);
+            setEditing('new');
+          }}
+          onCalendar={() => {
+            closeDetails();
+            setView('calendar');
+          }}
+          onRefresh={() => {
+            reloadResources();
+            setHistoryRevision((value) => value + 1);
+            void refresh(true);
+          }}
+          onEdit={(task) => setEditing(task)}
+          onTest={(task) => void triggerNow(task)}
+          onPublish={(task) => void toggleEnabled(task)}
+          onDelete={setDeleting}
+          onOpenConversation={onOpenConversation}
+          onHandoffResolved={() => {
+            setHistoryRevision((value) => value + 1);
+            void refresh();
+          }}
+          scopePicker={
+            <TaskScopePicker
+              workspaces={workspaces}
+              value={scopes[0] ?? 'all'}
+              onChange={(value) => setScopes([value])}
+              selectedScopes={scopes}
+              onSelectedScopesChange={setScopes}
+              tasks={tasks}
             />
-          ) : (
-            <>
-              <div className="task-sheet__status" data-enabled={selectedTask.enabled}>
-                {selectedTask.enabled ? '启用中' : '已停用'}
-              </div>
-              <h3 className="task-sheet__task-name">{selectedTask.name}</h3>
-              <dl className="task-sheet__facts">
-                <div>
-                  <dt>任务归属</dt>
-                  <dd>{workspaceName(selectedTask.workspaceId)}</dd>
-                </div>
-                <div>
-                  <dt>执行者</dt>
-                  <dd>
-                    <TargetLine task={selectedTask} agents={agents} models={models} teams={teams} />
-                  </dd>
-                </div>
-                <div>
-                  <dt>执行计划</dt>
-                  <dd>{ruleSummary(selectedTask.rule)}</dd>
-                </div>
-                <div>
-                  <dt>下次执行</dt>
-                  <dd>{formatLocal(selectedTask.nextRunAt)}</dd>
-                </div>
-                <div>
-                  <dt>任务时区</dt>
-                  <dd>{selectedTask.timeZone}</dd>
-                </div>
-                {selectedTask.skillVersionIds?.length ? (
-                  <div>
-                    <dt>注入 Skill</dt>
-                    <dd>
-                      {selectedTask.skillVersionIds
-                        .map(
-                          (id) => skills.find((skill) => skill.skillVersionId === id)?.name ?? id,
-                        )
-                        .join('、')}
-                    </dd>
-                  </div>
-                ) : null}
-              </dl>
-              <h4 className="task-sheet__label">执行内容</h4>
-              <p className="task-sheet__instruction">{selectedTask.instruction}</p>
-              <div className="task-sheet__actions">
-                <button
-                  type="button"
-                  className="task-sheet__button"
-                  disabled={busyId === selectedTask.id}
-                  onClick={() => void toggleEnabled(selectedTask)}
-                >
-                  {selectedTask.enabled ? <Pause size={14} /> : <Check size={14} />}
-                  {selectedTask.enabled ? '停用任务' : '启用任务'}
-                </button>
-                <button
-                  type="button"
-                  className="task-sheet__button is-danger"
-                  onClick={() => setDeleting(selectedTask)}
-                >
-                  <Trash2 size={14} />
-                  删除
-                </button>
-                {selectedTask.conversationId && onOpenConversation ? (
+          }
+        />
+      ) : (
+        <>
+          {actionError ? (
+            <div className="task-cal__notice" role="alert">
+              {actionError}
+            </div>
+          ) : null}
+          {loadError ? (
+            <div className="task-cal__notice" role="alert">
+              加载失败：{loadError}
+              <button type="button" onClick={() => void refresh()}>
+                重试
+              </button>
+            </div>
+          ) : null}
+          <TaskCalendar
+            tasks={shown}
+            allTasks={tasks}
+            workspaces={workspaces}
+            scopes={scopes}
+            onScopesChange={setScopes}
+            targets={targets}
+            onTargetToggle={(kind) =>
+              setTargets((previous) => {
+                const next = new Set(previous);
+                if (next.has(kind)) next.delete(kind);
+                else next.add(kind);
+                return next;
+              })
+            }
+            statusFilters={(
+              [
+                ['enabled', '启用中'],
+                ['disabled', '已停用'],
+                ['last-fail', '上次失败'],
+              ] as const
+            ).map(([key, label]) => (
+              <button
+                key={key}
+                type="button"
+                className="task-cal__status-filter"
+                aria-pressed={statusSel.has(key)}
+                onClick={() => toggleStatus(key)}
+              >
+                <span>{label}</span>
+                <small>{counts[key === 'last-fail' ? 'lastFail' : key]}</small>
+                <span className="task-cal__status-check">{statusSel.has(key) ? '✓' : ''}</span>
+              </button>
+            ))}
+            activeFilterCount={
+              statusSel.size + (3 - targets.size) + (scopes.includes('all') ? 0 : scopes.length)
+            }
+            onResetFilters={() => {
+              setScopes(['all']);
+              setStatusSel(new Set());
+              setTargets(new Set(['agent', 'model', 'team']));
+            }}
+            onCreateTask={() => {
+              setCreateAt(undefined);
+              setEditing('new');
+            }}
+            loadError={loadError}
+            listContent={renderCards(shown)}
+            loading={loading}
+            now={now}
+            onPick={(task) => {
+              setHistoryTask(null);
+              setSelectedTaskId(task.id);
+            }}
+            onEdit={(task) => {
+              closeDetails();
+              setEditing(task);
+            }}
+            onHistory={(task) => {
+              setSelectedTaskId(null);
+              setHistoryTask(task);
+            }}
+            onRun={(task) => void triggerNow(task)}
+            busyTaskId={busyId}
+            taskContext={(task) => ({
+              target: <TargetLine task={task} agents={agents} models={models} teams={teams} />,
+              rule: ruleSummary(task.rule),
+              workspace: workspaceName(task.workspaceId),
+            })}
+            onCreate={(date) => {
+              setCreateAt(date);
+              setEditing('new');
+            }}
+            onRefresh={() => void refresh()}
+          />
+          {selectedTask && !editing ? (
+            <TaskSheet
+              title="任务详情"
+              description="查看计划、管理执行与运行记录"
+              onClose={closeDetails}
+              footer={
+                <>
                   <button
                     type="button"
                     className="task-sheet__button"
-                    onClick={() => {
-                      closeDetails();
-                      onOpenConversation(selectedTask.conversationId!);
-                    }}
+                    title="编辑"
+                    onClick={editSelected}
                   >
-                    打开任务会话
+                    <Pencil size={14} />
+                    编辑任务
                   </button>
-                ) : null}
+                  <button
+                    type="button"
+                    className="task-sheet__button is-primary"
+                    disabled={busyId === selectedTask.id}
+                    onClick={() => void triggerNow(selectedTask)}
+                  >
+                    <Play size={14} />
+                    立即执行
+                  </button>
+                </>
+              }
+            >
+              <div className="task-sheet__tabs" aria-label="任务信息">
+                <button
+                  type="button"
+                  aria-pressed={!historyTask}
+                  onClick={() => {
+                    setSelectedTaskId(selectedTask.id);
+                    setHistoryTask(null);
+                  }}
+                >
+                  任务详情
+                </button>
+                <button
+                  type="button"
+                  aria-pressed={Boolean(historyTask)}
+                  onClick={() => setHistoryTask(selectedTask)}
+                >
+                  运行记录
+                </button>
               </div>
-            </>
-          )}
-        </TaskSheet>
-      ) : null}
+              <AutomationHandoffs
+                task={selectedTask}
+                revision={historyRevision}
+                onResolved={() => {
+                  setHistoryRevision((value) => value + 1);
+                  void refresh();
+                }}
+              />
+              {historyTask ? (
+                <HistoryPanel
+                  key={selectedTask.id}
+                  task={selectedTask}
+                  onClose={closeDetails}
+                  onOpenConversation={onOpenConversation}
+                />
+              ) : (
+                <>
+                  <div className="task-sheet__status" data-enabled={selectedTask.enabled}>
+                    {selectedTask.enabled ? '启用中' : '已停用'}
+                  </div>
+                  <h3 className="task-sheet__task-name">{selectedTask.name}</h3>
+                  <dl className="task-sheet__facts">
+                    <div>
+                      <dt>任务归属</dt>
+                      <dd>{workspaceName(selectedTask.workspaceId)}</dd>
+                    </div>
+                    <div>
+                      <dt>执行者</dt>
+                      <dd>
+                        <TargetLine
+                          task={selectedTask}
+                          agents={agents}
+                          models={models}
+                          teams={teams}
+                        />
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>执行计划</dt>
+                      <dd>{ruleSummary(selectedTask.rule)}</dd>
+                    </div>
+                    <div>
+                      <dt>下次执行</dt>
+                      <dd>{formatLocal(selectedTask.nextRunAt)}</dd>
+                    </div>
+                    <div>
+                      <dt>任务时区</dt>
+                      <dd>{selectedTask.timeZone}</dd>
+                    </div>
+                    {selectedTask.skillVersionIds?.length ? (
+                      <div>
+                        <dt>注入 Skill</dt>
+                        <dd>
+                          {selectedTask.skillVersionIds
+                            .map(
+                              (id) =>
+                                skills.find((skill) => skill.skillVersionId === id)?.name ?? id,
+                            )
+                            .join('、')}
+                        </dd>
+                      </div>
+                    ) : null}
+                  </dl>
+                  <h4 className="task-sheet__label">执行内容</h4>
+                  <p className="task-sheet__instruction">{selectedTask.instruction}</p>
+                  <div className="task-sheet__actions">
+                    <button
+                      type="button"
+                      className="task-sheet__button"
+                      disabled={busyId === selectedTask.id}
+                      onClick={() => void toggleEnabled(selectedTask)}
+                    >
+                      {selectedTask.enabled ? <Pause size={14} /> : <Check size={14} />}
+                      {selectedTask.enabled ? '停用任务' : '启用任务'}
+                    </button>
+                    <button
+                      type="button"
+                      className="task-sheet__button is-danger"
+                      onClick={() => setDeleting(selectedTask)}
+                    >
+                      <Trash2 size={14} />
+                      删除
+                    </button>
+                    {selectedTask.conversationId && onOpenConversation ? (
+                      <button
+                        type="button"
+                        className="task-sheet__button"
+                        onClick={() => {
+                          closeDetails();
+                          onOpenConversation(selectedTask.conversationId!);
+                        }}
+                      >
+                        打开任务会话
+                      </button>
+                    ) : null}
+                  </div>
+                </>
+              )}
+            </TaskSheet>
+          ) : null}
+        </>
+      )}
       {editing ? (
         <TaskEditor
           key={editing === 'new' ? 'new' : editing.id}
@@ -701,8 +880,11 @@ export function TaskPanel({
           teams={teams}
           workspaces={workspaces}
           skills={skills}
+          resources={resources}
+          onReloadResources={reloadResources}
           onClose={() => setEditing(null)}
-          onSaved={() => {
+          onSaved={(savedTask) => {
+            setSelectedTaskId(savedTask.id);
             setEditing(null);
             void refresh();
           }}
@@ -880,16 +1062,16 @@ function HistoryPanel({
           entries.map((entry) => (
             <div key={entry.id} className="task-hist__row" data-status={entry.status}>
               <span className={`task-hist__status is-${entry.status}`}>
-                {entry.status === 'success' ? '成功' : entry.status === 'failed' ? '失败' : '跳过'}
+                {RUN_RESULT_LABELS[entry.status]}
               </span>
               <span className="task-hist__time">{formatLocal(entry.firedAt)}</span>
-              {entry.summary ? (
-                <span className="task-hist__summary">{entry.summary}</span>
-              ) : entry.reason ? (
+              {entry.summary ? <span className="task-hist__summary">{entry.summary}</span> : null}
+              {entry.reason && entry.reason !== entry.summary ? (
                 <span className="task-hist__reason">{entry.reason}</span>
-              ) : (
+              ) : null}
+              {!entry.summary && !entry.reason ? (
                 <span className="task-hist__summary">—</span>
-              )}
+              ) : null}
             </div>
           ))
         )}
@@ -932,6 +1114,7 @@ function SelectBox({
   children: ReactNode;
   className?: string;
 }) {
+  const portalContainer = useTaskSheetPortalContainer();
   return (
     <DropdownMenu.Root modal={false}>
       <div className={`task-editor__select${className ? ` ${className}` : ''}`}>
@@ -948,7 +1131,7 @@ function SelectBox({
             <ChevronDown size={14} />
           </button>
         </DropdownMenu.Trigger>
-        <DropdownMenu.Portal>
+        <DropdownMenu.Portal container={portalContainer}>
           <DropdownMenu.Content
             className="task-editor__select-menu task-select-menu"
             align="start"
@@ -1062,6 +1245,8 @@ function TaskEditor({
   teams,
   workspaces,
   skills,
+  resources,
+  onReloadResources,
   onClose,
   onSaved,
 }: {
@@ -1073,9 +1258,15 @@ function TaskEditor({
   teams: readonly Team[];
   workspaces: readonly WorkspaceSummary[];
   skills: readonly SkillVersionSummary[];
+  resources: AutomationResources;
+  onReloadResources(): void;
   onClose(): void;
-  onSaved(): void;
+  onSaved(task: ScheduledTask): void;
 }) {
+  const [step, setStep] = useState<1 | 2 | 3>(1);
+  const [automation, setAutomation] = useState<AutomationBinding | undefined>(
+    task?.automation ?? { executionMode: 'workspace' },
+  );
   const [name, setName] = useState(task?.name ?? '');
   const [instruction, setInstruction] = useState(task?.instruction ?? '');
   const [ownerKind, setOwnerKind] = useState<'global' | 'workspace'>(
@@ -1149,6 +1340,12 @@ function TaskEditor({
   const [skillPickerOpen, setSkillPickerOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const clearExistingConversation = () => {
+    if (automation?.conversation?.mode === 'existing') {
+      setAutomation(current => ({ ...current, conversation: { mode: 'task' } }));
+    }
+  };
 
   const skillRef = useRef<HTMLDivElement>(null);
 
@@ -1278,6 +1475,11 @@ function TaskEditor({
       setError('名称与指令为必填');
       return;
     }
+    const bindingError = automationFormError(automation, resources);
+    if (bindingError) {
+      setError(bindingError);
+      return;
+    }
     const rule = buildRule();
     if (!rule) return;
     if (!targetRef) {
@@ -1291,6 +1493,7 @@ function TaskEditor({
           ? { kind: 'team', teamId: targetRef }
           : { kind: 'model', modelId: targetRef };
     const workspaceIdValue = ownerKind === 'workspace' && workspaceId ? workspaceId : undefined;
+    if (ownerKind === 'workspace' && !workspaceIdValue) { setError('请选择运行工作区'); return; }
     const api = bridge();
     if (!api?.createScheduledTask || !api?.updateScheduledTask) {
       setError('Runtime 未连接');
@@ -1299,8 +1502,9 @@ function TaskEditor({
     setSaving(true);
     setError(null);
     try {
+      let saved: ScheduledTask;
       if (task) {
-        await api.updateScheduledTask({
+        const result = await api.updateScheduledTask({
           taskId: task.id,
           patch: {
             name: name.trim(),
@@ -1310,11 +1514,15 @@ function TaskEditor({
             timeZone,
             workspaceId: workspaceIdValue ?? null,
             skillVersionIds: selectedSkills.length > 0 ? selectedSkills : null,
+            automation: automation ?? {},
           },
         });
+        saved = result.task;
       } else {
-        await api.createScheduledTask({
+        const result = await api.createScheduledTask({
           name: name.trim(),
+          enabled: false,
+          ...(automation ? { automation } : {}),
           instruction: instruction.trim(),
           target,
           rule,
@@ -1322,8 +1530,9 @@ function TaskEditor({
           ...(workspaceIdValue ? { workspaceId: workspaceIdValue } : {}),
           ...(selectedSkills.length > 0 ? { skillVersionIds: selectedSkills } : {}),
         });
+        saved = result.task;
       }
-      onSaved();
+      onSaved(saved);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
       setSaving(false);
@@ -1335,14 +1544,18 @@ function TaskEditor({
   return (
     <TaskSheet
       title={task ? '编辑任务' : '新建任务'}
-      description="配置任务内容与执行计划"
+      description="目标决定工作；浏览器、工具与交付按需组合。"
       onClose={onClose}
       busy={saving}
       testId="task-editor"
       footer={
         <>
           <span className="task-sheet__foot-hint">
-            {task?.enabled === false ? '保存后保持停用' : '保存后按计划执行'}
+            {!task
+              ? '保存为草稿，不自动执行；测试后发布'
+              : task.enabled === false
+                ? '保存后保持停用'
+                : '保存后按计划执行'}
           </span>
           <div className="task-sheet__actions">
             <button
@@ -1353,9 +1566,29 @@ function TaskEditor({
             >
               取消
             </button>
+            {step > 1 && (
+              <button
+                type="button"
+                className="task-sheet__button"
+                disabled={saving}
+                onClick={() => setStep(step === 3 ? 2 : 1)}
+              >
+                上一步
+              </button>
+            )}
+            {step < 3 && (
+              <button
+                type="button"
+                className="task-sheet__button is-primary"
+                disabled={saving}
+                onClick={() => setStep(step === 1 ? 2 : 3)}
+              >
+                下一步
+              </button>
+            )}
             <button
               type="button"
-              className="task-sheet__button is-primary"
+              className={step === 3 ? 'task-sheet__button is-primary' : 'task-sheet__button'}
               data-testid="task-save"
               disabled={saving}
               onClick={() => void save()}
@@ -1367,346 +1600,386 @@ function TaskEditor({
         </>
       }
     >
-      <div className="task-editor__body">
-        <section className="task-editor__section">
-          <div className="task-editor__section-body">
-            <label className="task-editor__field">
-              <span>任务名称</span>
-              <input
-                value={name}
-                placeholder="如：每日代码巡检"
-                onChange={(e) => setName(e.target.value)}
-              />
-            </label>
-            <label className="task-editor__field">
-              <span>执行内容</span>
-              <textarea
-                rows={3}
-                value={instruction}
-                placeholder="如：检查仓库中未提交的改动，总结风险并输出报告"
-                onChange={(e) => setInstruction(e.target.value)}
-              />
-            </label>
-            <div className="task-editor__columns">
-              <div className="task-editor__field">
-                <span>任务归属</span>
-                <TaskScopePicker
-                  value={ownerKind === 'global' ? 'global' : workspaceId}
-                  label="任务归属"
-                  allowAll={false}
-                  workspaces={workspaces}
-                  tasks={task ? [task] : []}
-                  onChange={(value) => {
-                    setOwnerKind(value === 'global' ? 'global' : 'workspace');
-                    if (value !== 'global') setWorkspaceId(value);
-                  }}
+      <div className="task-editor__body task-editor__body--unified" data-step={step}>
+        <nav className="task-steps" aria-label="任务配置步骤">
+          {(['目标与执行', '能力与交付', '验收与权限'] as const).map((label, index) => (
+            <button
+              type="button"
+              key={label}
+              aria-current={step === index + 1 ? 'step' : undefined}
+              disabled={saving}
+              onClick={() => setStep((index + 1) as 1 | 2 | 3)}
+            >
+              <span>{index + 1}</span>
+              {label}
+            </button>
+          ))}
+        </nav>
+        <div className="task-editor__step" hidden={step !== 1}>
+          <section className="task-editor__section">
+            <div className="task-editor__section-body">
+              <label className="task-editor__field">
+                <span>任务名称</span>
+                <input
+                  value={name}
+                  placeholder="如：每日代码巡检"
+                  onChange={(e) => setName(e.target.value)}
                 />
-              </div>
+              </label>
+              <label className="task-editor__field">
+                <span>执行内容</span>
+                <textarea
+                  rows={3}
+                  value={instruction}
+                  placeholder="如：检查仓库中未提交的改动，总结风险并输出报告"
+                  onChange={(e) => setInstruction(e.target.value)}
+                />
+              </label>
               <div className="task-editor__field">
-                <span>执行者类型</span>
-                <SelectBox
-                  value={{ agent: '智能体', model: '直接模型', team: '小队' }[targetKind]}
-                  selectedValue={targetKind}
-                  leading={<ExecutorTypeIcon kind={targetKind} />}
-                  placeholder="执行者类型"
-                >
-                  {(['agent', 'model', 'team'] as const).map((kind) => (
-                    <SelectOption
-                      key={kind}
-                      value={kind}
-                      label={{ agent: '智能体', model: '直接模型', team: '小队' }[kind]}
-                      leading={<ExecutorTypeIcon kind={kind} />}
-                      onPick={() => {
-                        setTargetKind(kind);
-                        setTargetRef('');
-                        setProviderRef('');
-                      }}
-                    />
-                  ))}
-                </SelectBox>
-              </div>
-            </div>
-            {targetKind === 'agent' || targetKind === 'team' ? (
-              <div className="task-editor__field">
-                <span>执行者</span>
-                <SelectBox
-                  value={selectedExecutor?.name ?? ''}
-                  selectedValue={targetRef}
-                  leading={
-                    selectedExecutor ? (
-                      <AgentAvatarView
-                        name={selectedExecutor.name}
-                        avatar={selectedExecutor.avatar}
-                        size={22}
-                      />
-                    ) : undefined
+                <span>运行会话</span>
+                <TaskConversationPicker value={automation?.conversation} workspaceId={ownerKind === 'workspace' ? workspaceId : undefined} workspaces={workspaces} onChange={(conversation,selected)=>{
+                  setAutomation(current=>({...current,conversation}));
+                  if (selected) {
+                    setTargetKind(selected.track); setTargetRef(selected.targetRef);
+                    if(selected.track==='model')setProviderRef(models.find(model=>model.modelId===selected.targetRef)?.providerName??'');
+                    setOwnerKind(selected.workspaceId?'workspace':'global');
+                    if(selected.workspaceId)setWorkspaceId(selected.workspaceId);
                   }
-                  placeholder="选择执行者"
-                >
-                  {executorOptions.map((item) => (
-                    <SelectOption
-                      key={item.id}
-                      value={item.id}
-                      label={item.name}
-                      leading={<AgentAvatarView name={item.name} avatar={item.avatar} size={22} />}
-                      onPick={setTargetRef}
-                    />
-                  ))}
-                  {executorOptions.length === 0 ? (
-                    <div className="task-editor__zone-empty">
-                      暂无可用{targetKind === 'agent' ? '智能体' : '小队'}
-                    </div>
-                  ) : null}
-                </SelectBox>
+                }}/>
               </div>
-            ) : (
               <div className="task-editor__columns">
                 <div className="task-editor__field">
-                  <span>供应商</span>
+                  <span>运行工作区</span>
+                  <TaskScopePicker
+                    value={ownerKind === 'global' ? 'global' : workspaceId}
+                    label="任务归属"
+                    allowAll={false}
+                    workspaces={workspaces}
+                    tasks={task ? [task] : []}
+                    onChange={(value) => {
+                      setOwnerKind(value === 'global' ? 'global' : 'workspace');
+                      if (value !== 'global') setWorkspaceId(value);
+                      if (value !== (ownerKind === 'global' ? 'global' : workspaceId) && automation?.conversation?.mode === 'existing') setAutomation(current=>({...current,conversation:{mode:'task'}}));
+                    }}
+                  />
+                </div>
+                <div className="task-editor__field">
+                  <span>执行者类型</span>
                   <SelectBox
-                    value={providerRef}
-                    selectedValue={providerRef}
-                    placeholder="选择供应商"
+                    value={{ agent: '智能体', model: '直接模型', team: '小队' }[targetKind]}
+                    selectedValue={targetKind}
+                    leading={<ExecutorTypeIcon kind={targetKind} />}
+                    placeholder="执行者类型"
                   >
-                    {providerOptions.map((provider) => (
+                    {(['agent', 'model', 'team'] as const).map((kind) => (
                       <SelectOption
-                        key={provider}
-                        value={provider}
-                        label={provider}
-                        onPick={(value) => {
-                          setProviderRef(value);
-                          setTargetRef(
-                            models.find((model) => model.providerName === value)?.modelId ?? '',
-                          );
+                        key={kind}
+                        value={kind}
+                        label={{ agent: '智能体', model: '直接模型', team: '小队' }[kind]}
+                        leading={<ExecutorTypeIcon kind={kind} />}
+                        onPick={() => {
+                          if (kind === targetKind) return;
+                          setTargetKind(kind);
+                          setTargetRef('');
+                          setProviderRef('');
+                          clearExistingConversation();
                         }}
                       />
                     ))}
                   </SelectBox>
                 </div>
+              </div>
+              {targetKind === 'agent' || targetKind === 'team' ? (
                 <div className="task-editor__field">
-                  <span>模型</span>
+                  <span>执行者</span>
                   <SelectBox
-                    value={models.find((model) => model.modelId === targetRef)?.displayName ?? ''}
+                    value={selectedExecutor?.name ?? ''}
                     selectedValue={targetRef}
-                    placeholder="选择模型"
+                    leading={
+                      selectedExecutor ? (
+                        <AgentAvatarView
+                          name={selectedExecutor.name}
+                          avatar={selectedExecutor.avatar}
+                          size={22}
+                        />
+                      ) : undefined
+                    }
+                    placeholder="选择执行者"
                   >
-                    {providerModels.map((model) => (
+                    {executorOptions.map((item) => (
                       <SelectOption
-                        key={model.modelId}
-                        value={model.modelId}
-                        label={model.displayName}
-                        onPick={setTargetRef}
+                        key={item.id}
+                        value={item.id}
+                        label={item.name}
+                        leading={
+                          <AgentAvatarView name={item.name} avatar={item.avatar} size={22} />
+                        }
+                        onPick={(value) => { if (value !== targetRef) clearExistingConversation(); setTargetRef(value); }}
                       />
                     ))}
+                    {executorOptions.length === 0 ? (
+                      <div className="task-editor__zone-empty">
+                        暂无可用{targetKind === 'agent' ? '智能体' : '小队'}
+                      </div>
+                    ) : null}
                   </SelectBox>
                 </div>
-              </div>
-            )}
-          </div>
-        </section>
-        <section className="task-editor__section">
-          <h3 className="task-editor__section-title">
-            执行计划 <span>{timeZone}</span>
-          </h3>
-          <div className="task-editor__section-body">
-            <div className="task-editor__field">
-              <span>重复方式</span>
-              <SelectBox
-                value={
-                  { at: '单次', weekly: '每周', every: '固定间隔', random: '随机', cron: 'Cron' }[
-                    ruleKind
-                  ]
-                }
-                selectedValue={ruleKind}
-                placeholder="重复方式"
-              >
-                {(['at', 'weekly', 'every', 'random', 'cron'] as const).map((kind) => (
-                  <SelectOption
-                    key={kind}
-                    value={kind}
-                    label={
-                      {
-                        at: '单次',
-                        weekly: '每周',
-                        every: '固定间隔',
-                        random: '随机',
-                        cron: 'Cron',
-                      }[kind]
-                    }
-                    onPick={() => setRuleKind(kind)}
-                  />
-                ))}
-              </SelectBox>
-            </div>
-            {ruleKind === 'at' ? (
-              <div className="task-editor__stack">
+              ) : (
                 <div className="task-editor__columns">
-                  <label className="task-editor__field">
-                    <span>执行日期（本地）</span>
-                    <div className="task-temporal-field">
-                      <input
-                        aria-label="单次执行日期"
-                        placeholder="YYYY-MM-DD"
-                        value={atTime.slice(0, 10)}
-                        onChange={(e) =>
-                          setAtTime(`${e.target.value}T${atTime.split('T')[1] ?? '09:00'}`)
-                        }
-                      />
-                      <TaskTemporalPicker
-                        type="date"
-                        value={atTime.slice(0, 10)}
-                        onChange={(date) => setAtTime(`${date}T${atTime.split('T')[1] ?? '09:00'}`)}
-                      />
-                    </div>
-                  </label>
-                  <label className="task-editor__field">
-                    <span>执行时间（本地）</span>
-                    <div className="task-temporal-field">
-                      <input
-                        aria-label="单次执行时间"
-                        placeholder="HH:mm"
-                        inputMode="numeric"
-                        value={atTime.split('T')[1] ?? ''}
-                        onChange={(e) => setAtTime(`${atTime.slice(0, 10)}T${e.target.value}`)}
-                      />
-                      <TaskTemporalPicker
-                        type="time"
-                        value={atTime.split('T')[1] ?? '09:00'}
-                        onChange={(time) => setAtTime(`${atTime.slice(0, 10)}T${time}`)}
-                      />
-                    </div>
-                  </label>
-                </div>
-                <div className="task-editor__hint-row">到点执行一次后任务自动完成</div>
-              </div>
-            ) : null}
-
-            {ruleKind === 'weekly' ? (
-              <WeeklyRuleEditor rule={weeklyRule} timeZone={timeZone} onChange={setWeeklyRule} />
-            ) : null}
-
-            {ruleKind === 'every' ? (
-              <div className="task-editor__stack">
-                <div className="task-editor__row">
-                  <span className="task-editor__field-label">每</span>
-                  <input
-                    className="task-editor__num"
-                    type="number"
-                    min={5}
-                    value={everyMinutes}
-                    onChange={(e) => setEveryMinutes(e.target.value)}
-                  />
-                  <span className="task-editor__field-label">分钟执行一次</span>
-                </div>
-                <div className="task-editor__window-row">
-                  <span className="task-editor__field-label">开始</span>
-                  <TaskTimeField
-                    label="窗口开始时间"
-                    value={windowStart}
-                    disabled={windowUnlimited}
-                    onChange={setWindowStart}
-                  />
-                  <span className="task-editor__field-label">结束</span>
-                  <TaskTimeField
-                    label="窗口结束时间"
-                    value={windowEnd}
-                    disabled={windowUnlimited}
-                    onChange={setWindowEnd}
-                  />
-                  <label className="task-editor__switch-wrap">
-                    <input
-                      type="checkbox"
-                      className="task-editor__switch-input"
-                      checked={windowUnlimited}
-                      onChange={(e) => setWindowUnlimited(e.target.checked)}
-                    />
-                    <span
-                      className="task-editor__switch"
-                      data-on={windowUnlimited ? '1' : '0'}
-                      aria-hidden="true"
-                    />
-                    <span className="task-editor__field-label">不限（全天）</span>
-                  </label>
-                </div>
-                {!windowUnlimited ? (
-                  <div className="task-editor__hint-row">
-                    仅在该时段内周期触发
-                    {windowIsCrossDay ? (
-                      <span className="task-editor__crossday">
-                        跨天窗口（{windowStart} → {windowEnd}）
-                      </span>
-                    ) : null}
+                  <div className="task-editor__field">
+                    <span>供应商</span>
+                    <SelectBox
+                      value={providerRef}
+                      selectedValue={providerRef}
+                      placeholder="选择供应商"
+                    >
+                      {providerOptions.map((provider) => (
+                        <SelectOption
+                          key={provider}
+                          value={provider}
+                          label={provider}
+                          onPick={(value) => {
+                            if (value === providerRef) return;
+                            clearExistingConversation();
+                            setProviderRef(value);
+                            setTargetRef(
+                              models.find((model) => model.providerName === value)?.modelId ?? '',
+                            );
+                          }}
+                        />
+                      ))}
+                    </SelectBox>
                   </div>
-                ) : (
-                  <div className="task-editor__hint-row">不限时段，全天按间隔执行</div>
-                )}
-              </div>
-            ) : null}
-
-            {ruleKind === 'random' ? (
-              <div className="task-editor__stack">
-                <div className="task-editor__row">
-                  <span className="task-editor__field-label">每天</span>
-                  <TaskTimeField
-                    label="窗口开始时间"
-                    value={randomStart}
-                    onChange={setRandomStart}
-                  />
-                  <span className="task-editor__field-label">–</span>
-                  <TaskTimeField label="窗口结束时间" value={randomEnd} onChange={setRandomEnd} />
-                  <span className="task-editor__field-label">时段内</span>
+                  <div className="task-editor__field">
+                    <span>模型</span>
+                    <SelectBox
+                      value={models.find((model) => model.modelId === targetRef)?.displayName ?? ''}
+                      selectedValue={targetRef}
+                      placeholder="选择模型"
+                    >
+                      {providerModels.map((model) => (
+                        <SelectOption
+                          key={model.modelId}
+                          value={model.modelId}
+                          label={model.displayName}
+                          onPick={(value) => { if (value !== targetRef) clearExistingConversation(); setTargetRef(value); }}
+                        />
+                      ))}
+                    </SelectBox>
+                  </div>
                 </div>
-                <div className="task-editor__row">
-                  <span className="task-editor__field-label">最少触发</span>
-                  <input
-                    className="task-editor__num"
-                    type="number"
-                    min={1}
-                    value={randomMin}
-                    onChange={(e) => setRandomMin(e.target.value)}
-                  />
-                  <span className="task-editor__field-label">次</span>
-                  <span className="task-editor__field-label" style={{ marginLeft: 6 }}>
-                    最多
-                  </span>
-                  <input
-                    className="task-editor__num"
-                    type="number"
-                    min={1}
-                    value={randomMax}
-                    onChange={(e) => setRandomMax(e.target.value)}
-                  />
-                  <span className="task-editor__field-label">次</span>
-                </div>
-                <div className="task-editor__hint-row">窗口内随机触发 最少–最多 次</div>
-              </div>
-            ) : null}
-
-            {ruleKind === 'cron' ? (
-              <div className="task-editor__stack">
-                <div className="task-editor__row">
-                  <span className="task-editor__field-label">表达式</span>
-                  <input
-                    className="task-editor__input-grow"
-                    value={cronExpr}
-                    placeholder="如：0 9 * * *"
-                    onChange={(e) => setCronExpr(e.target.value)}
-                  />
-                </div>
-                <div className="task-editor__presets">
-                  {(['*/30 * * * *', '0 9 * * 1-5', '0 8 * * *'] as const).map((expr) => (
-                    <button key={expr} type="button" onClick={() => setCronExpr(expr)}>
-                      {expr}
-                    </button>
+              )}
+            </div>
+          </section>
+          <section className="task-editor__section">
+            <h3 className="task-editor__section-title">
+              执行计划 <span>{timeZone}</span>
+            </h3>
+            <div className="task-editor__section-body">
+              <div className="task-editor__field">
+                <span>重复方式</span>
+                <SelectBox
+                  value={
+                    { at: '单次', weekly: '每周', every: '固定间隔', random: '随机', cron: 'Cron' }[
+                      ruleKind
+                    ]
+                  }
+                  selectedValue={ruleKind}
+                  placeholder="重复方式"
+                >
+                  {(['at', 'weekly', 'every', 'random', 'cron'] as const).map((kind) => (
+                    <SelectOption
+                      key={kind}
+                      value={kind}
+                      label={
+                        {
+                          at: '单次',
+                          weekly: '每周',
+                          every: '固定间隔',
+                          random: '随机',
+                          cron: 'Cron',
+                        }[kind]
+                      }
+                      onPick={() => setRuleKind(kind)}
+                    />
                   ))}
-                </div>
+                </SelectBox>
               </div>
-            ) : null}
-          </div>
-        </section>
+              {ruleKind === 'at' ? (
+                <div className="task-editor__stack">
+                  <div className="task-editor__columns">
+                    <label className="task-editor__field">
+                      <span>执行日期（本地）</span>
+                      <div className="task-temporal-field">
+                        <input
+                          aria-label="单次执行日期"
+                          placeholder="YYYY-MM-DD"
+                          value={atTime.slice(0, 10)}
+                          onChange={(e) =>
+                            setAtTime(`${e.target.value}T${atTime.split('T')[1] ?? '09:00'}`)
+                          }
+                        />
+                        <TaskTemporalPicker
+                          type="date"
+                          value={atTime.slice(0, 10)}
+                          onChange={(date) =>
+                            setAtTime(`${date}T${atTime.split('T')[1] ?? '09:00'}`)
+                          }
+                        />
+                      </div>
+                    </label>
+                    <label className="task-editor__field">
+                      <span>执行时间（本地）</span>
+                      <div className="task-temporal-field">
+                        <input
+                          aria-label="单次执行时间"
+                          placeholder="HH:mm"
+                          inputMode="numeric"
+                          value={atTime.split('T')[1] ?? ''}
+                          onChange={(e) => setAtTime(`${atTime.slice(0, 10)}T${e.target.value}`)}
+                        />
+                        <TaskTemporalPicker
+                          type="time"
+                          value={atTime.split('T')[1] ?? '09:00'}
+                          onChange={(time) => setAtTime(`${atTime.slice(0, 10)}T${time}`)}
+                        />
+                      </div>
+                    </label>
+                  </div>
+                  <div className="task-editor__hint-row">到点执行一次后任务自动完成</div>
+                </div>
+              ) : null}
 
-        <details className="task-editor__advanced">
-          <summary>更多设置 · Skill 与时区</summary>
+              {ruleKind === 'weekly' ? (
+                <WeeklyRuleEditor rule={weeklyRule} timeZone={timeZone} onChange={setWeeklyRule} />
+              ) : null}
+
+              {ruleKind === 'every' ? (
+                <div className="task-editor__stack">
+                  <div className="task-editor__row">
+                    <span className="task-editor__field-label">每</span>
+                    <input
+                      className="task-editor__num"
+                      type="number"
+                      min={5}
+                      value={everyMinutes}
+                      onChange={(e) => setEveryMinutes(e.target.value)}
+                    />
+                    <span className="task-editor__field-label">分钟执行一次</span>
+                  </div>
+                  <div className="task-editor__window-row">
+                    <span className="task-editor__field-label">开始</span>
+                    <TaskTimeField
+                      label="窗口开始时间"
+                      value={windowStart}
+                      disabled={windowUnlimited}
+                      onChange={setWindowStart}
+                    />
+                    <span className="task-editor__field-label">结束</span>
+                    <TaskTimeField
+                      label="窗口结束时间"
+                      value={windowEnd}
+                      disabled={windowUnlimited}
+                      onChange={setWindowEnd}
+                    />
+                    <label className="task-editor__switch-wrap">
+                      <input
+                        type="checkbox"
+                        className="task-editor__switch-input"
+                        checked={windowUnlimited}
+                        onChange={(e) => setWindowUnlimited(e.target.checked)}
+                      />
+                      <span
+                        className="task-editor__switch"
+                        data-on={windowUnlimited ? '1' : '0'}
+                        aria-hidden="true"
+                      />
+                      <span className="task-editor__field-label">不限（全天）</span>
+                    </label>
+                  </div>
+                  {!windowUnlimited ? (
+                    <div className="task-editor__hint-row">
+                      仅在该时段内周期触发
+                      {windowIsCrossDay ? (
+                        <span className="task-editor__crossday">
+                          跨天窗口（{windowStart} → {windowEnd}）
+                        </span>
+                      ) : null}
+                    </div>
+                  ) : (
+                    <div className="task-editor__hint-row">不限时段，全天按间隔执行</div>
+                  )}
+                </div>
+              ) : null}
+
+              {ruleKind === 'random' ? (
+                <div className="task-editor__stack">
+                  <div className="task-editor__row">
+                    <span className="task-editor__field-label">每天</span>
+                    <TaskTimeField
+                      label="窗口开始时间"
+                      value={randomStart}
+                      onChange={setRandomStart}
+                    />
+                    <span className="task-editor__field-label">–</span>
+                    <TaskTimeField label="窗口结束时间" value={randomEnd} onChange={setRandomEnd} />
+                    <span className="task-editor__field-label">时段内</span>
+                  </div>
+                  <div className="task-editor__row">
+                    <span className="task-editor__field-label">最少触发</span>
+                    <input
+                      className="task-editor__num"
+                      type="number"
+                      min={1}
+                      value={randomMin}
+                      onChange={(e) => setRandomMin(e.target.value)}
+                    />
+                    <span className="task-editor__field-label">次</span>
+                    <span className="task-editor__field-label" style={{ marginLeft: 6 }}>
+                      最多
+                    </span>
+                    <input
+                      className="task-editor__num"
+                      type="number"
+                      min={1}
+                      value={randomMax}
+                      onChange={(e) => setRandomMax(e.target.value)}
+                    />
+                    <span className="task-editor__field-label">次</span>
+                  </div>
+                  <div className="task-editor__hint-row">窗口内随机触发 最少–最多 次</div>
+                </div>
+              ) : null}
+
+              {ruleKind === 'cron' ? (
+                <div className="task-editor__stack">
+                  <div className="task-editor__row">
+                    <span className="task-editor__field-label">表达式</span>
+                    <input
+                      className="task-editor__input-grow"
+                      value={cronExpr}
+                      placeholder="如：0 9 * * *"
+                      onChange={(e) => setCronExpr(e.target.value)}
+                    />
+                  </div>
+                  <div className="task-editor__presets">
+                    {(['*/30 * * * *', '0 9 * * 1-5', '0 8 * * *'] as const).map((expr) => (
+                      <button key={expr} type="button" onClick={() => setCronExpr(expr)}>
+                        {expr}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          </section>
+
+          <p className="task-experience-note">
+            不绑定工作区时，会话与产物保存在设置中的「对话与全局任务目录」，每个任务独立隔离。Runtime
+            需保持在线；休眠或退出期间不会自动运行。
+          </p>
+        </div>
+        <div className="task-editor__step" hidden={step !== 2}>
           <section className="task-editor__section">
             <h3 className="task-editor__section-title">注入 Skill</h3>
             <div className="task-editor__section-body">
@@ -1776,7 +2049,95 @@ function TaskEditor({
               <div className="task-editor__hint-row">最多为本任务添加 5 个 Skill</div>
             </div>
           </section>
+        </div>
+        {step === 3 && (
+          <section className="task-review" aria-label="任务配置摘要">
+            <h3>{name || '未命名任务'}</h3>
+            <p>{instruction || '尚未填写目标'}</p>
+            <dl>
+              <div>
+                <dt>执行者</dt>
+                <dd>
+                  {targetKind === 'model'
+                    ? (models.find((model) => model.modelId === targetRef)?.displayName ?? '待选择')
+                    : (selectedExecutor?.name ?? '待选择')}
+                </dd>
+              </div>
+              <div>
+                <dt>执行模型</dt>
+                <dd>{targetKind === 'team' ? '按小队成员的模型配置执行' : (() => {
+                  const id = targetKind === 'model' ? targetRef : agents.find(agent => agent.id === targetRef)?.defaultModelId;
+                  return models.find(model => model.modelId === id)?.displayName ?? id ?? '待选择';
+                })()}</dd>
+              </div>
+              <div>
+                <dt>运行工作区</dt>
+                <dd>
+                  {ownerKind === 'workspace'
+                    ? (workspaces.find((item) => item.workspaceId === workspaceId)?.name ??
+                      '待选择')
+                    : '不绑定工作区 · 独立任务目录'}
+                </dd>
+              </div>
+              <div>
+                <dt>运行会话</dt>
+                <dd>{automation?.conversation?.mode === 'new' ? '每次运行时新建会话' : automation?.conversation?.mode === 'existing' ? '继续已有会话' : '此任务的专属会话'}</dd>
+              </div>
+              <div>
+                <dt>浏览器</dt>
+                <dd>
+                  {automation?.browser
+                    ? (resources.profiles.find(
+                        (profile) => profile.id === automation.browser?.profileId,
+                      )?.name ?? automation.browser.profileId)
+                    : '不使用浏览器'}
+                </dd>
+              </div>
+              <div>
+                <dt>操作流程</dt>
+                <dd>
+                  {automation?.browser?.workflowTaskId
+                    ? (resources.workflows.find(
+                        (flow) => flow.id === automation.browser?.workflowTaskId,
+                      )?.name ?? '待核对')
+                    : '按目标动态执行'}
+                </dd>
+              </div>
+              <div>
+                <dt>计划</dt>
+                <dd>
+                  {
+                    {
+                      at: '执行一次',
+                      weekly: '每周',
+                      every: '固定间隔',
+                      random: '随机时段',
+                      cron: 'Cron',
+                    }[ruleKind]
+                  }{' '}
+                  · {timeZone}
+                </dd>
+              </div>
+            </dl>
+            <p className="task-experience-note">
+              保存新任务为草稿。先按验收说明测试；需要文件或外部交付时，再核对产物及回执。模型结束或流程跑完不代表目标已达成。
+            </p>
+          </section>
+        )}
+        <AutomationBindings
+          page={step === 1 ? 'hidden' : step === 2 ? 'capabilities' : 'review'}
+          value={automation}
+          onChange={(binding) => {
+            setAutomation(binding);
+            setError(null);
+          }}
+          resources={resources}
+          onReload={onReloadResources}
+          workspaceId={ownerKind === 'workspace' ? workspaceId : undefined}
+          disabled={saving}
+        />
 
+        <div className="task-editor__step" hidden={step !== 1}>
           {/* 任务时区 */}
           <section className="task-editor__section">
             <h3 className="task-editor__section-title">任务时区</h3>
@@ -1786,7 +2147,7 @@ function TaskEditor({
               </SelectBox>
             </div>
           </section>
-        </details>
+        </div>
         {error ? (
           <p className="task-editor__error" role="alert">
             {error}

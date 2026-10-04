@@ -492,9 +492,10 @@ export function tryParseUpdateBrowserWorkflowSchedulePayload(
 ): UpdateBrowserWorkflowSchedulePayload | undefined {
   if (
     !isRecord(value) ||
-    !hasOnlyKeys(value, ['taskId', 'enabled', 'intervalMinutes', 'expectedRevision']) ||
+    !hasOnlyKeys(value, ['taskId', 'enabled', 'intervalMinutes', 'expectedRevision', 'variables']) ||
     !validId(value.taskId) ||
     typeof value.enabled !== 'boolean' ||
+    (value.variables !== undefined && (!isRecord(value.variables) || Object.keys(value.variables).length > 50 || Object.entries(value.variables).some(([key, v]) => !key || key.length > 128 || typeof v !== 'string' || v.length > 4000 || /password|cookie|token|secret/i.test(key)))) ||
     !Number.isSafeInteger(value.intervalMinutes) ||
     Number(value.intervalMinutes) < 5 ||
     Number(value.intervalMinutes) > 10_080 ||
@@ -506,6 +507,7 @@ export function tryParseUpdateBrowserWorkflowSchedulePayload(
     taskId: value.taskId.trim(),
     enabled: value.enabled,
     intervalMinutes: Number(value.intervalMinutes),
+    ...(value.variables !== undefined ? { variables: value.variables as Record<string, string> } : {}),
     ...(typeof value.expectedRevision === 'number'
       ? { expectedRevision: value.expectedRevision }
       : {}),

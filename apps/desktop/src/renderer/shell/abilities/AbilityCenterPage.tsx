@@ -1,3 +1,4 @@
+import { WorkbenchPageHeader } from '../WorkbenchPageHeader.js';
 import * as Dialog from '@radix-ui/react-dialog';
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import {
@@ -972,7 +973,7 @@ export function AbilitiesPage(props: AbilitiesPageProps): JSX.Element {
 
   if (section === 'skills') {
     return (
-      <main className="ability-hub" data-testid="abilities-page">
+      <main className="ability-hub" data-workbench-page="abilities" data-testid="abilities-page">
         <NewMaxSkillHub
           marketItems={marketSkills}
           tab={tab === 'market' ? 'market' : 'mine'}
@@ -1130,7 +1131,7 @@ export function AbilitiesPage(props: AbilitiesPageProps): JSX.Element {
   }
 
   return (
-    <main className="ability-hub" data-testid="abilities-page">
+    <main className="ability-hub" data-workbench-page="abilities" data-testid="abilities-page">
       <NewMaxMcpHub
         tab={tab === 'market' ? 'market' : 'mine'}
         query={query}
@@ -1385,7 +1386,10 @@ function NewMaxSkillHub(props: {
 
   return (
     <>
-      <header className="ability-hub__topbar">
+      <WorkbenchPageHeader
+          className="ability-hub__topbar"
+          heading={<>
+
         <div className="ability-hub__title-block">
           <button
             type="button"
@@ -1396,7 +1400,7 @@ function NewMaxSkillHub(props: {
           >
             <ArrowLeft size={17} />
           </button>
-          <h1>Skill 管理</h1>
+          <div><h1>Skill 管理</h1><p>发现、安装与管理智能体能力</p></div>
           <button
             type="button"
             data-testid="abilities-section-mcp"
@@ -1408,7 +1412,10 @@ function NewMaxSkillHub(props: {
             <span>MCP 管理</span>
           </button>
         </div>
-        <div className="ability-hub__actions">
+
+          </>}
+          actions={<>
+<div className="ability-hub__actions">
           <button
             type="button"
             className="ability-hub__activation-action"
@@ -1443,7 +1450,9 @@ function NewMaxSkillHub(props: {
             ) : null}
           </div>
         </div>
-      </header>
+
+          </>}
+        />
 
       <div className="ability-hub__body">
         <section className="ability-hub__controls">
@@ -2002,7 +2011,10 @@ function NewMaxMcpHub(props: {
 
   return (
     <>
-      <header className="ability-hub__topbar">
+      <WorkbenchPageHeader
+          className="ability-hub__topbar"
+          heading={<>
+
         <div className="ability-hub__title-block">
           <button
             type="button"
@@ -2013,7 +2025,7 @@ function NewMaxMcpHub(props: {
           >
             <ArrowLeft size={17} />
           </button>
-          <h1>MCP 管理</h1>
+          <div><h1>MCP 管理</h1><p>连接外部工具与服务，扩展智能体能力</p></div>
           <button
             type="button"
             className="ability-hub__sibling-link"
@@ -2024,7 +2036,10 @@ function NewMaxMcpHub(props: {
             <span>Skill 管理</span>
           </button>
         </div>
-        <div className="ability-hub__actions">
+
+          </>}
+          actions={<>
+<div className="ability-hub__actions">
           <button
             type="button"
             data-testid="mcp-register-open"
@@ -2035,7 +2050,9 @@ function NewMaxMcpHub(props: {
             注册 MCP
           </button>
         </div>
-      </header>
+
+          </>}
+        />
 
       <div className="ability-hub__body">
         <section className="ability-hub__controls">

@@ -2,7 +2,7 @@
  * @vitest-environment jsdom
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { BrowserHandoffSummary } from '@sync-think/protocol';
 import type { Conversation, Event } from '@sync-think/shared';
 import { ChatView } from './ChatView.js';
@@ -17,10 +17,12 @@ const runtime = {
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((onResolve) => {
+  let reject!: (cause: unknown) => void;
+  const promise = new Promise<T>((onResolve, onReject) => {
     resolve = onResolve;
+    reject = onReject;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 
 function conversation(): Conversation {
@@ -291,4 +293,56 @@ describe('ChatView durable browser handoff integration', () => {
       screen.getByRole('button', { name: '\u6211\u5df2\u5b8c\u6210\uff0c\u7ee7\u7eed' }),
     ).toHaveProperty('disabled', false);
   });
+});
+
+it('shows the precise private-chat query error and clears it after reconnect success with no waiting handoffs', async () => {
+  runtime.listWaitingBrowserHandoffs.mockRejectedValueOnce(new Error('IPC payload rejected: runId invalid'))
+    .mockResolvedValue({ handoffs: [] });
+  const view = renderChat({ runtimeConnectionRevision: 0 });
+  await screen.findByText('IPC payload rejected: runId invalid');
+  view.rerender(<ChatView conversation={conversation()} modelName="Model A"
+    models={[{ modelId: 'model-a', displayName: 'Model A', providerName: 'Provider' }]}
+    eventHistory={eventHistory} runtimeConnectionRevision={1} onTitleUpdated={vi.fn()} />);
+  await waitFor(() => expect(screen.queryByText('IPC payload rejected: runId invalid')).toBeNull());
+  expect(screen.queryByRole('button', { name: '重试' })).toBeNull();
+});
+
+it('does not expose a group handoff in private chat even when workspace and Task match', async () => {
+  runtime.listWaitingBrowserHandoffs.mockResolvedValue({ handoffs: [handoff(), handoff({
+    handoffId: 'group-handoff', conversationId: 'group-a', requestedOutcome: 'Private chat must not show this group login',
+  })] });
+  renderChat();
+  await screen.findByText('Complete account login');
+  expect(screen.queryByText('Private chat must not show this group login')).toBeNull();
+});
+
+it('an old private-chat decision rejection cannot write an error into the new chat or reload the old Task', async () => {
+  const pending = deferred<unknown>();
+  runtime.continueBrowserHandoff.mockReturnValueOnce(pending.promise);
+  const view = renderChat();
+  fireEvent.click(await screen.findByRole('button', { name: '我已完成，继续' }));
+  const other = { ...conversation(), id: 'conversation-other', taskId: 'task-other', workspaceId: 'workspace-other' } as Conversation;
+  runtime.listWaitingBrowserHandoffs.mockResolvedValue({ handoffs: [handoff({
+    handoffId: 'handoff-other', taskId: 'task-other' as BrowserHandoffSummary['taskId'],
+    workspaceId: 'workspace-other' as BrowserHandoffSummary['workspaceId'], requestedOutcome: 'Other private login',
+  })] });
+  view.rerender(<ChatView conversation={other} modelName="Model A"
+    models={[{ modelId: 'model-a', displayName: 'Model A', providerName: 'Provider' }]}
+    eventHistory={[]} onTitleUpdated={vi.fn()} />);
+  await screen.findByText('Other private login');
+  const before = runtime.listWaitingBrowserHandoffs.mock.calls.length;
+  await act(async () => { pending.reject(new Error('previous private decision failed')); });
+  expect(screen.queryByText(/previous private decision failed/)).toBeNull();
+  expect(screen.queryByText('Complete account login')).toBeNull();
+  expect(runtime.listWaitingBrowserHandoffs).toHaveBeenCalledTimes(before);
+  expect(screen.getByRole('button', { name: '我已完成，继续' })).toHaveProperty('disabled', false);
+});
+
+it('shows action failure details even if its reconciliation reports no waiting handoff', async () => {
+  runtime.continueBrowserHandoff.mockRejectedValueOnce(new Error('browser.handoff-conflict: already cancelled'));
+  runtime.listWaitingBrowserHandoffs.mockResolvedValueOnce({ handoffs: [handoff()] }).mockResolvedValue({ handoffs: [] });
+  renderChat();
+  fireEvent.click(await screen.findByRole('button', { name: '我已完成，继续' }));
+  await screen.findByText(/browser.handoff-conflict: already cancelled/);
+  expect(screen.queryByText('Complete account login')).toBeNull();
 });

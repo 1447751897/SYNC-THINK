@@ -15,6 +15,7 @@ export interface NewmaxSkinPreferences {
   colorTheme: string;
   imageThemeId: string | null;
   imageThemeVariants: Record<string, string>;
+  customImageThemes?: readonly { id: string; background: string; accent: string }[];
   customImageBackground: string;
   customImageAccent: string;
   customPrimary: string;
@@ -158,8 +159,10 @@ export function applyNewmaxSkin(
   const preset = preferences.imageThemeId
     ? NEWMAX_IMAGE_THEME_PALETTES[preferences.imageThemeId]
     : undefined;
-  const imagePalette =
-    preferences.imageThemeId === CUSTOM_IMAGE_THEME_ID
+  const selectedImage = preferences.customImageThemes?.find(image => image.id === preferences.imageThemeId);
+  const imagePalette = selectedImage
+    ? customImagePalette(selectedImage.background, selectedImage.accent)
+    : preferences.imageThemeId === CUSTOM_IMAGE_THEME_ID
       ? customImagePalette(preferences.customImageBackground, preferences.customImageAccent)
       : preset;
 

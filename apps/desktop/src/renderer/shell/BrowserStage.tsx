@@ -405,7 +405,7 @@ export function BrowserProfileManager(
                           ) : null}
                         </div>
                         <div className="mt-0.5 truncate text-[10.5px] text-text-faint">
-                          {profile.isDefault ? '与应用共享登录态' : `${profile.siteCount} 个站点`}
+                          {profile.isDefault ? '自动化默认资料 · 与侧栏资料独立' : `${profile.siteCount} 个站点`}
                           {!profile.isDefault && profile.lastUsedAt
                             ? ` · ${formatProfileActivity(profile.lastUsedAt)}`
                             : ''}

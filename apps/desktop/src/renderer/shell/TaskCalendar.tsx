@@ -1,3 +1,4 @@
+import { WorkbenchPageHeader } from './WorkbenchPageHeader.js';
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import {
   CalendarDays,
@@ -46,6 +47,9 @@ const RESULT_LABELS = {
   failed: '执行失败',
   skipped: '已跳过',
   cancelled: '已取消',
+  waiting_input: '等待操作',
+  blocked: '配置阻塞',
+  reconciling: '交付待核对',
 } as const;
 const timeLabel = (at: number) =>
   new Date(at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false });
@@ -177,7 +181,7 @@ export function TaskCalendar({
         ? null
         : { kind: 'event', anchor, event },
     );
-  const [history, setHistory] = useState<ScheduledTaskHistoryEntry[]>([]);
+  const [historySnapshot, setHistorySnapshot] = useState<{ scope: string; entries: ScheduledTaskHistoryEntry[] }>({ scope: '', entries: [] });
   const [historyNotice, setHistoryNotice] = useState('');
   const [historyLoading, setHistoryLoading] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -186,6 +190,15 @@ export function TaskCalendar({
   const miniDays = useMemo(() => calendarDays(miniMonth, 'month'), [miniMonth]);
   const rangeStart = days[0]!.getTime();
   const rangeEnd = addCalendarDays(days[days.length - 1]!, 1).getTime();
+  // A task refresh is background revalidation, not a new calendar. Keep the
+  // last good records in the same range; filters/date changes get a clean scope.
+  const historyScope = JSON.stringify([view === 'list', rangeStart, rangeEnd, tasks.map(task => task.id).sort()]);
+  const history = useMemo(
+    () => historySnapshot.scope === historyScope ? historySnapshot.entries : [],
+    [historySnapshot, historyScope],
+  );
+  const historyRef = useRef(historySnapshot);
+  historyRef.current = historySnapshot;
   const today = calendarDateKey(new Date(now));
   const selectedKey = calendarDateKey(selected);
   const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -197,8 +210,7 @@ export function TaskCalendar({
   useEffect(() => {
     let cancelled = false;
     const api = window.syncThink?.runtime;
-    setHistory([]);
-    setHistoryNotice('');
+    if (historyRef.current.scope !== historyScope) setHistoryNotice('');
     setHistoryLoading(false);
     if (view === 'list' || rangeStart > now || !api?.scheduledTaskHistory) return;
     const candidates = tasks.filter((task) => task.lastRunAt || task.lastResult);
@@ -206,6 +218,7 @@ export function TaskCalendar({
     setHistoryLoading(true);
     let index = 0;
     const entries: ScheduledTaskHistoryEntry[] = [];
+    const retained = historyRef.current.scope === historyScope ? historyRef.current.entries : [];
     let failed = false,
       limited = false;
     async function worker() {
@@ -216,13 +229,15 @@ export function TaskCalendar({
           entries.push(...result.entries);
           if (result.entries.length >= 100) limited = true;
         } catch {
+          // A transient request failure must not erase confirmed past runs.
+          entries.push(...retained.filter(entry => entry.taskId === task.id));
           failed = true;
         }
       }
     }
     void Promise.all(Array.from({ length: Math.min(4, candidates.length) }, worker)).then(() => {
       if (cancelled) return;
-      setHistory(entries);
+      setHistorySnapshot({ scope: historyScope, entries });
       setHistoryLoading(false);
       setHistoryNotice(
         failed
@@ -237,7 +252,7 @@ export function TaskCalendar({
     };
     // A clock tick must not reload every task's history.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tasks, rangeStart, view]);
+  }, [tasks, rangeStart, view, historyScope]);
 
   const projection = useMemo(
     () => calendarOccurrences(tasks, rangeStart, rangeEnd, now, history),
@@ -293,6 +308,15 @@ export function TaskCalendar({
           ? `${selected.getFullYear()}年${selected.getMonth() + 1}月${selected.getDate()}日`
           : `${days[0]!.getFullYear()}年${days[0]!.getMonth() + 1}月${days[0]!.getDate()}日 — ${days.at(-1)!.getFullYear() !== days[0]!.getFullYear() ? `${days.at(-1)!.getFullYear()}年` : ''}${days.at(-1)!.getMonth() + 1}月${days.at(-1)!.getDate()}日`;
   const context = openedEvent ? taskContext(openedEvent.task) : undefined;
+  const openedHistory =
+    openedEvent?.kind === 'history'
+      ? history.find((entry) => entry.id === openedEvent.id)
+      : undefined;
+  const openedResult =
+    openedHistory ??
+    (openedEvent?.kind === 'history' && openedEvent.id === 'last-' + openedEvent.task.id
+      ? openedEvent.task.lastResult
+      : undefined);
   const actOnEvent = (action: (task: ScheduledTask) => void) => {
     if (!openedEvent) return;
     closePopover();
@@ -302,7 +326,10 @@ export function TaskCalendar({
 
   return (
     <div className="task-cal task-cal--board" data-testid="task-calendar" data-view={view}>
-      <header className="task-cal__toolbar">
+      <WorkbenchPageHeader
+          className="task-cal__toolbar"
+          heading={<>
+
         <div className="task-cal__heading">
           <h1 className="task-cal__range" aria-live="polite">
             {heading}
@@ -315,7 +342,10 @@ export function TaskCalendar({
                 : `${tasks.length} 项任务 · ${tasks.filter((task) => task.enabled).length} 项启用`}
           </p>
         </div>
-        {view !== 'list' ? (
+
+          </>}
+          actions={<>
+{view !== 'list' ? (
           <div className="task-cal__navigation" aria-label="日期翻页">
             <button type="button" aria-label="上一时段" onClick={() => move(-1)}>
               <ChevronLeft size={16} />
@@ -366,7 +396,9 @@ export function TaskCalendar({
         >
           <Plus size={16} /> 新建任务
         </button>
-      </header>
+
+          </>}
+        />
       <div className="task-cal__controls">
         <TaskScopePicker
           layout="sidebar"
@@ -515,8 +547,8 @@ export function TaskCalendar({
             <div className="task-cal__list-view">{listContent}</div>
           ) : (
             <>
-              {loading || historyLoading ? (
-                <div className="task-cal__notice" role="status">
+              {loading || (historyLoading && historySnapshot.scope !== historyScope) ? (
+                <div className="task-cal__notice task-cal__refresh-notice" role="status">
                   {loading ? '正在加载任务…' : '正在加载运行记录…'}
                 </div>
               ) : null}
@@ -544,7 +576,7 @@ export function TaskCalendar({
                 </div>
               ) : null}
               {historyNotice || projection.truncated || projection.errors.length ? (
-                <div className="task-cal__notice" role="status">
+                <div className="task-cal__notice task-cal__data-notice" role="status">
                   {historyNotice}{' '}
                   {projection.truncated ? '任务较密集，部分计划已省略；切换日视图查看。' : ''}{' '}
                   {projection.errors.length
@@ -796,6 +828,15 @@ export function TaskCalendar({
                 <dd>{context.workspace}</dd>
               </div>
             </dl>
+            {openedResult ? (
+              <section className="task-cal__detail-instruction" aria-label="执行结果">
+                <h3>执行结果</h3>
+                {openedHistory?.summary ? <p>{openedHistory?.summary}</p> : null}
+                {openedResult.reason && openedResult.reason !== openedHistory?.summary ? (
+                  <p>{openedResult.reason}</p>
+                ) : null}
+              </section>
+            ) : null}
             <section className="task-cal__detail-instruction">
               <h3>执行内容</h3>
               <p>{openedEvent.task.instruction}</p>

@@ -113,9 +113,8 @@ function operationFromDisplayQueueItem(
   return item.source === 'transient' ? operationFromTransientFrame(item.frame) : item.operation;
 }
 
-const DISPLAY_MAX_FRAMES_PER_PAINT = 1;
-const DISPLAY_MAX_TEXT_CHARACTERS_PER_PAINT = 24;
-const DISPLAY_FLUSH_DELAY_MS = 55;
+const DISPLAY_MAX_FRAMES_PER_PAINT = 64;
+const DISPLAY_FLUSH_DELAY_MS = 16;
 
 function pendingDisplayTextCharacters(queued: readonly ConversationDisplayQueueItem[]): number {
   return queued.reduce((total, item) => {
@@ -126,43 +125,34 @@ function pendingDisplayTextCharacters(queued: readonly ConversationDisplayQueueI
   }, 0);
 }
 
-/** Keep one paint bounded even when a proxy/provider coalesces many deltas. */
+/** Coalesce arrivals per paint, not per word: the provider already streams.
+ * A process/terminal/snapshot boundary catches up earlier text in the same
+ * publication, so completed work never waits behind a synthetic typing queue.
+ */
 export function getConversationDisplayQueueBatchOptions(
   queued: readonly ConversationDisplayQueueItem[],
 ): TransientFrameBatchOptions {
   const pendingCharacters = pendingDisplayTextCharacters(queued);
-  if (pendingCharacters > 3_000) {
-    return { maxFrames: 8, maxTextCharacters: 192, maxReadableTokens: 8 };
-  }
-  if (pendingCharacters > 1_200) {
-    return { maxFrames: 4, maxTextCharacters: 96, maxReadableTokens: 4 };
-  }
-  if (pendingCharacters > 240) {
-    return { maxFrames: 2, maxTextCharacters: 48, maxReadableTokens: 2 };
-  }
+  const hasBoundary = queued.some(item => item.source === 'snapshot' ||
+    ['process.boundary', 'run.terminal'].includes(operationFromDisplayQueueItem(item)?.type ?? ''));
   return {
-    maxFrames: DISPLAY_MAX_FRAMES_PER_PAINT,
-    maxTextCharacters: DISPLAY_MAX_TEXT_CHARACTERS_PER_PAINT,
-    maxReadableTokens: 1,
+    maxFrames: hasBoundary ? Number.MAX_SAFE_INTEGER : DISPLAY_MAX_FRAMES_PER_PAINT,
+    maxTextCharacters: hasBoundary ? Number.MAX_SAFE_INTEGER :
+      pendingCharacters > 3_000 ? 2_048 : pendingCharacters > 1_200 ? 1_024 :
+        pendingCharacters > 240 ? 256 : 128,
+    maxReadableTokens: Number.MAX_SAFE_INTEGER,
   };
 }
 
 /**
- * Preserve the word-by-word feel while preventing a long provider burst from
- * lagging behind.
- *
- * The floor is one 60 Hz frame (~16 ms): flushing faster than the display can
+ * One 60 Hz frame (~16 ms): flushing faster than the display can
  * present only adds render+commit work to the main thread without any visible
  * benefit, and it competes with the clicks and keystrokes the user is making
  * while output streams.
  */
 export function getConversationDisplayQueueFlushDelay(
-  queued: readonly ConversationDisplayQueueItem[],
+  _queued: readonly ConversationDisplayQueueItem[],
 ): number {
-  const pendingCharacters = pendingDisplayTextCharacters(queued);
-  if (pendingCharacters > 3_000) return 16;
-  if (pendingCharacters > 1_200) return 22;
-  if (pendingCharacters > 240) return 35;
   return DISPLAY_FLUSH_DELAY_MS;
 }
 

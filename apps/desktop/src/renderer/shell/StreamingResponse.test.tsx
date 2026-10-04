@@ -22,6 +22,26 @@ const sources: AnswerSource[] = [
   },
 ];
 
+describe('response footer details', () => {
+  it('renders extra actions only in the completed footer, with details below it', () => {
+    const props = {
+      additionalActions: <button aria-label="查看执行详情">详情</button>,
+      details: <section aria-label="执行详情">工具调用记录</section>,
+    };
+    const view = render(<StreamingResponse status="streaming" variant="bubble" {...props}>正在回答</StreamingResponse>);
+    const bubble = view.container.querySelector('.shell-response__content')!;
+    expect(screen.queryByRole('button', { name: '查看执行详情' })).toBeNull();
+    view.rerender(<StreamingResponse status="complete" variant="bubble" {...props}>正在回答</StreamingResponse>);
+    const footer = screen.getByTestId('response-footer');
+    expect(within(footer).getByRole('button', { name: '查看执行详情' })).toBeTruthy();
+    const details = screen.getByRole('region', { name: '执行详情' });
+    expect(details.parentElement).toBe(footer.parentElement);
+    expect(footer.nextElementSibling).toBe(details);
+    expect(bubble.querySelector('button, section')).toBeNull();
+    expect(view.container.querySelector('.shell-response__content')).toBe(bubble);
+  });
+});
+
 describe('StreamingResponse', () => {
   it.each(['plain', 'bubble'] as const)('keeps rich content mounted and one action row when a %s response completes', (variant) => {
     const props = { onCopy: vi.fn(), onRetry: vi.fn(), onFeedbackChange: vi.fn(), sources };
@@ -190,4 +210,12 @@ describe('StreamingResponse', () => {
     expect(responseStatus({ streaming: true })).toBe('streaming');
     expect(responseStatus({})).toBe('complete');
   });
+});
+
+
+it('allows an explicitly resumable failed answer to continue without changing generic-error recovery', () => {
+  const onContinue = vi.fn();
+  render(<StreamingResponse status="error" continueFailed onContinue={onContinue}>已保留的进度</StreamingResponse>);
+  fireEvent.click(screen.getByRole('button', { name: '继续回答' }));
+  expect(onContinue).toHaveBeenCalledOnce();
 });

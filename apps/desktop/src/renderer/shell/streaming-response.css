@@ -100,7 +100,7 @@ SOFTWARE.
 }
 .shell-streaming-response .shell-response__footer {
   flex-wrap: wrap;
-  gap: 8px 12px;
+  gap: 10px 24px;
   margin-top: 12px;
   animation: shell-response-arrive 220ms cubic-bezier(0.16, 1, 0.3, 1) both;
 }
@@ -113,7 +113,7 @@ SOFTWARE.
 }
 .shell-streaming-response .shell-msg-sources__actions {
   flex-wrap: wrap;
-  gap: 2px;
+  gap: 8px;
 }
 .shell-response__action {
   display: inline-grid;
@@ -197,6 +197,9 @@ SOFTWARE.
 }
 .shell-streaming-response .shell-msg-meta--assistant {
   flex-wrap: wrap;
+  flex-shrink: 1;
+  max-width: 100%;
+  gap: 14px;
   margin-left: auto;
 }
 .shell-streaming-response[data-state='waiting'] .shell-md-cursor,

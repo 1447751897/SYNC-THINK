@@ -6,6 +6,7 @@
  * 也集中在这里，保证面板头部的活动摘要和工具行的文字永远一致。
  */
 import { isToolResultFailure, normalizeToolName } from '@sync-think/shared';
+import { isWebResearchTool } from './web-research.js';
 import type { InlineProcessItem } from './conversation-types.js';
 import { buildGeneratedImageModelBySrc } from './markdown-image-gallery.js';
 
@@ -124,13 +125,12 @@ export type ConsecutiveProcessToolBlock = {
   entries: Array<{ index: number; item: Extract<InlineProcessItem, { kind: 'tool' }> }>;
 };
 
-export type ConsecutiveProcessBlock = ConsecutiveProcessItemBlock | ConsecutiveProcessToolBlock;
-
-const MIN_CONSECUTIVE_TOOLS_TO_FOLD = 2;
+export type ConsecutiveResearchBlock = { kind: 'web'; key: string; entries: ConsecutiveProcessToolBlock['entries'] };
+export type ConsecutiveProcessBlock = ConsecutiveProcessItemBlock | ConsecutiveProcessToolBlock | ConsecutiveResearchBlock;
 
 /**
- * 只折叠被思考 / 说明 / 状态隔开的连续工具段。整轮不收成一条总摘要；
- * 单独一条工具仍直接出现在时间线里。
+ * 按思考 / 说明 / 状态划分可折叠工具段，单次调用也使用同一任务组。
+ * 保留每段在时间线里的位置，不把整轮合成一条总摘要。
  */
 export function groupConsecutiveProcessTools(
   items: readonly InlineProcessItem[],
@@ -140,10 +140,8 @@ export function groupConsecutiveProcessTools(
 
   const flushPending = () => {
     if (pending.length === 0) return;
-    if (pending.length < MIN_CONSECUTIVE_TOOLS_TO_FOLD) {
-      for (const entry of pending) {
-        blocks.push({ kind: 'item', index: entry.index, item: entry.item });
-      }
+    if (isWebResearchTool(pending[0]!.item.name, pending[0]!.item.argumentsJson)) {
+      blocks.push({kind:'web',key:'research:'+ (pending[0]!.item.toolCallId ?? pending[0]!.index),entries:pending});
     } else {
       const first = pending[0]!;
       const summary =
@@ -163,6 +161,7 @@ export function groupConsecutiveProcessTools(
 
   items.forEach((item, index) => {
     if (item.kind === 'tool') {
+      if (pending.length && isWebResearchTool(item.name, item.argumentsJson) !== isWebResearchTool(pending[0]!.item.name, pending[0]!.item.argumentsJson)) flushPending();
       pending.push({ index, item });
       return;
     }
@@ -484,32 +483,6 @@ export function toolInputSummary(item: ToolItem): string {
 /** 面板头部的活动摘要要短，工具行才展示完整参数。 */
 const ACTIVITY_SUMMARY_MAX = 48;
 
-function latestNonEmptyLine(text: string): string {
-  return (
-    text
-      .split('\n')
-      .filter((part) => part.trim())
-      .at(-1)
-      ?.trim() ?? ''
-  );
-}
-
-function stripActivityMarkdown(line: string): string {
-  return line
-    .replace(/^\s{0,3}#{1,6}\s+/, '')
-    .replace(/^\s{0,3}[-*+]\s+/, '')
-    .replace(/`{1,3}([^`]+)`{1,3}/g, '$1')
-    .replace(/\*\*([^*]+)\*\*/g, '$1')
-    .replace(/__([^_]+)__/g, '$1')
-    .trim();
-}
-
-/** Bottom activity uses the same latest Think line the Think row would show. */
-export function thinkingActivityLabel(text: string): string {
-  const line = stripActivityMarkdown(latestNonEmptyLine(text));
-  return line ? clampSummary(line) : '思考中';
-}
-
 /**
  * 摘要过长时保留尾部：命令的可执行文件名信息量最低（`pnpm`、`node`），
  * 真正区分「在跑什么」的是后面的子命令与参数；路径同理，文件名在末尾。
@@ -577,8 +550,9 @@ export function deriveCurrentActivity(
   }
 
   const last = items.at(-1);
+  // Reasoning details belong to the expandable Think row, not the live status footer.
   if (last?.kind === 'reasoning') {
-    return { kind: 'thinking', label: thinkingActivityLabel(last.text) };
+    return { kind: 'thinking', label: '正在思考中' };
   }
   if ((last?.kind === 'text' || last?.kind === 'commentary') && last.status !== 'completed') {
     return { kind: 'answering', label: '正在回复' };
@@ -589,7 +563,7 @@ export function deriveCurrentActivity(
     .reverse()
     .find((item) => item.kind === 'reasoning' && item.text.trim());
   if (lastReasoning?.kind === 'reasoning') {
-    return { kind: 'thinking', label: thinkingActivityLabel(lastReasoning.text) };
+    return { kind: 'thinking', label: '正在思考中' };
   }
 
   // 请求已发出但首个 token 还没到，或一轮结束后模型还在决定下一步。

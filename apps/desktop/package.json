@@ -1,6 +1,6 @@
 {
   "name": "@sync-think/desktop",
-  "version": "0.1.0-rc.8",
+  "version": "0.1.0-rc.9",
   "private": true,
   "type": "module",
   "main": "./dist/main/index.js",
@@ -14,7 +14,7 @@
     "build:shell:dev": "node scripts/build-shell.mjs --mode development",
     "build:shell:qa": "node scripts/build-shell.mjs --mode qa",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run --passWithNoTests --testTimeout=15000",
+    "test": "vitest run src tests --passWithNoTests --testTimeout=15000 && node --test scripts",
     "lint": "eslint src --ext .ts,.tsx && node ../../scripts/check-design-tokens.mjs",
     "dev": "node ../../scripts/dev-desktop.mjs",
     "dev:renderer": "node ../../scripts/dev-desktop.mjs --renderer-development",

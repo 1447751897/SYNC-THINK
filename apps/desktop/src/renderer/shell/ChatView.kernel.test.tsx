@@ -385,6 +385,7 @@ describe('ChatView kernel selection', () => {
       ),
     );
     fireEvent.click(screen.getByTestId('context-ring'));
+    fireEvent.click(await screen.findByRole('button', { name: /窗口与压缩详情/ }));
 
     expect(screen.getByTestId('context-kernel-label').getAttribute('title')).toBe(
       '当前内核：ClaudeCode',
@@ -410,6 +411,7 @@ describe('ChatView kernel selection', () => {
     await waitFor(() => expect(runtime.getConversationContextStatus).toHaveBeenCalled());
 
     fireEvent.click(screen.getByTestId('context-ring'));
+    fireEvent.click(await screen.findByRole('button', { name: /窗口与压缩详情/ }));
     expect(screen.getByTestId('context-kernel-label').getAttribute('title')).toBe('当前内核：GPT');
     expect(
       screen.getByTestId('context-kernel-label').querySelector('[role="img"], img'),

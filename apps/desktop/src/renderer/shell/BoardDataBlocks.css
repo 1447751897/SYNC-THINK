@@ -1,0 +1,115 @@
+.shell-html.shell-html--data {
+  overflow: visible;
+  contain: none;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+.shell-html.shell-html--data > .shell-html__bar {
+  flex-wrap: wrap;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  margin-bottom: 12px;
+  padding-block: 4px;
+}
+.shell-data-group {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  margin-bottom: 16px;
+}
+.shell-data-block {
+  min-width: 0;
+}
+.shell-data-block .shell-html__content {
+  padding: 0;
+}
+.shell-data-block .shell-html__content > iframe {
+  background: transparent;
+  border-radius: 0;
+}
+.shell-data-block__placeholder {
+  min-height: 344px;
+  padding: 16px;
+  color: var(--color-text-secondary);
+}
+.shell-data-group__intro {
+  padding-inline: 8px;
+}
+.shell-data-group__intro h3 {
+  margin: 0;
+  color: var(--color-text);
+  font-size: 20px;
+  line-height: 1.4;
+  font-weight: 600;
+}
+.shell-data-group__intro p,
+.shell-data-group__caption {
+  margin: 4px 0 0;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.shell-data-group__caption {
+  padding-inline: 8px;
+}
+
+/* Inspection data starts with the content, not a permanent editor toolbar. */
+.shell-html.shell-html--data {
+  position: relative;
+}
+.shell-data-actions {
+  position: absolute;
+  top: 0;
+  right: 8px;
+  z-index: 3;
+}
+.shell-data-actions > summary {
+  list-style: none;
+  cursor: pointer;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  display: grid;
+  place-items: center;
+  color: var(--color-text-secondary);
+  background: var(--color-bg);
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+.shell-data-actions > summary::-webkit-details-marker {
+  display: none;
+}
+.shell-html--data:hover .shell-data-actions > summary,
+.shell-data-actions:focus-within > summary,
+.shell-data-actions[open] > summary {
+  opacity: 1;
+}
+.shell-data-actions > .shell-html__bar {
+  position: absolute;
+  right: 0;
+  top: 32px;
+  min-width: 340px;
+  flex-wrap: wrap;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  background: var(--color-bg);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 12%);
+}
+@media (hover: none) {
+  .shell-data-actions > summary {
+    opacity: 1;
+  }
+}
+@media (max-width: 480px) {
+  .shell-data-actions > .shell-html__bar {
+    min-width: 0;
+    width: min(340px, calc(100vw - 48px));
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .shell-data-actions > summary {
+    transition: none;
+  }
+}

@@ -192,7 +192,7 @@ describe('local context compact', () => {
 
     const high = collectThreadChatHistory(events, 'th_1', {
       contextWindow: 10_000,
-      usedTokens: 7500,
+      usedTokens: 8500,
     });
     expect(high.shouldAutoCompact).toBe(true);
   });
@@ -756,6 +756,14 @@ describe('chat execution mode tool gating', () => {
     });
   });
 
+  it('preserves exact text selector syntax across browser command validation', async () => {
+    const { validateChatBrowserCommand } = await import('./chat-tools.js');
+    const selector = 'button:text-is("继续"), [role="button"]:text-is("继续")';
+    expect(validateChatBrowserCommand('browser_click', JSON.stringify({ selector }))).toEqual({
+      ok: true, command: { action: 'browser_click', args: { selector, text: '继续' } },
+    });
+  });
+
   it('validateChatBrowserCommand: type needs selector + bounded text', async () => {
     const { validateChatBrowserCommand } = await import('./chat-tools.js');
     const ok = validateChatBrowserCommand(
@@ -868,7 +876,6 @@ describe('evaluateToolLoopGuard', () => {
   it('does not force_final on the first all-unavailable batch', () => {
     const first = evaluateToolLoopGuard({
       toolLoopRound: 1,
-      maxToolRounds: 12,
       completedResults: [
         {
           toolCallId: 't1',
@@ -887,7 +894,6 @@ describe('evaluateToolLoopGuard', () => {
 
     const second = evaluateToolLoopGuard({
       toolLoopRound: 2,
-      maxToolRounds: 12,
       completedResults: [
         {
           toolCallId: 't2',
@@ -908,7 +914,6 @@ describe('evaluateToolLoopGuard', () => {
   it('treats different file paths as progress (not stagnant)', () => {
     const a = evaluateToolLoopGuard({
       toolLoopRound: 1,
-      maxToolRounds: 12,
       completedResults: [
         {
           toolCallId: 't1',
@@ -926,7 +931,6 @@ describe('evaluateToolLoopGuard', () => {
 
     const b = evaluateToolLoopGuard({
       toolLoopRound: 2,
-      maxToolRounds: 12,
       completedResults: [
         {
           toolCallId: 't2',
@@ -1167,6 +1171,9 @@ describe('Browser Workflow chat tools', () => {
       'TaskCreate',
       'TaskUpdate',
       'TaskList',
+      'automation_report_outcome',
+      'automation_request_login',
+      'automation_export_artifact',
       'browser_workflow_list',
       'browser_workflow_get',
       'browser_workflow_create_draft',
@@ -1445,12 +1452,12 @@ describe('skill tools (capability center)', () => {
     expect(withoutAgent.map((t) => t.name)).not.toContain('create_skill');
   });
 
-  it('gates skill mutations outside full-access; read tools stay free', async () => {
+  it('confirms Skill saves even in full-access; read tools stay free', async () => {
     const { chatToolRequiresApproval } = await import('./chat-tools.js');
     for (const tool of ['create_skill', 'import_remote_skill', 'update_skill', 'delete_skill']) {
       expect(chatToolRequiresApproval('ask', tool)).toBe(true);
       expect(chatToolRequiresApproval('workspace', tool)).toBe(true);
-      expect(chatToolRequiresApproval('full-access', tool)).toBe(false);
+      expect(chatToolRequiresApproval('full-access', tool)).toBe(true);
     }
     expect(chatToolRequiresApproval('ask', 'list_skills')).toBe(false);
     expect(chatToolRequiresApproval('ask', 'read_skill')).toBe(false);
@@ -1511,8 +1518,8 @@ describe('collaboration agent tools', () => {
     expect(names).toContain('collaboration_send_message');
     expect(names).toContain('collaboration_dispatch_tasks');
     expect(CHAT_COLLABORATION_TOOL_SCHEMAS.map((tool) => tool.name)).toEqual([
-      'collaboration_send_message', 'collaboration_send_direct_message',
-      'collaboration_start_workflow', 'collaboration_submit_artifact', 'collaboration_dispatch_tasks',
+      'collaboration_read_context', 'collaboration_handoff', 'collaboration_send_message', 'collaboration_send_direct_message',
+      'collaboration_start_workflow', 'collaboration_submit_artifact', 'collaboration_report_blocker', 'collaboration_dispatch_tasks',
     ]);
     const modelNames = toolsForExecutionMode('workspace', {
       includeProjectTools: false,
@@ -1594,12 +1601,12 @@ describe('team tools (team library)', () => {
     expect(withoutAgent.map((t) => t.name)).not.toContain('create_team');
   });
 
-  it('gates team mutations outside full-access; list_teams stays free', async () => {
+  it('requires one-shot confirmation for team mutations in every mode; list_teams stays free', async () => {
     const { chatToolRequiresApproval } = await import('./chat-tools.js');
     for (const tool of ['create_team', 'update_team', 'delete_team']) {
       expect(chatToolRequiresApproval('ask', tool)).toBe(true);
       expect(chatToolRequiresApproval('workspace', tool)).toBe(true);
-      expect(chatToolRequiresApproval('full-access', tool)).toBe(false);
+      expect(chatToolRequiresApproval('full-access', tool)).toBe(true);
     }
     expect(chatToolRequiresApproval('ask', 'list_teams')).toBe(false);
     expect(isChatToolAllowed('workspace', 'list_teams')).toBe(true);
@@ -1718,4 +1725,82 @@ describe('Computer Use desktop tool gating', () => {
       expect(isChatToolAllowed('workspace', toolName, { desktopEnabled: true })).toBe(true);
     }
   });
+});
+
+it('pages raw source without destroying indentation or repeating the first chunk', async () => {
+  const { executeChatBuiltInTool } = await import('./chat-tools.js');
+  const source = '# source\n' + ('def hello():\n    return "hello"\n\n').repeat(70);
+  const fetchImpl = vi.fn(async () => new Response(source, { headers: { 'content-type': 'text/plain' } }));
+  const page = async (offset: unknown) => JSON.parse(await executeChatBuiltInTool({ toolCall: { id: String(offset), name: 'web_fetch', argumentsJson: JSON.stringify({ url: 'https://example.com/source.py', maxChars: 500, offset }) }, networkEnabled: true, fetchImpl: fetchImpl as typeof fetch }));
+  const first = await page(0), next = await page(first.nextOffset);
+  expect(first.text).toBe(source.slice(0, 500)); expect(first.text).toContain('    return');
+  expect(next.text).toBe(source.slice(500, 1000));
+  expect(next.startLine).toBe(source.slice(0, 500).split('\n').length);
+  expect(first.sourceSha256).toBe(next.sourceSha256); expect(first.truncated).toBe(true);
+  const end = await page(source.length); expect(end.text).toBe(''); expect(end.nextOffset).toBeUndefined(); expect(end.truncated).toBe(false);
+  expect((await page(-1)).ok).toBe(false); expect(fetchImpl).toHaveBeenCalledTimes(3);
+});
+
+
+it('keeps bounded original source pages available while folding redundant re-reads', () => {
+  const page = (startOffset: number, count: number) => JSON.stringify({ ok: true, sourceSha256: 'a'.repeat(64), startOffset, endOffset: startOffset + count, text: 's'.repeat(count) });
+  const messages = [0, 1, 2].map(i => ({ role: 'tool' as const, toolCallId: 'page-' + i, content: page(i * 12000, 12000) }));
+  messages.push({ role: 'tool', toolCallId: 'redundant', content: page(6000, 3000) });
+  messages.push(...[0, 1].map(i => ({ role: 'tool' as const, toolCallId: 'latest-' + i, content: 'latest' })));
+  const kept = foldLongToolOutputsInMessages(messages, { preserveBoundedSourcePages: true, maxChars: 2000 });
+  for (let i = 0; i < 3; i++) expect(kept.messages[i].content).toBe(messages[i].content);
+  expect(String(kept.messages[3].content)).toContain('tool output folded');
+  const normal = foldLongToolOutputsInMessages(messages, { maxChars: 2000 }); expect(normal.foldedCount).toBe(4);
+});
+
+it('caps retained source-page history and does not trust invalid page metadata', () => {
+  const messages = [0, 1, 2, 3].map(i => ({ role: 'tool' as const, toolCallId: 'page-' + i, content: JSON.stringify({ ok: true, sourceSha256: 'b'.repeat(64), startOffset: i * 50000, endOffset: (i + 1) * 50000, text: 's'.repeat(50000) }) }));
+  messages.push({ role: 'tool', toolCallId: 'bad', content: JSON.stringify({ ok: true, sourceSha256: 'c'.repeat(64), startOffset: 0, endOffset: 1, text: 's'.repeat(3000) }) });
+  messages.push(...[0, 1].map(i => ({ role: 'tool' as const, toolCallId: 'latest-' + i, content: 'latest' })));
+  const kept = foldLongToolOutputsInMessages(messages, { preserveBoundedSourcePages: true, maxChars: 2000 });
+  expect(kept.messages[0].content).toBe(messages[0].content); expect(kept.messages[1].content).toBe(messages[1].content);
+  for (const i of [2, 3, 4]) expect(String(kept.messages[i].content)).toContain('tool output folded');
+});
+
+
+it('keeps immutable host-artifact pages available for cross-document review', () => {
+  const artifact = { role: 'tool' as const, toolCallId: 'artifact', content: JSON.stringify({ ok: true, sourceSha256: 'd'.repeat(64), startOffset: 0, endOffset: 8000, content: 'document '.repeat(888) + 'done'.repeat(2) }) };
+  const page = JSON.parse(artifact.content); page.endOffset = page.content.length; artifact.content = JSON.stringify(page);
+  const messages = [artifact, ...[0,1].map(i => ({role: 'tool' as const, toolCallId: 'new-' + i, content: 'new'}))];
+  const kept = foldLongToolOutputsInMessages(messages, { preserveBoundedSourcePages: true });
+  expect(kept.messages[0].content).toBe(artifact.content); expect(kept.foldedCount).toBe(0);
+});
+
+
+describe('checkpoint retention contract', () => {
+  it('includes previous checkpoint facts and the end of a long user constraint in the next summary input', () => {
+    const prompt = buildCompactSummaryUserPrompt([
+      { role: 'system', content: '[context compact]\nKeep novel protagonist 林舟', sequence: 99, checkpoint: true },
+      { role: 'user', content: 'x'.repeat(5000) + '末尾硬约束：不得改主角', sequence: 1 },
+    ]);
+    expect(prompt).toContain('Keep novel protagonist 林舟');
+    expect(prompt).toContain('末尾硬约束：不得改主角');
+  });
+});
+
+
+it('keeps a token-budgeted recent tail with complete chat turns', () => {
+ const history = Array.from({ length: 12 }, (_, index) => ({ role: index % 2 === 0 ? 'user' as const : 'assistant' as const,
+   content: 'x'.repeat(400), sequence: index + 1 }));
+ const split = splitHistoryForCompact(history, 1, 250);
+ expect(split.keptMessages.map(message => message.sequence)).toEqual([9, 10, 11, 12]);
+ expect(split.older.map(message => message.sequence)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+});
+
+
+it('uses token retention even when fewer than eight raw messages fill the window', () => {
+  const messages = [
+    { sequence: 0, role: 'user' as const, content: 'Old request ' + 'x'.repeat(4000), occurredAt: '2026-10-02T00:00:00.000Z' },
+    { sequence: 1, role: 'assistant' as const, content: 'Old answer ' + 'x'.repeat(4000), occurredAt: '2026-10-02T00:00:01.000Z' },
+    { sequence: 2, role: 'user' as const, content: 'Current exact constraint', occurredAt: '2026-10-02T00:00:02.000Z' },
+    { sequence: 3, role: 'assistant' as const, content: 'Current answer', occurredAt: '2026-10-02T00:00:03.000Z' },
+  ];
+  const result = splitHistoryForCompact(messages, 8, 8);
+  expect(result.older.map(message => message.sequence)).toEqual([0, 1]);
+  expect(result.keptMessages.map(message => message.sequence)).toEqual([2, 3]);
 });

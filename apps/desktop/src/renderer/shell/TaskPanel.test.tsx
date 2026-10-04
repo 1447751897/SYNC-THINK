@@ -47,6 +47,9 @@ const task: ScheduledTask = {
 function mockBridge(overrides: Record<string, unknown> = {}) {
   const runtime = {
     listScheduledTasks: vi.fn(async () => ({ tasks: [task] })),
+    listBrowserProfiles: vi.fn(async () => ({ profiles: [] })),
+    browserWorkflow: { list: vi.fn(async () => ({ tasks: [] })) },
+    listMcpServers: vi.fn(async () => ({ servers: [] })),
     createScheduledTask: vi.fn(async () => ({ task })),
     updateScheduledTask: vi.fn(async () => ({ task })),
     deleteScheduledTask: vi.fn(async () => ({ deleted: true })),
@@ -80,6 +83,17 @@ describe('TaskPanel', () => {
   afterEach(() => {
     cleanup();
     delete (window as unknown as Record<string, unknown>).syncThink;
+  });
+
+  it('opens the existing month calendar directly without an automation dashboard or return button', async () => {
+    mockBridge();
+    renderPanel(true);
+    await screen.findByRole('button', { name: '新建任务' });
+    expect(screen.getByRole('button', { name: '月' }).getAttribute('aria-pressed')).toBe('true');
+    expect(document.querySelectorAll('.task-cal__month-cell').length).toBeGreaterThanOrEqual(28);
+    expect(screen.queryByRole('region', { name: '自动化中心' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '自动化中心' })).toBeNull();
+    expect(document.querySelector('.task-panel--calendar')).toBeTruthy();
   });
 
   it('renders task cards with rule summaries and results', async () => {
@@ -195,7 +209,7 @@ describe('TaskPanel', () => {
     expect(await screen.findByText('未发现新的未提交改动，仓库状态正常')).toBeTruthy();
     expect(screen.getByText(/成功 1/)).toBeTruthy();
   });
-  it('defaults to the month calendar and retains day, week and list views', async () => {
+  it('retains the month calendar and day, week and list views through the calendar entry', async () => {
     mockBridge({ listScheduledTasks: vi.fn(async () => ({ tasks: [] })) });
     renderPanel(true);
     await screen.findByTestId('task-empty');
@@ -539,6 +553,23 @@ describe('TaskPanel', () => {
     expect(screen.getByRole('menuitemradio', { name: '随机' }).getAttribute('aria-checked')).toBe(
       'false',
     );
+  });
+
+  it('task editor picker: executor and conversation menus share the modal scroll boundary', async () => {
+    mockBridge({ listConversations: vi.fn(async () => ({ conversations: [] })) });
+    renderPanel();
+    await screen.findByText('每日代码巡检');
+    fireEvent.click(screen.getByTestId('task-create'));
+    for (const name of ['选择执行者', '运行会话']) {
+      fireEvent.keyDown(screen.getByRole('button', { name }), { key: 'ArrowDown', code: 'ArrowDown' });
+      const menu = await screen.findByRole('menu');
+      await waitFor(() => expect(screen.getByRole('menu').closest('.task-sheet'), name).toBe(screen.getByTestId('task-editor')));
+      expect(menu.closest('.task-sheet__body')).toBeNull();
+      fireEvent.keyDown(menu, { key: 'Escape' });
+      await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
+      await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('button', { name })));
+    }
+    expect(screen.getByRole('dialog')).toBeTruthy();
   });
 
   it('task editor picker: interval window pickers are disabled all day and save independent exact times', async () => {

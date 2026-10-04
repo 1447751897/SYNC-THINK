@@ -29,14 +29,13 @@ export function shouldOmitReasoningEffort(value: string | undefined | null): boo
 }
 
 /**
- * Map a product effort level to the value accepted on the wire.
- * OpenAI-compatible APIs only accept low|medium|high for reasoning_effort
- * (and Responses `reasoning.effort`); 'auto' / 'xhigh' / 'max' are product
- * concepts and must be collapsed before sending, otherwise strict gateways
- * (OpenAI, many relays) reject the request with 400.
+ * Choose the product default only for automatic effort. Supported explicit
+ * values vary by model and gateway, so preserve the caller's selection (including
+ * xhigh/max) rather than silently reducing it. Unsupported selections should
+ * surface the provider's error instead of being reported as a higher effort.
  */
 export function wireReasoningEffort(level: string): string {
-  if (level === 'auto' || level === 'xhigh' || level === 'max') return 'high';
+  if (level === 'auto') return 'high';
   return level;
 }
 

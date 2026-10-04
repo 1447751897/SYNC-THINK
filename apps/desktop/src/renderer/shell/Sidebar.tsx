@@ -1,41 +1,34 @@
-import { readAppearancePreferences, updateAppearancePreferences } from './preferences-store.js';
 import { useContextMenu } from './ContextMenu.js';
+import { SidebarNavigationRail } from './SidebarNavigationRail.js';
+import { SidebarChatActions, SidebarChatSearch } from './SidebarChatActions.js';
+import { ATTENTION_LABELS, type ConversationActivityView } from '../../conversation-attention.js';
+import { SidebarThinkingIndicator } from './SidebarThinkingIndicator.js';
 // NewMax-style sidebar (shell constitution):
-// top actions · regular conversation groups · bottom settings + account.
+// fixed navigation + account rail · switchable conversation/agent list.
 // Collapsed = fully hidden (parent omits this component). Width is resizable.
 import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react';
 import { useDialog } from './Dialog.js';
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import {
-  Inbox,
   Archive,
   ArchiveRestore,
   Bot,
-  CalendarClock,
   Check,
   ChevronRight,
   Copy,
   FolderInput,
   Folder,
   FolderOpen,
-  Sun,
-  Moon,
   FolderPlus,
-  Globe,
   Link2,
   MessageSquare,
-  MessageSquarePlus,
   MoreHorizontal,
   PanelLeftClose,
   Pencil,
   Pin,
   Plus,
-  Search,
-  Settings,
   Sparkles,
   Trash2,
-  Users,
-  Wrench,
 } from 'lucide-react';
 import clsx from 'clsx';
 import syncThinkLogo from './assets/sync-think-logo.png';
@@ -92,15 +85,18 @@ export interface SidebarProps {
   activeWorkspaceId?: string;
   workspaces?: readonly WorkspaceSummary[];
   onSelectWorkspace?(workspaceId: string): void;
-  workspaceActivity?: ReadonlyMap<string, { running: boolean; unread: boolean }>;
-  onEnterAgentWorkspace?(): void;
+  workspaceActivity?: ReadonlyMap<string, ConversationActivityView>;
+  sidebarMode?: 'conversations' | 'agents';
+  onSidebarModeChange?(mode: 'conversations' | 'agents'): void;
+  onAgentSidebarMount?(host: HTMLDivElement | null): void;
+  onAgentActionsMount?(host: HTMLDivElement | null): void;
   onAgentChat?(agentId: string, workspaceId: string, newConversation?: boolean): void;
   onAgentsRefresh?(): Promise<unknown> | void;
   settingsOpen?: boolean;
   multiSelect: boolean;
   selectedIds: ReadonlySet<string>;
   /** 各对话运行/未读状态（key = conversationId）。 */
-  conversationActivity?: ReadonlyMap<string, { running: boolean; unread: boolean }>;
+  conversationActivity?: ReadonlyMap<string, ConversationActivityView>;
   onSelectStage(stage: ShellStage): void;
   onToggleTrack(track: ConversationTrack): void;
   onToggleSidebar(): void;
@@ -137,9 +133,14 @@ export interface SidebarProps {
 }
 
 export function Sidebar(props: SidebarProps) {
-  const [sidebarMode, setSidebarMode] = useState(() =>
-    props.onEnterAgentWorkspace ? ('conversations' as const) : readSidebarMode(),
-  );
+  const [localSidebarMode, setLocalSidebarMode] = useState(readSidebarMode);
+  const sidebarMode = props.sidebarMode ?? localSidebarMode;
+  const onSidebarModeChange = props.onSidebarModeChange;
+  const selectSidebarMode = useCallback((mode: 'conversations' | 'agents') => {
+    setLocalSidebarMode(mode);
+    writeSidebarMode(mode);
+    onSidebarModeChange?.(mode);
+  }, [onSidebarModeChange]);
   const [query, setQuery] = useState('');
   const [legacyArchiveOpen, setArchiveOpen] = useState(false);
   /** Collapsing 最近对话 hides the regular conversation groups. */
@@ -159,14 +160,6 @@ export function Sidebar(props: SidebarProps) {
       );
   }, [props.activeWorkspaceId]);
   const [searchFocused, setSearchFocused] = useState(false);
-  const [darkMode, setDarkMode] = useState(
-    () => typeof document !== 'undefined' && document.documentElement.classList.contains('dark'),
-  );
-  useEffect(() => {
-    const syncTheme = () => setDarkMode(document.documentElement.classList.contains('dark'));
-    window.addEventListener('shell-preferences-applied', syncTheme);
-    return () => window.removeEventListener('shell-preferences-applied', syncTheme);
-  }, []);
   const dialog = useDialog();
   // 与「设置 → 关于」共用同一份更新快照：有可安装版本时把版本号挂到设置入口上，
   // 用户不进设置也能看见有新版本。bridge 缺失时这里是 null，不显示任何提示。
@@ -175,14 +168,13 @@ export function Sidebar(props: SidebarProps) {
 
   useEffect(() => {
     const openSearch = () => {
-      if (props.onEnterAgentWorkspace && readSidebarMode() === 'agents') return;
-      setSidebarMode('conversations');
-      writeSidebarMode('conversations');
+      if (sidebarMode === 'agents') return;
+      selectSidebarMode('conversations');
       setSearchFocused(true);
     };
     window.addEventListener('shell-open-conversation-search', openSearch);
     return () => window.removeEventListener('shell-open-conversation-search', openSearch);
-  }, [props.onEnterAgentWorkspace]);
+  }, [sidebarMode, selectSidebarMode]);
 
   const resolveName = useMemo(
     () => (c: Conversation) =>
@@ -590,7 +582,7 @@ export function Sidebar(props: SidebarProps) {
       data-testid="shell-sidebar"
       data-collapsed={collapsed ? 'true' : 'false'}
       className={clsx(
-        'shell-board shell-sidebar-panel shell-sidebar--chat relative flex min-h-0 shrink-0 flex-col border border-border bg-sidebar',
+        'shell-board shell-sidebar-panel shell-sidebar-panel--rail shell-sidebar--chat relative flex min-h-0 shrink-0 flex-row border border-border bg-sidebar',
         collapsed && 'shell-sidebar-panel--collapsed',
       )}
       style={{
@@ -608,6 +600,11 @@ export function Sidebar(props: SidebarProps) {
       aria-hidden={collapsed}
     >
       {/* Body is width-locked for collapse animation; resize handle stays outside. */}
+      <SidebarNavigationRail stage={props.nav.stage} onSelectStage={props.onSelectStage}
+        settingsOpen={props.settingsOpen} pendingUpdateVersion={pendingUpdateVersion ?? undefined} onHome={() => {
+        selectSidebarMode('conversations');
+        props.onSelectStage('talk');
+      }} />
       <div className="shell-sidebar-panel__body gap-2 px-2 py-2">
         {/* Panel 1 — brand + primary nav. Rendered directly on the sidebar board
             (no card, no hover frame). */}
@@ -638,8 +635,7 @@ export function Sidebar(props: SidebarProps) {
               type="button"
               aria-pressed={sidebarMode === 'conversations'}
               onClick={() => {
-                setSidebarMode('conversations');
-                writeSidebarMode('conversations');
+                selectSidebarMode('conversations');
               }}
             >
               <MessageSquare size={13} />
@@ -649,11 +645,7 @@ export function Sidebar(props: SidebarProps) {
               type="button"
               aria-pressed={sidebarMode === 'agents'}
               onClick={() => {
-                if (props.onEnterAgentWorkspace) props.onEnterAgentWorkspace();
-                else {
-                  setSidebarMode('agents');
-                  writeSidebarMode('agents');
-                }
+                selectSidebarMode('agents');
               }}
             >
               <Bot size={13} />
@@ -661,84 +653,17 @@ export function Sidebar(props: SidebarProps) {
             </button>
           </div>
           {/* Top actions */}
-          {sidebarMode === 'conversations' && (
-            <div className="shell-sidebar-actions flex shrink-0 flex-col gap-0.5">
-              <ActionRow
-                icon={<MessageSquarePlus size={15} />}
-                label="新建对话"
-                testId="nav-new-chat"
-                onClick={() => props.onNewConversation()}
-              />
-              <ActionRow
-                icon={<Search size={15} />}
-                label="搜索"
-                testId="nav-search"
-                onClick={() => setSearchFocused(true)}
-              />
-              <ActionRow
-                icon={<CalendarClock size={15} />}
-                label="定时任务"
-                testId="nav-scheduled"
-                active={props.nav.stage === 'tasks'}
-                onClick={() => props.onSelectStage('tasks')}
-              />
-              <ActionRow
-                icon={<Inbox size={15} />}
-                label="收件箱"
-                testId="nav-activity"
-                active={props.nav.stage === 'activity'}
-                onClick={() => props.onSelectStage('activity')}
-              />
-              <ActionRow
-                icon={<Globe size={15} />}
-                label="浏览器"
-                testId="nav-browser"
-                active={props.nav.stage === 'browser'}
-                onClick={() => props.onSelectStage('browser')}
-              />
-              <ActionRow
-                icon={<Bot size={15} />}
-                label={props.onEnterAgentWorkspace ? '管理智能体' : '智能体'}
-                testId="nav-agents"
-                active={props.nav.stage === 'agents'}
-                onClick={() => props.onSelectStage('agents')}
-              />
-              <ActionRow
-                icon={<Users size={15} />}
-                label="小队"
-                testId="nav-teams"
-                active={props.nav.stage === 'teams'}
-                onClick={() => props.onSelectStage('teams')}
-              />
-              <ActionRow
-                icon={<Wrench size={15} />}
-                label="能力"
-                testId="nav-abilities"
-                active={props.nav.stage === 'abilities'}
-                onClick={() => props.onSelectStage('abilities')}
-              />
-            </div>
-          )}
-          {sidebarMode === 'agents' && (
-            <div className="agent-contacts-shortcuts">
-              <button type="button" onClick={() => props.onSelectStage('tasks')}>
-                <CalendarClock size={13} />
-                定时任务
-              </button>
-              <button type="button" onClick={() => props.onSelectStage('browser')}>
-                <Globe size={13} />
-                浏览器
-              </button>
-              <button type="button" onClick={() => props.onSelectStage('abilities')}>
-                <Wrench size={13} />
-                能力
-              </button>
-            </div>
-          )}
+          {sidebarMode === 'conversations' ? (
+            <SidebarChatActions onSearch={() => setSearchFocused(true)} onNewConversation={() => props.onNewConversation()} searching={searchFocused || Boolean(query)} />
+          ) : props.onAgentActionsMount ? (
+            <div key="agent-actions-host" ref={props.onAgentActionsMount} data-testid="sidebar-agent-actions-host" />
+          ) : null}
         </div>
 
         {sidebarMode === 'agents' ? (
-          props.activeWorkspaceId ? (
+          props.onAgentSidebarMount ? (
+            <div key="agent-sidebar-host" ref={props.onAgentSidebarMount} className="sidebar-agent-host" data-testid="sidebar-agent-host" />
+          ) : props.activeWorkspaceId ? (
             <Suspense
               fallback={
                 <p className="agent-contacts__empty" role="status">
@@ -770,27 +695,10 @@ export function Sidebar(props: SidebarProps) {
           /* Panel 2 — conversation list (bright inner box on the dark board).
           Height follows its content: expanding/collapsing recent chats or archive
           grows/shrinks the box instead of it always filling the board. */
-          <div className="shell-sidebar-recent flex min-h-0 flex-col rounded-(--radius-card) border border-border bg-recent px-2 pb-2 pt-1.5">
+          <div key="conversation-sidebar-list" className="shell-sidebar-recent flex min-h-0 flex-col rounded-(--radius-card) border border-border bg-recent px-2 pb-2 pt-1.5">
             {/* Search field (shown when search action focused or query non-empty) */}
             {(searchFocused || query) && (
-              <div className="relative shrink-0 py-1.5">
-                <Search
-                  size={12}
-                  className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-text-faint"
-                />
-                <input
-                  data-testid="sidebar-search"
-                  type="search"
-                  autoFocus={searchFocused}
-                  value={query}
-                  onChange={(e) => setQuery(e.target.value)}
-                  onBlur={() => {
-                    if (!query) setSearchFocused(false);
-                  }}
-                  placeholder="搜索对话…"
-                  className="h-7 w-full rounded-(--radius-row) border border-border bg-page pl-7 pr-2 text-[12px] text-text placeholder:text-text-faint outline-none focus:border-accent/40"
-                />
-              </div>
+              <SidebarChatSearch value={query} onChange={setQuery} autoFocus={searchFocused} onEmptyBlur={() => setSearchFocused(false)} onClose={() => { setSearchFocused(false); setQuery(''); }} />
             )}
 
             {/* Multi-select bulk bar */}
@@ -883,89 +791,7 @@ export function Sidebar(props: SidebarProps) {
           </div>
         )}
 
-        <div className="shell-sidebar-theme" role="group" aria-label="外观模式">
-          <button
-            type="button"
-            aria-label="浅色模式"
-            aria-pressed={!darkMode}
-            onClick={() => {
-              if (readAppearancePreferences().mode !== 'light')
-                updateAppearancePreferences({ mode: 'light' });
-            }}
-          >
-            <Sun size={16} />
-          </button>
-          <button
-            type="button"
-            aria-label="深色模式"
-            aria-pressed={darkMode}
-            onClick={() => {
-              if (readAppearancePreferences().mode !== 'dark')
-                updateAppearancePreferences({ mode: 'dark' });
-            }}
-          >
-            <Moon size={16} />
-          </button>
-        </div>
 
-        {/* Panel 3 — account row. Renders directly on the board and only floats
-          as a bright box on hover; clicking the box (or the gear) opens settings. */}
-        <div
-          className={clsx(
-            'mt-auto shrink-0 cursor-pointer rounded-(--radius-card) border px-2 py-1 transition-colors duration-150',
-            props.settingsOpen
-              ? 'border-border bg-recent'
-              : 'border-transparent hover:border-border hover:bg-recent',
-          )}
-          role="button"
-          tabIndex={0}
-          title={pendingUpdateVersion ? `设置 · 可更新到 v${pendingUpdateVersion}` : '设置'}
-          data-testid="sidebar-settings-box"
-          onClick={() => props.onSelectStage('settings')}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' || e.key === ' ') {
-              e.preventDefault();
-              props.onSelectStage('settings');
-            }
-          }}
-        >
-          <div className="flex h-9 items-center gap-2 rounded-(--radius-row) px-1 text-text-secondary">
-            <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-active text-[11px] font-medium text-text">
-              U
-            </div>
-            <span className="shell-sidebar-user-name min-w-0 flex-1 truncate text-[12px]">
-              本地用户
-            </span>
-            {/* 有新版本时把目标版本号直接挂在设置入口上，和「设置 → 关于」里的按钮同源。 */}
-            {pendingUpdateVersion ? (
-              <span
-                data-testid="sidebar-update-badge"
-                title={`可更新到 v${pendingUpdateVersion}`}
-                className="shell-sidebar-version shrink-0 rounded-full bg-accent/20 px-1.5 py-0.5 text-[10px] leading-none font-medium text-accent-text"
-              >
-                v{pendingUpdateVersion}
-              </span>
-            ) : null}
-            <button
-              type="button"
-              data-testid="nav-settings"
-              className={clsx(
-                'st-press-motion st-icon-motion flex h-7 w-7 shrink-0 items-center justify-center rounded-(--radius-row)',
-                props.settingsOpen
-                  ? 'shell-row-active text-text'
-                  : 'text-text-secondary hover:bg-hover hover:text-text',
-              )}
-              title="设置"
-              aria-label="设置"
-              onClick={(e) => {
-                e.stopPropagation();
-                props.onSelectStage('settings');
-              }}
-            >
-              <Settings size={15} className="st-nav-icon transition-colors duration-150" />
-            </button>
-          </div>
-        </div>
       </div>
 
       {/* Resize handle — must stay outside the min-width body or it becomes a
@@ -982,55 +808,6 @@ export function Sidebar(props: SidebarProps) {
         />
       ) : null}
     </aside>
-  );
-}
-
-function ActionRow(props: {
-  icon: React.ReactNode;
-  label: string;
-  testId: string;
-  active?: boolean;
-  accent?: boolean;
-  placeholder?: boolean;
-  onClick?(): void;
-}) {
-  const dialog = useDialog();
-  return (
-    <button
-      type="button"
-      data-testid={props.testId}
-      className={clsx(
-        'st-press-motion st-nav-item flex h-9 w-full items-center gap-2 rounded-(--radius-row) px-2 text-[12px]',
-        props.active
-          ? 'shell-row-active text-text'
-          : props.accent
-            ? 'text-text hover:bg-hover'
-            : 'text-text hover:bg-hover',
-        props.placeholder ? 'opacity-70' : '',
-      )}
-      onClick={() => {
-        if (props.placeholder && !props.onClick) {
-          void dialog.alert({
-            title: props.label,
-            message: '该功能即将推出，敬请期待。',
-            dismissText: '知道了',
-          });
-          return;
-        }
-        props.onClick?.();
-      }}
-      title={props.placeholder ? `${props.label}（即将推出）` : props.label}
-    >
-      <span
-        className={clsx(
-          'st-nav-icon transition-colors duration-150',
-          props.accent ? 'text-accent' : '',
-        )}
-      >
-        {props.icon}
-      </span>
-      <span className="flex-1 text-left">{props.label}</span>
-    </button>
   );
 }
 
@@ -1056,7 +833,7 @@ function GroupBlock(props: {
   onMoveToGroup(track: ConversationTrack, conversationId: string, groupId: string | null): void;
   onToggleSelected(id: string): void;
   onToggleMultiSelect(): void;
-  conversationActivity?: ReadonlyMap<string, { running: boolean; unread: boolean }>;
+  conversationActivity?: ReadonlyMap<string, ConversationActivityView>;
   agents: readonly GlobalAgent[];
   teams: readonly Team[];
   kernelOverrides?: Readonly<Record<string, string>>;
@@ -1155,7 +932,11 @@ const IDENTITY_SIZE = 18;
 const TEAM_STACK_FACE = 13;
 
 /** Running / unread indicator, pinned to the identity mark's bottom-right. */
-function RowActivityDot(props: { activity?: { running: boolean; unread: boolean } }) {
+function RowActivityDot(props: { activity?: ConversationActivityView }) {
+  if (props.activity?.attention || props.activity?.failed) {
+    const label = props.activity.attention ? ATTENTION_LABELS[props.activity.attention] : '执行失败待查看';
+    return <span className={`shell-activity-dot shell-activity-dot--${props.activity.attention ? 'attention' : 'failed'} st-conv-row__activity`} title={label} aria-label={label} />;
+  }
   if (props.activity?.running) {
     return (
       <span
@@ -1215,7 +996,7 @@ function TeamAvatarStack(props: {
 function ConversationIdentityMark(props: {
   conversationId: string;
   mark: ConversationRowMark;
-  activity?: { running: boolean; unread: boolean };
+  activity?: ConversationActivityView;
 }) {
   const logo =
     props.mark.kind === 'kernel' ? resolveKernelBrandLogo(props.mark.kernelId) : undefined;
@@ -1267,8 +1048,8 @@ function ConversationRow(props: {
   onMoveToGroup(groupId: string | null): void;
   onToggleSelected(): void;
   onStartMultiSelect(): void;
-  /** 运行中 / 完成未读状态圆点。 */
-  activity?: { running: boolean; unread: boolean };
+  /** 运行中动效 / 完成未读状态。 */
+  activity?: ConversationActivityView;
 }) {
   const openContextMenu = useContextMenu();
   const { conversation: c } = props;
@@ -1289,6 +1070,7 @@ function ConversationRow(props: {
   const heading = group ? title : twoLine ? props.name : title;
   const rawTitle = (c.title ?? '').trim();
   const thinking = group && roster?.busy === true;
+  const running = !props.activity?.attention && (props.activity?.running === true || thinking);
   const summary = group
     ? roster?.preview
       ? `${roster.previewSender ? `${roster.previewSender}：` : ''}${roster.preview}`
@@ -1412,7 +1194,7 @@ function ConversationRow(props: {
         <ConversationIdentityMark
           conversationId={String(c.id)}
           mark={mark}
-          activity={props.activity}
+          activity={running ? undefined : props.activity}
         />
         <span className="st-conv-row__body">
           <span className="flex min-w-0 items-center gap-2">
@@ -1421,6 +1203,8 @@ function ConversationRow(props: {
             <span className="st-conv-row__title flex-1 truncate text-[12px] font-medium leading-4">
               {heading}
             </span>
+            {props.activity?.attention ? <span className="st-conv-row__attention">{ATTENTION_LABELS[props.activity.attention]}</span> : null}
+            {running ? <SidebarThinkingIndicator conversationId={String(c.id)} /> : null}
             {title.startsWith('任务 ·') ? (
               <span className="shell-task-conv-badge" title="定时任务会话">
                 任务

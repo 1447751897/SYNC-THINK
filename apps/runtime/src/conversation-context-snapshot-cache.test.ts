@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ContextSnapshot } from './context-snapshot.js';
+import { resolveContextBudget } from './context-policy.js';
 import { ConversationContextSnapshotCache } from './conversation-context-snapshot-cache.js';
 
 function snapshot(modelId: string, kernelId?: string): ContextSnapshot {
@@ -13,7 +14,8 @@ function snapshot(modelId: string, kernelId?: string): ContextSnapshot {
       contextWindowSource: 'model-default',
       estimatedUsedTokens: 0,
       usageRatio: 0,
-      compactThreshold: 0.7,
+      compactThreshold: 0.85,
+      budget: resolveContextBudget({ contextWindow: 1, reservedOutputTokens: 0, safetyMarginTokens: 0 }),
       shouldAutoCompact: false,
       sections: [],
     },

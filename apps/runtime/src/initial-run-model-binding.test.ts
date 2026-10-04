@@ -1,11 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { AgentModelBinding } from '@sync-think/core';
-import type {
-  CredentialGroupId,
-  CredentialRefId,
-  ModelId,
-  ProviderId,
-} from '@sync-think/shared';
+import type { CredentialGroupId, CredentialRefId, ModelId, ProviderId } from '@sync-think/shared';
 import {
   resolveInitialRunModelBinding,
   type RunBindingCatalog,
@@ -59,7 +54,12 @@ describe('initial run model binding', () => {
   it('binds a catalog model, explicit credential, provider metadata and context window', () => {
     const catalog = fixture([
       model('default-model'),
-      model('selected', 'upstream-selected', 'provider-a', '{"contextWindow":200000.4}'),
+      model(
+        'selected',
+        'upstream-selected',
+        'provider-a',
+        '{"contextWindow":200000.4,"maxOutputTokens":2048}',
+      ),
     ]);
     expect(
       resolveInitialRunModelBinding(
@@ -74,6 +74,7 @@ describe('initial run model binding', () => {
       credentialResolutionSource: 'runOverride',
       useFakeProvider: false,
       modelContextWindow: 200_000,
+      modelMaxOutputTokens: 2048,
       contextWindowEstimated: false,
     });
   });
@@ -94,10 +95,7 @@ describe('initial run model binding', () => {
   });
 
   it('lets the plan/act route replace a manual model and maps its provider id', () => {
-    const catalog = fixture([
-      model('manual'),
-      model('plan-catalog', 'vendor/plan', 'provider-b'),
-    ]);
+    const catalog = fixture([model('manual'), model('plan-catalog', 'vendor/plan', 'provider-b')]);
     expect(
       resolveInitialRunModelBinding(
         {
@@ -111,17 +109,36 @@ describe('initial run model binding', () => {
   });
 
   it('allows the explicit demo model without a catalog', () => {
-    expect(resolveInitialRunModelBinding({ agent: { ...agent, defaultModelId: modelId('fake-mini') } }, { catalog: undefined, secureStoreAvailable: false })).toMatchObject({ modelId: 'fake-mini', useFakeProvider: true });
+    expect(
+      resolveInitialRunModelBinding(
+        { agent: { ...agent, defaultModelId: modelId('fake-mini') } },
+        { catalog: undefined, secureStoreAvailable: false },
+      ),
+    ).toMatchObject({ modelId: 'fake-mini', useFakeProvider: true });
   });
   it('rejects a deleted real model rather than silently producing a fake echo', () => {
-    expect(() => resolveInitialRunModelBinding({ agent: { ...agent, defaultModelId: modelId('deleted-id') } }, { catalog: fixture(), secureStoreAvailable: true })).toThrow('MODEL_BINDING_UNAVAILABLE');
+    expect(() =>
+      resolveInitialRunModelBinding(
+        { agent: { ...agent, defaultModelId: modelId('deleted-id') } },
+        { catalog: fixture(), secureStoreAvailable: true },
+      ),
+    ).toThrow('MODEL_BINDING_UNAVAILABLE');
   });
   it('rejects a missing real-model catalog and credential store', () => {
-    expect(() => resolveInitialRunModelBinding({ agent }, { catalog: undefined, secureStoreAvailable: false })).toThrow('MODEL_BINDING_UNAVAILABLE');
-    expect(() => resolveInitialRunModelBinding({ agent }, { catalog: fixture(), secureStoreAvailable: false })).toThrow('MODEL_CREDENTIAL_STORE_UNAVAILABLE');
+    expect(() =>
+      resolveInitialRunModelBinding({ agent }, { catalog: undefined, secureStoreAvailable: false }),
+    ).toThrow('MODEL_BINDING_UNAVAILABLE');
+    expect(() =>
+      resolveInitialRunModelBinding({ agent }, { catalog: fixture(), secureStoreAvailable: false }),
+    ).toThrow('MODEL_CREDENTIAL_STORE_UNAVAILABLE');
   });
   it('leaves external-kernel model resolution to that kernel, never FakeProvider', () => {
-    expect(resolveInitialRunModelBinding({ agent }, { catalog: undefined, secureStoreAvailable: false, externalKernel: true })).toMatchObject({ modelId: 'default-model', useFakeProvider: false });
+    expect(
+      resolveInitialRunModelBinding(
+        { agent },
+        { catalog: undefined, secureStoreAvailable: false, externalKernel: true },
+      ),
+    ).toMatchObject({ modelId: 'default-model', useFakeProvider: false });
   });
 
   it.each(['not json', '{"contextWindow":0}', '{"contextWindow":"large"}'])(
@@ -130,7 +147,10 @@ describe('initial run model binding', () => {
       expect(
         resolveInitialRunModelBinding(
           { agent },
-          { catalog: fixture([model('default-model', 'default-model', 'provider-a', limitsJson)]), secureStoreAvailable: true },
+          {
+            catalog: fixture([model('default-model', 'default-model', 'provider-a', limitsJson)]),
+            secureStoreAvailable: true,
+          },
         ),
       ).toMatchObject({ modelContextWindow: 128_000, contextWindowEstimated: true });
     },

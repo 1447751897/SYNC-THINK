@@ -7,7 +7,8 @@ import { streamOpenAIResponses } from './openai/stream-responses.js';
 
 export interface OpenAIResponsesAdapterOptions {
   fetchImpl?: DiscoverOpenAICompatibleModelsOptions['fetchImpl'];
-  timeoutMs?: number;
+  timeoutMs?: number | null;
+  streamIdleTimeoutMs?: number | null;
 }
 
 // Live OpenAI Responses adapter (TD-010).
@@ -23,7 +24,7 @@ export class OpenAIResponsesAdapter implements ProviderAdapter {
       apiKey,
       baseUrl,
       fetchImpl: this.opts.fetchImpl,
-      timeoutMs: this.opts.timeoutMs,
+      timeoutMs: this.opts.timeoutMs ?? undefined,
     });
   }
 
@@ -31,6 +32,7 @@ export class OpenAIResponsesAdapter implements ProviderAdapter {
     yield* streamOpenAIResponses(request, {
       fetchImpl: this.opts.fetchImpl,
       timeoutMs: this.opts.timeoutMs,
+      streamIdleTimeoutMs: this.opts.streamIdleTimeoutMs,
     });
   }
 }

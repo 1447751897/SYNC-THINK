@@ -133,6 +133,43 @@ describe('InlineVisualizationPreview', () => {
     expect(screen.queryByTestId('inline-visualization-skeleton')).toBeNull();
   });
 
+  it('times out a guest without its ready handshake and retains an accessible source preview', async () => {
+    vi.useFakeTimers();
+    await act(async () => { render(<InlineVisualizationPreview file="visualizations/demo.html" projectFolder="D:/work/demo" />); });
+    const webview = screen.getByTestId('inline-visualization-webview');
+    // dom-ready alone does not prove that the measurement preload initialized.
+    fireEvent(webview, new Event('dom-ready'));
+    act(() => vi.advanceTimersByTime(15_000));
+    expect(screen.getByRole('alert').textContent).toContain('预览初始化超时');
+    expect(screen.queryByTestId('inline-visualization-skeleton')).toBeNull();
+    expect(screen.getByText('查看静态预览与源码')).toBeTruthy();
+    expect(screen.getByTitle('HTML 预览').getAttribute('srcdoc')).toContain('Demo');
+    act(() => dispatchGuestMessage(webview, 'sync-think-visualization:ready'));
+    expect(screen.getByRole('alert').textContent).toContain('预览初始化超时');
+    fireEvent.click(screen.getByRole('button', { name: '重试' }));
+    await act(async () => {});
+    const retry = screen.getByTestId('inline-visualization-webview');
+    act(() => dispatchGuestMessage(retry, 'sync-think-visualization:ready'));
+    act(() => vi.advanceTimersByTime(30_000));
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(retry.style.opacity).toBe('1');
+  });
+
+  it('clears the startup deadline after ready and when the source is replaced', async () => {
+    vi.useFakeTimers();
+    let view!: ReturnType<typeof render>;
+    await act(async () => { view = render(<InlineVisualizationPreview file="visualizations/demo.html" projectFolder="D:/work/demo" />); });
+    act(() => vi.advanceTimersByTime(10_000));
+    await act(async () => { view.rerender(<InlineVisualizationPreview file="visualizations/next.html" projectFolder="D:/work/demo" />); });
+    act(() => vi.advanceTimersByTime(5_000));
+    expect(screen.queryByRole('alert')).toBeNull();
+    act(() => dispatchGuestMessage(screen.getByTestId('inline-visualization-webview'), 'sync-think-visualization:ready'));
+    act(() => vi.advanceTimersByTime(30_000));
+    expect(screen.queryByRole('alert')).toBeNull();
+    view.unmount();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it('offers a retry for missing files and keeps loading until the retried guest is ready', async () => {
     readProjectFile.mockResolvedValueOnce({
       path: 'visualizations/demo.html',
@@ -167,6 +204,16 @@ describe('InlineVisualizationPreview', () => {
     expect(await screen.findByText('脚本异常')).toBeTruthy();
     expect(screen.getByRole('button', { name: '重试' })).toBeTruthy();
     expect(screen.queryByTestId('inline-visualization-webview')).toBeNull();
+  });
+
+  it('opens the original source file from the static fallback after a guest failure', async () => {
+    const open = vi.fn();
+    render(<InlineVisualizationPreview file="visualizations/demo.html" projectFolder="D:/work/demo" onOpenInBrowser={open} />);
+    const guest = await screen.findByTestId('inline-visualization-webview');
+    act(() => dispatchGuestMessage(guest, 'sync-think-visualization:error', { message: '脚本异常' }));
+    fireEvent.click(screen.getByText('查看静态预览与源码'));
+    fireEvent.click(screen.getByRole('button', { name: '浏览器打开' }));
+    await waitFor(() => expect(open).toHaveBeenCalledWith(expect.stringContaining('<h1>Demo</h1>'), { relativePath: 'visualizations/demo.html', persist: false }));
   });
 
   it('recovers a native load failure without an error payload by rereading and remounting', async () => {
@@ -243,5 +290,50 @@ describe('InlineVisualizationPreview', () => {
     await act(async () => resolvePrevious({ content: '<h1>stale</h1>', error: null }));
     expect(webview.getAttribute('src')).toBe(currentSource);
     expect(decodeURIComponent(currentSource ?? '')).not.toContain('stale');
+  });
+});
+
+describe('saved local data documents', () => {
+  const html = boardDataHtml({
+    title: '本地数据',
+    components: [
+      { type: 'gauge', title: '进度', value: 4, max: 8 },
+      { type: 'stats', title: '汇总', items: [{ label: '数量', value: 4 }] },
+    ],
+  });
+  it('uses independent inline cards for local data HTML rather than one scrolling page', async () => {
+    readProjectFile.mockResolvedValueOnce({ content: html, error: null });
+    render(
+      <InlineVisualizationPreview file="visualizations/data.html" projectFolder="D:/work/demo" />,
+    );
+    expect(await screen.findAllByTestId('board-data-block')).toHaveLength(2);
+    expect(screen.queryByTestId('inline-visualization-webview')).toBeNull();
+    expect(executeJavaScript).not.toHaveBeenCalled();
+  });
+  it('keeps the portable renderer when opening an inert saved data document', async () => {
+    readProjectFile.mockResolvedValueOnce({ content: html, error: null });
+    const open = vi.fn();
+    render(<InlineVisualizationPreview file="visualizations/data.html" projectFolder="D:/work/demo" onOpenInBrowser={open} />);
+    const button = await screen.findByRole('button', { name: '浏览器打开' });
+    await waitFor(() => expect(button.hasAttribute('disabled')).toBe(false));
+    fireEvent.click(button);
+    await waitFor(() => expect(open).toHaveBeenCalledWith(expect.stringContaining('sync-think-board-data-runtime')));
+  });
+
+  it('retains the original isolated design-file path for explicit custom layouts', async () => {
+    readProjectFile.mockResolvedValueOnce({
+      content:
+        '<main data-boardui-layout="custom">' +
+        html +
+        '</main><script>window.designInteraction=true</script>',
+      error: null,
+    });
+    render(
+      <InlineVisualizationPreview file="visualizations/design.html" projectFolder="D:/work/demo" />,
+    );
+    const guest = await screen.findByTestId('inline-visualization-webview');
+    await waitFor(() => expect(guest.getAttribute('src')).toMatch(/^data:text/));
+    expect(decodeURIComponent(guest.getAttribute('src')!)).toContain('designInteraction');
+    expect(screen.queryByTestId('board-data-block')).toBeNull();
   });
 });

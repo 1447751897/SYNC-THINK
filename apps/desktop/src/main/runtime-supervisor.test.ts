@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  buildNodeBinaryCandidates,
   buildDaemonAutostartCommand,
   buildDaemonRegistryAutostartCommand,
   buildManagedRuntimeEnvironment,
@@ -141,5 +142,44 @@ describe('buildManagedRuntimeEnvironment', () => {
       '"C:\\node\\node.exe" "C:\\runtime\\daemon\\index.js" --bootstrap "C:\\Users\\fixture\\daemon-bootstrap.json" sync-think-managed-daemon=install-managed',
     );
     expect(command).not.toContain('pipe-secret');
+  });
+});
+
+describe('managed Node candidates', () => {
+  const normalize = (path: string) => path.replace(/\\/g, '/');
+
+  it('keeps explicit and packaged Node ahead of user-installed candidates', () => {
+    const candidates = buildNodeBinaryCandidates({
+      SYNC_THINK_NODE_BIN: 'D:/explicit/node.exe', LOCALAPPDATA: 'D:/app-data',
+      USERPROFILE: 'C:/Users/fixture',
+    }, 'D:/resources', 'win32').map(normalize);
+    expect(candidates.slice(0, 2)).toEqual(['D:/explicit/node.exe', 'D:/resources/node/node.exe']);
+  });
+
+  it('finds the real user pnpm Node when LOCALAPPDATA is redirected', () => {
+    const candidates = buildNodeBinaryCandidates({
+      LOCALAPPDATA: 'D:/projects/fixture/.data', USERPROFILE: 'C:/Users/fixture',
+    }, undefined, 'win32').map(normalize);
+    expect(candidates).toContain('C:/Users/fixture/AppData/Local/pnpm/nodejs/20.20.2/node.exe');
+    expect(candidates.indexOf('C:/Users/fixture/AppData/Local/pnpm/nodejs/20.20.2/node.exe'))
+      .toBeLessThan(candidates.indexOf('node.exe'));
+  });
+
+  it('supports PNPM_HOME without depending on the app data directory', () => {
+    expect(buildNodeBinaryCandidates({ PNPM_HOME: 'D:/pnpm' }, undefined, 'win32')
+      .map(normalize)).toContain('D:/pnpm/nodejs/20.20.2/node.exe');
+  });
+
+  it('falls back to the OS home when USERPROFILE is absent and deduplicates candidates', () => {
+    const candidates = buildNodeBinaryCandidates({ LOCALAPPDATA: 'C:/Users/fixture/AppData/Local' },
+      undefined, 'win32', 'C:/Users/fixture').map(normalize);
+    expect(candidates.filter(path => path === 'C:/Users/fixture/AppData/Local/pnpm/nodejs/20.20.2/node.exe'))
+      .toHaveLength(1);
+  });
+
+  it('keeps non-Windows discovery free of Windows profile paths', () => {
+    const candidates = buildNodeBinaryCandidates({ PATH: '/usr/local/bin:/usr/bin' },
+      '/opt/resources', 'linux', '/home/fixture').map(normalize);
+    expect(candidates).toEqual(['/opt/resources/node/node', 'node', '/usr/local/bin/node', '/usr/bin/node']);
   });
 });

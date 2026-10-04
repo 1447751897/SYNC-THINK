@@ -647,3 +647,17 @@ it('retains kernel truncation metadata and keeps notices out of command stdout a
     await context.close();
   }
 });
+
+
+it('marks only a direct user append as a host-owned definition proposal turn', async () => {
+  const context = await fixture();
+  try {
+    context.canStart.mockReturnValue(true);
+    const prepare = vi.spyOn(context.internal, 'prepareRunBinding');
+    const response = await context.append('那按刚才我们说的，我要一个分析项目的team，你帮我创建吧');
+    expect(response.error).toBeUndefined();
+    expect(prepare.mock.calls[0][0]).toMatchObject({ definitionProposalsAllowed: true });
+    expect([...context.internal.demoRuns.values()].some(run => run.definitionProposalsAllowed === true)).toBe(true);
+    expect(context.execute).toHaveBeenCalledTimes(1);
+  } finally { await context.close(); }
+});

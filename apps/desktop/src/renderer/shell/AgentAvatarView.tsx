@@ -2,16 +2,13 @@
 // seeds and empty avatars use the same folded face as chat; uploaded images
 // and explicit emoji/text keep their original rendering.
 import { lazy, memo, Suspense } from 'react';
-import { avatarColor } from './avatar-color.js';
+import { AgentAvatarFallback } from './AgentAvatarFallback.js';
+export { isImageAvatar } from './AgentAvatarFallback.js';
 import type { AvatarState } from './avatar-gen.js';
 import { botAvatarColor, parseBotAvatar, resolveBotAvatarFace } from './bot-avatar.js';
 
 import { parseWorkspaceAvatar } from './workspace-avatar-profile.js';
 const WorkspaceAvatar = lazy(() => import('./AgentWorkspaceAvatar.js').then(module => ({ default: module.AgentWorkspaceAvatar })));
-
-export function isImageAvatar(avatar: string | undefined): boolean {
-  return Boolean(avatar?.trim().startsWith('data:image/'));
-}
 
 export function isGeneratedAvatar(avatar: string | undefined): boolean {
   return parseBotAvatar(avatar) !== null || parseWorkspaceAvatar(avatar) !== null;
@@ -34,18 +31,6 @@ export const AgentAvatarView = memo(function AgentAvatarView({
   animate?: boolean;
 }) {
   const trimmed = avatar?.trim() ?? '';
-  if (isImageAvatar(trimmed)) {
-    return (
-      <img
-        src={trimmed}
-        alt={name}
-        title={title ?? name}
-        style={{ width: size, height: size, borderRadius: '50%', objectFit: 'cover' }}
-        className="shrink-0 select-none"
-        draggable={false}
-      />
-    );
-  }
   const workspaceFace = parseWorkspaceAvatar(trimmed);
   const botFace = parseBotAvatar(trimmed);
   // Chat already derives a folded face when no seed is stored. Keep the library
@@ -67,22 +52,7 @@ export const AgentAvatarView = memo(function AgentAvatarView({
       </Suspense>
     );
   }
-  const label = trimmed.slice(0, 2);
-  return (
-    <div
-      style={{
-        width: size,
-        height: size,
-        background: avatarColor(name),
-        borderRadius: '50%',
-        fontSize: size * 0.45,
-      }}
-      className="flex shrink-0 items-center justify-center text-[var(--color-avatar-fg)] select-none"
-      title={title ?? name}
-    >
-      {label}
-    </div>
-  );
+  return <AgentAvatarFallback name={name} avatar={trimmed} size={size} title={title} />;
 });
 
 /**

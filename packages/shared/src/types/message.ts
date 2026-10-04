@@ -15,6 +15,7 @@ export interface MessageBlock {
     | 'text'
     | 'code'
     | 'image'
+    | 'file'
     | 'plan'
     | 'tool-call'
     | 'tool-result'

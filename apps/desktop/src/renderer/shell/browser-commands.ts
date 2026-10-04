@@ -3,7 +3,6 @@
 // 在 BrowserPanel 注册的 <webview> 上执行 executeJavaScript / capturePage，
 // 结果经 conversation.submitBrowserResult 回传给等待中的工具循环。
 // 安全边界：脚本只在 guest 页执行；回传值 JSON 序列化并截断（64KB 上限）。
-import { resolveBrowserClickTarget } from '@sync-think/shared';
 
 /** Guest 页可见文本读取上限（约 8KB），避免整页 dump 挤爆模型上下文。 */
 export const BROWSER_READ_TEXT_MAX_CHARS = 8_192;
@@ -23,10 +22,13 @@ export interface BrowserWebviewElement extends HTMLElement {
 // route commands to the pane that is focused or was interacted with most recently.
 const registeredWebviews: BrowserWebviewElement[] = [];
 const intendedUrls = new WeakMap<BrowserWebviewElement, string>();
+const pendingNavigations = new WeakMap<BrowserWebviewElement, string>();
 let activeWebview: BrowserWebviewElement | null = null;
+let viewOwners = new WeakMap<BrowserWebviewElement, string>();
 const ownerWebviews = new Map<string, WeakRef<BrowserWebviewElement> | null>();
 
 function bindOwner(ownerId: string, view: BrowserWebviewElement | null): void {
+  if (view) viewOwners.set(view, ownerId);
   ownerWebviews.set(ownerId, view ? new WeakRef(view) : null);
   if (ownerWebviews.size > 256) ownerWebviews.delete(ownerWebviews.keys().next().value!);
 }
@@ -52,23 +54,36 @@ export function registerBrowserWebview(
   view: BrowserWebviewElement | null,
   activate = true,
   intendedUrl?: string,
+  ownerId?: string,
 ): void {
   if (!view) {
     registeredWebviews.splice(0, registeredWebviews.length);
     activeWebview = null;
     ownerWebviews.clear();
+    viewOwners = new WeakMap();
     return;
   }
   if (!registeredWebviews.includes(view)) registeredWebviews.push(view);
   if (intendedUrl) intendedUrls.set(view, intendedUrl);
+  if (ownerId) {
+    viewOwners.set(view, ownerId);
+    const previous = ownerWebviews.get(ownerId)?.deref();
+    if (activate || !previous || !registeredWebviews.includes(previous)) bindOwner(ownerId, view);
+  }
   if (activate || !activeWebview) activeWebview = view;
 }
 
-export function findRegisteredBrowserWebview(url: string): BrowserWebviewElement | null {
+function ownedByAnotherConversation(view: BrowserWebviewElement, ownerId?: string): boolean {
+  const owner = viewOwners.get(view);
+  return !!ownerId && !!owner && owner !== ownerId;
+}
+
+export function findRegisteredBrowserWebview(url: string, ownerId?: string): BrowserWebviewElement | null {
   return (
     registeredWebviews.find(
       (view) =>
-        guestUrlsMatch(intendedUrls.get(view), url) || guestUrlsMatch(currentGuestUrl(view), url),
+        !ownedByAnotherConversation(view, ownerId) &&
+        (guestUrlsMatch(intendedUrls.get(view), url) || guestUrlsMatch(currentGuestUrl(view), url)),
     ) ?? null
   );
 }
@@ -76,6 +91,8 @@ export function findRegisteredBrowserWebview(url: string): BrowserWebviewElement
 export function activateBrowserWebview(view: BrowserWebviewElement | null): void {
   if (!view) return;
   if (!registeredWebviews.includes(view)) registeredWebviews.push(view);
+  const owner = viewOwners.get(view);
+  if (owner) bindOwner(owner, view);
   activeWebview = view;
 }
 
@@ -88,7 +105,7 @@ export function unregisterBrowserWebview(view: BrowserWebviewElement | null): vo
 
 export function getOwnedBrowserWebview(ownerId: string): BrowserWebviewElement | undefined {
   const view = ownerWebviews.get(ownerId)?.deref();
-  return view && registeredWebviews.includes(view) ? view : undefined;
+  return view && registeredWebviews.includes(view) && viewOwners.get(view) === ownerId ? view : undefined;
 }
 
 export function getActiveBrowserWebview(): BrowserWebviewElement | null {
@@ -97,10 +114,15 @@ export function getActiveBrowserWebview(): BrowserWebviewElement | null {
 
 /** Navigate the task's existing guest so cookies survive same-task navigation. */
 export function navigateOwnedBrowserWebview(ownerId: string, url: string): boolean {
-  const view = ownerWebviews.get(ownerId)?.deref();
-  if (!view || !registeredWebviews.includes(view) || !/^https?:\/\//i.test(url)) return false;
+  const view = getOwnedBrowserWebview(ownerId);
+  if (!view || !/^https?:\/\//i.test(url)) return false;
+  const sameTarget = guestUrlsMatch(currentGuestUrl(view), url) || guestUrlsMatch(intendedUrls.get(view), url);
   intendedUrls.set(view, url);
-  view.src = url;
+  if (!sameTarget) {
+    pendingNavigations.set(view, currentGuestUrl(view));
+    view.src = url;
+  }
+  activateBrowserWebview(view);
   return true;
 }
 
@@ -112,6 +134,21 @@ export interface BrowserCommandOutcome {
 
 const PANEL_NOT_READY_ERROR =
   '内置浏览器面板未打开或页面未就绪。请先调用 browser_open 打开目标页面（会自动弹出右栏），等待加载后再操作。';
+
+const failureMessages: Record<string, string> = {
+  'invalid-selector': '选择器语法不受支持，请使用 browser_read 返回的 controls.selector 或可见文字重新定位。',
+  'ambiguous-target': '匹配到多个目标，尚未点击。请使用 browser_read 返回的唯一选择器。',
+  'disabled-target': '目标当前不可点击，尚未发送点击。请检查输入校验或加载状态。',
+  'target-not-found': '当前页面没有匹配到目标，请重新读取页面后定位。',
+  'occluded-target': '目标被遮挡或已移动，尚未点击。请读取当前页面后重试。',
+  'page-not-ready': PANEL_NOT_READY_ERROR,
+  'trusted-click-failed': '可信点击发送失败，未重复发送模拟点击。请重新读取页面状态。',
+  'input-target-invalid': '输入目标不是可编辑字段，未写入内容。',
+};
+function browserCommandFailure(reason: string, error = failureMessages[reason] ?? failureMessages['target-not-found']!): BrowserCommandOutcome {
+  const code = Object.hasOwn(failureMessages, reason) ? `browser.${reason}` : 'browser.target-not-found';
+  return { ok: false, error, resultJson: JSON.stringify({ ok: false, code }) };
+}
 
 function clampResult(value: unknown): string {
   let json: string;
@@ -128,165 +165,6 @@ function clampResult(value: unknown): string {
     });
   }
   return json;
-}
-
-function isVisibleGuestElementSource(): string {
-  return `function isVisible(el) {
-      if (!el || !(el instanceof Element)) return false;
-      const style = getComputedStyle(el);
-      if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0) return false;
-      const rect = el.getBoundingClientRect();
-      return rect.width > 1 && rect.height > 1;
-    }
-    function labelOf(el) {
-      return String(el.innerText || el.value || el.getAttribute('aria-label') || el.getAttribute('title') || '').replace(/\\s+/g, ' ').trim();
-    }
-    function clickableNodes() {
-      return Array.from(document.querySelectorAll('a[href], button, [role="button"], [role="link"], input[type="submit"], input[type="button"], [onclick]'));
-    }`;
-}
-
-/** 解析目标：可见 CSS / 可见文本；坐标回传给主进程做可信点击。 */
-function buildResolveClickScript(args: Record<string, unknown>): string {
-  const target = resolveBrowserClickTarget({
-    selector: typeof args.selector === 'string' ? args.selector : undefined,
-    text: typeof args.text === 'string' ? args.text : undefined,
-    x: typeof args.x === 'number' ? args.x : undefined,
-    y: typeof args.y === 'number' ? args.y : undefined,
-  });
-  const css = target.css ?? '';
-  const text = target.text ?? '';
-  const x = target.x ?? -1;
-  const y = target.y ?? -1;
-  return `(() => {
-    ${isVisibleGuestElementSource()}
-    const css = ${JSON.stringify(css)};
-    const text = ${JSON.stringify(text)};
-    const needle = text.toLowerCase();
-    let el = null;
-    let reason = '';
-    if (css) {
-      try {
-        const matches = Array.from(document.querySelectorAll(css)).filter(isVisible);
-        el = needle
-          ? matches.find((node) => labelOf(node).toLowerCase().includes(needle)) || null
-          : matches[0] || null;
-        if (!el) reason = needle ? 'no visible element matches selector and text' : 'no visible element matches selector';
-      } catch {
-        reason = 'invalid CSS selector';
-      }
-    } else if (needle) {
-      el = clickableNodes().filter(isVisible).find((node) => {
-        const label = labelOf(node).toLowerCase();
-        return label === needle || label.includes(needle);
-      }) || null;
-      if (!el) reason = 'no visible link or button matches text';
-    } else {
-      el = document.elementFromPoint(${x}, ${y});
-      if (!el) reason = 'no element at coordinates';
-    }
-    if (!el) {
-      const candidates = clickableNodes().filter(isVisible).slice(0, 12).map(labelOf).filter(Boolean);
-      return { found: false, clicked: false, reason, candidates, url: location.href };
-    }
-    try { el.scrollIntoView({ block: 'center', inline: 'center' }); } catch {}
-    const rect = el.getBoundingClientRect();
-    return {
-      found: true,
-      x: Math.round(rect.left + rect.width / 2),
-      y: Math.round(rect.top + rect.height / 2),
-      tag: el.tagName.toLowerCase(),
-      text: labelOf(el).slice(0, 120),
-      href: el instanceof HTMLAnchorElement ? el.href : undefined,
-      url: location.href,
-    };
-  })()`;
-}
-
-function buildSyntheticClickScript(x: number, y: number): string {
-  return `(() => {
-    const el = document.elementFromPoint(${x}, ${y});
-    if (!el) return { clicked: false, reason: 'no element at coordinates', url: location.href };
-    const opts = { bubbles: true, cancelable: true, view: window, clientX: ${x}, clientY: ${y} };
-    el.dispatchEvent(new PointerEvent('pointerdown', opts));
-    el.dispatchEvent(new MouseEvent('mousedown', opts));
-    el.dispatchEvent(new PointerEvent('pointerup', opts));
-    el.dispatchEvent(new MouseEvent('mouseup', opts));
-    if (typeof el.click === 'function') el.click();
-    else el.dispatchEvent(new MouseEvent('click', opts));
-    return { clicked: true, tag: el.tagName.toLowerCase(), url: location.href };
-  })()`;
-}
-
-/** 输入脚本：native value setter + input/change 事件，兼容 React 受控输入。 */
-function buildTypeScript(args: Record<string, unknown>): string {
-  const selector = typeof args.selector === 'string' ? args.selector : '';
-  const text = typeof args.text === 'string' ? args.text : '';
-  return `(() => {
-    const sel = ${JSON.stringify(selector)};
-    const text = ${JSON.stringify(text)};
-    const el = document.querySelector(sel);
-    if (!el) return { typed: false, reason: 'no element matches selector', url: location.href };
-    try { el.scrollIntoView({ block: 'center', inline: 'center' }); } catch {}
-    el.focus();
-    if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
-      const proto = el instanceof HTMLTextAreaElement
-        ? HTMLTextAreaElement.prototype
-        : HTMLInputElement.prototype;
-      const desc = Object.getOwnPropertyDescriptor(proto, 'value');
-      if (desc && desc.set) desc.set.call(el, text);
-      else el.value = text;
-      el.dispatchEvent(new Event('input', { bubbles: true }));
-      el.dispatchEvent(new Event('change', { bubbles: true }));
-      return { typed: true, tag: el.tagName.toLowerCase(), valueLength: el.value.length, url: location.href };
-    }
-    if (el.isContentEditable) {
-      el.textContent = text;
-      el.dispatchEvent(new InputEvent('input', { bubbles: true }));
-      return { typed: true, tag: 'contenteditable', valueLength: text.length, url: location.href };
-    }
-    return { typed: false, reason: 'element is not an input / textarea / contentEditable', url: location.href };
-  })()`;
-}
-
-/** 读取脚本：标题 / URL / 可见文本（截断）+ 链接与按钮概要，供 AI 理解页面。 */
-function buildReadScript(args: Record<string, unknown>): string {
-  const selector = typeof args.selector === 'string' ? args.selector : '';
-  return `(() => {
-    const sel = ${JSON.stringify(selector)};
-    const max = ${BROWSER_READ_TEXT_MAX_CHARS};
-    const target = sel ? document.querySelector(sel) : document.body;
-    if (!target) {
-      return { found: false, error: 'no element matches selector', title: document.title, url: location.href };
-    }
-    const isVisible = (el) => {
-      if (!el || !(el instanceof Element)) return false;
-      const style = getComputedStyle(el);
-      if (style.display === 'none' || style.visibility === 'hidden') return false;
-      const rect = el.getBoundingClientRect();
-      return rect.width > 1 && rect.height > 1;
-    };
-    const fullText = String(target.innerText || '').replace(/\\n{3,}/g, '\\n\\n').trim();
-    const links = Array.from(document.querySelectorAll('a[href]'))
-      .filter(isVisible)
-      .map((a) => ({ text: String(a.innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 80), href: a.href }))
-      .filter((l) => l.text)
-      .slice(0, 80);
-    const buttons = Array.from(document.querySelectorAll('button, input[type="submit"], [role="button"]'))
-      .filter(isVisible)
-      .map((b) => String(b.innerText || b.value || b.getAttribute('aria-label') || '').replace(/\\s+/g, ' ').trim().slice(0, 80))
-      .filter(Boolean)
-      .slice(0, 40);
-    return {
-      found: true,
-      title: document.title,
-      url: location.href,
-      text: fullText.slice(0, max),
-      truncated: fullText.length > max,
-      links,
-      buttons,
-    };
-  })()`;
 }
 
 export interface ExecuteBrowserCommandInput {
@@ -324,10 +202,10 @@ export async function executeBrowserCommand(
       return { ok: false, error: 'browser_open: 需要有效的 http(s) URL。' };
     }
     const owned = input.ownerId ? ownerWebviews.get(input.ownerId)?.deref() : undefined;
-    if (input.ownerId) bindOwner(input.ownerId, null);
     const matching = await waitForBrowserPage(
       url,
       owned && registeredWebviews.includes(owned) ? owned : undefined,
+      input.ownerId,
     );
     if (!matching)
       return { ok: false, error: 'browser_open: 目标页面尚未就绪，请检查浏览器标签页后重试。' };
@@ -343,11 +221,12 @@ export async function executeBrowserCommand(
     input.ownerId && ownerWebviews.has(input.ownerId)
       ? ownerWebviews.get(input.ownerId)?.deref()
       : await waitForActiveWebview();
-  if (!view || !registeredWebviews.includes(view))
-    return { ok: false, error: PANEL_NOT_READY_ERROR };
+  if (!view || !registeredWebviews.includes(view) || ownedByAnotherConversation(view, input.ownerId))
+    return browserCommandFailure('page-not-ready', PANEL_NOT_READY_ERROR);
   if (input.ownerId) bindOwner(input.ownerId, view);
 
   try {
+    const { buildResolveClickScript, buildSyntheticClickScript, buildTypeScript, buildReadScript } = await import('./browser-command-scripts.js');
     if (input.action === 'navigate') {
       const url = typeof input.args.url === 'string' ? input.args.url.trim() : '';
       if (!/^https?:\/\//i.test(url)) {
@@ -377,26 +256,22 @@ export async function executeBrowserCommand(
       const x = Math.round(Number(resolved?.x));
       const y = Math.round(Number(resolved?.y));
       if (!resolved || resolved.found !== true || !Number.isFinite(x) || !Number.isFinite(y)) {
-        return {
-          ok: false,
-          error: resolved?.reason
-            ? `browser_click: 没有点到可见元素（${resolved.reason}）。请改用可见文案、更精确的 CSS，或先 browser_read。`
-            : 'browser_click: 没有点到可见元素。请改用可见文案、更精确的 CSS，或先 browser_read。',
-          resultJson: clampResult(resolved ?? { clicked: false }),
-        };
+        return browserCommandFailure(resolved?.reason ?? 'target-not-found');
       }
       let trusted = false;
       if (input.sendTrustedClick) {
         try {
           const webContentsId = view.getWebContentsId();
           const sent = await input.sendTrustedClick({ webContentsId, x, y });
-          trusted = sent.ok === true;
+          if (!sent.ok) return browserCommandFailure('trusted-click-failed');
+          trusted = true;
         } catch {
-          trusted = false;
+          return browserCommandFailure('trusted-click-failed');
         }
       }
       if (!trusted) {
-        await view.executeJavaScript(buildSyntheticClickScript(x, y));
+        const clicked = await view.executeJavaScript(buildSyntheticClickScript(x, y)) as { clicked?: boolean };
+        if (!clicked?.clicked) return browserCommandFailure('occluded-target');
       }
       return {
         ok: true,
@@ -411,11 +286,13 @@ export async function executeBrowserCommand(
       };
     }
     if (input.action === 'browser_type') {
-      const result = await view.executeJavaScript(buildTypeScript(input.args));
+      const result = await view.executeJavaScript(buildTypeScript(input.args)) as { typed?: boolean; reason?: string };
+      if (!result?.typed) return browserCommandFailure(result?.reason && Object.hasOwn(failureMessages, result.reason) ? result.reason : 'input-target-invalid');
       return { ok: true, resultJson: clampResult(result) };
     }
     if (input.action === 'browser_read') {
-      const result = await view.executeJavaScript(buildReadScript(input.args));
+      const result = await view.executeJavaScript(buildReadScript(input.args)) as { found?: boolean; reason?: string };
+      if (!result?.found) return browserCommandFailure(result?.reason ?? 'target-not-found');
       return { ok: true, resultJson: clampResult(result) };
     }
     if (input.action === 'browser_screenshot') {
@@ -461,12 +338,13 @@ export async function executeBrowserCommand(
 async function waitForBrowserPage(
   url: string,
   owned?: BrowserWebviewElement,
+  ownerId?: string,
   timeoutMs = 10_000,
 ): Promise<BrowserWebviewElement | null> {
   const deadline = Date.now() + timeoutMs;
   const loading = new WeakSet<BrowserWebviewElement>();
   while (Date.now() < deadline) {
-    const view = owned ?? findRegisteredBrowserWebview(url);
+    const view = (ownerId ? getOwnedBrowserWebview(ownerId) : undefined) ?? owned ?? findRegisteredBrowserWebview(url, ownerId);
     if (view) {
       try {
         const isLoading = view.isLoading?.() ?? false;
@@ -475,9 +353,12 @@ async function waitForBrowserPage(
         if (
           !isLoading &&
           /^https?:\/\//i.test(actual) &&
-          (guestUrlsMatch(actual, url) || loading.has(view))
-        )
+          (!pendingNavigations.has(view) || !guestUrlsMatch(actual, pendingNavigations.get(view)!) || loading.has(view)) &&
+          (guestUrlsMatch(actual, url) || guestUrlsMatch(intendedUrls.get(view), url) || loading.has(view))
+        ) {
+          pendingNavigations.delete(view);
           return view;
+        }
       } catch {
         /* guest is attaching */
       }

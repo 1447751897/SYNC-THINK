@@ -1,8 +1,29 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { createElement } from 'react';
-import { renderToStaticMarkup } from 'react-dom/server';
+import { renderToStaticMarkup, renderToPipeableStream } from 'react-dom/server';
+import { PassThrough } from 'node:stream';
 import { MarkdownContent } from './MarkdownContent.js';
+
+/** HTML/visualization panels are lazy; assert the settled SSR, not Suspense's first frame. */
+function renderSettled(element: Parameters<typeof renderToStaticMarkup>[0]): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const output = new PassThrough();
+    let html = '';
+    output.on('data', (chunk) => {
+      html += chunk.toString();
+    });
+    output.on('end', () => resolve(html));
+    const stream = renderToPipeableStream(element, {
+      onAllReady() {
+        stream.pipe(output);
+      },
+      onError(error) {
+        reject(error);
+      },
+    });
+  });
+}
 
 const shellCss = readFileSync(new URL('./shell.css', import.meta.url), 'utf8');
 
@@ -159,8 +180,8 @@ describe('MarkdownContent', () => {
     expect(settledHtml).toContain('hljs-keyword');
   });
 
-  it('renders a fenced html block inside a fixed-height sanitized iframe', () => {
-    const html = renderToStaticMarkup(
+  it('renders a fenced html block inside an adaptive sanitized iframe', async () => {
+    const html = await renderSettled(
       createElement(MarkdownContent, {
         text: '```html\n<div id="app">Hello</div>\n```',
       }),
@@ -184,8 +205,8 @@ describe('MarkdownContent', () => {
     expect(html).not.toContain('data:text/html');
   });
 
-  it('offers a preview/source view switcher on the html sandbox', () => {
-    const html = renderToStaticMarkup(
+  it('offers a preview/source view switcher on the html sandbox', async () => {
+    const html = await renderSettled(
       createElement(MarkdownContent, {
         text: '```html\n<p>hi</p>\n```',
       }),
@@ -199,8 +220,8 @@ describe('MarkdownContent', () => {
     expect(html).toContain('shell-html__collapse');
   });
 
-  it('renders a streaming html block immediately like NewMax', () => {
-    const html = renderToStaticMarkup(
+  it('renders a streaming html block immediately like NewMax', async () => {
+    const html = await renderSettled(
       createElement(MarkdownContent, {
         text: '```html\n<div id="app">Hello',
         streaming: true,
@@ -210,8 +231,8 @@ describe('MarkdownContent', () => {
     expect(html).toContain('shell-html__content');
   });
 
-  it('sanitizes a complete html document before putting it into srcDoc', () => {
-    const html = renderToStaticMarkup(
+  it('sanitizes a complete html document before putting it into srcDoc', async () => {
+    const html = await renderSettled(
       createElement(MarkdownContent, {
         text: '```html\n<!DOCTYPE html>\n<html>\n<head><title>t</title></head>\n<body style="background:#222">x</body>\n</html>\n```',
       }),
@@ -221,8 +242,8 @@ describe('MarkdownContent', () => {
     expect(html).toContain('background:#222');
   });
 
-  it('renders a bare html fragment in srcDoc', () => {
-    const html = renderToStaticMarkup(
+  it('renders a bare html fragment in srcDoc', async () => {
+    const html = await renderSettled(
       createElement(MarkdownContent, {
         text: '```html\n<div id="app">Hello</div>\n```',
       }),
@@ -232,20 +253,20 @@ describe('MarkdownContent', () => {
     expect(html).toContain('Hello');
   });
 
-  it('previews design drafts as NewMax HtmlPreview html fences', () => {
-    const design = renderToStaticMarkup(
+  it('previews design drafts as NewMax HtmlPreview html fences', async () => {
+    const design = await renderSettled(
       createElement(MarkdownContent, {
         text: '```html\n<main>Design surface</main>\n```',
         projectFolder: 'D:/work/demo',
       }),
     );
-    const leftover = renderToStaticMarkup(
+    const leftover = await renderSettled(
       createElement(MarkdownContent, {
         text: '```design-html\n<main>Legacy draft</main>\n```',
         projectFolder: 'D:/work/demo',
       }),
     );
-    const jsonKit = renderToStaticMarkup(
+    const jsonKit = await renderSettled(
       createElement(MarkdownContent, {
         text: '```design-ui\n{"version":1,"type":"ui-design","title":"x","nodes":[]}\n```',
       }),
@@ -276,8 +297,8 @@ describe('MarkdownContent', () => {
     expect(tagged).not.toContain('html-sandbox-content');
   });
 
-  it('renders a file-backed inline visualization between Markdown segments', () => {
-    const html = renderToStaticMarkup(
+  it('renders a file-backed inline visualization between Markdown segments', async () => {
+    const html = await renderSettled(
       createElement(MarkdownContent, {
         text: '可视化结果：\n\n::newmax-inline-vis{file="visualizations/longguo-command-center.html"}\n\n以上为实时预览。',
         projectFolder: 'D:/work/demo',
@@ -364,7 +385,10 @@ describe('MarkdownContent', () => {
   it('repairs a truncated generated-image link using imageModelBySrc', () => {
     const absolute = 'D:\\work\\.sync-think\\generated-images\\card.png';
     const encoded = `sync-think-image://generated/${encodeURIComponent(absolute)}`;
-    const truncated = encoded.slice(0, encoded.indexOf('generated-images') + 'generated-images'.length + 2);
+    const truncated = encoded.slice(
+      0,
+      encoded.indexOf('generated-images') + 'generated-images'.length + 2,
+    );
     const html = renderToStaticMarkup(
       createElement(MarkdownContent, {
         text: `![角色卡](${truncated}`,
@@ -374,4 +398,15 @@ describe('MarkdownContent', () => {
     expect(html).toContain('data-testid="generated-image-frame"');
     expect(html).toContain(encoded);
   });
+});
+
+it('loads interactive drawing controls lazily and keeps noninteractive drawing JSON readable', () => {
+  const text = '```excalidraw\n{"type":"excalidraw","version":2,"elements":[]}\n```';
+  const loading = renderToStaticMarkup(createElement(MarkdownContent, { text }));
+  expect(loading).toContain('正在加载画布预览');
+  const code = renderToStaticMarkup(
+    createElement(MarkdownContent, { text, interactiveEmbeds: false }),
+  );
+  expect(code).toContain('excalidraw');
+  expect(code).not.toContain('正在加载画布预览');
 });

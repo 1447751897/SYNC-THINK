@@ -477,7 +477,7 @@ async function createFixture(events: () => AdapterEvent[], tickMs: number = 1) {
 
 async function createDelegationFixture(
   provider: ProviderAdapter,
-  options: { existingAgent?: boolean; dynamicSubagentsEnabled?: boolean } = {},
+  options: { existingAgent?: boolean; dynamicSubagentsEnabled?: boolean; writePolicy?: 'read-only' | 'inherit' } = {},
 ) {
   const dir = mkdtempSync(join(tmpdir(), 'sync-think-delegation-'));
   tempDirs.push(dir);
@@ -511,6 +511,7 @@ async function createDelegationFixture(
         name: 'child delegation task reviewer',
         defaultModelId: 'fake-mini' as ModelId,
         persona: 'Focused child delegation task reviewer',
+        ...(options.writePolicy ? {writePolicy:options.writePolicy} : {}),
         description: 'Matches child delegation task work',
       })
     : undefined;
@@ -1661,7 +1662,7 @@ describe('conversation transient shadow stream', () => {
 
   it('keeps a delegated child inside the read-only tool allowlist', async () => {
     const provider = new ReadOnlyProbeChildProvider();
-    const fixture = await createDelegationFixture(provider);
+    const fixture = await createDelegationFixture(provider, {writePolicy:'read-only'});
     const socket = await connectRuntime(fixture.installId);
     const inbox = createInbox(socket);
     try {
@@ -1714,7 +1715,7 @@ describe('conversation transient shadow stream', () => {
 
   it('refuses a delegated child that bypasses the tool catalog with an MCP tool', async () => {
     const provider = new McpProbeChildProvider();
-    const fixture = await createDelegationFixture(provider);
+    const fixture = await createDelegationFixture(provider, {writePolicy:'read-only'});
     const socket = await connectRuntime(fixture.installId);
     const inbox = createInbox(socket);
     try {

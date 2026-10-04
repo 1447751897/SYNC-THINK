@@ -235,7 +235,10 @@ function classifyHttpFailure(status: number, snippet: string): AnthropicCallErro
 
 export interface StreamAnthropicMessagesOptions {
   fetchImpl?: typeof fetch;
-  timeoutMs?: number;
+  /** Optional total deadline; omitted/null means no total limit. */
+  timeoutMs?: number | null;
+  /** Per-read idle budget; defaults to five minutes. null disables it. */
+  streamIdleTimeoutMs?: number | null;
   /** Anthropic API version header; defaults to 2023-06-01. */
   anthropicVersion?: string;
 }
@@ -277,8 +280,7 @@ export async function* streamAnthropicMessages(
   }
 
   const url = joinMessagesUrl(request.baseUrl);
-  const timeoutMs = options.timeoutMs ?? 120_000;
-  const control = createProviderCallControl(request.signal, timeoutMs);
+  const control = createProviderCallControl(request.signal, options.timeoutMs, options.streamIdleTimeoutMs);
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   const version = options.anthropicVersion ?? '2023-06-01';
 
@@ -345,7 +347,7 @@ export async function* streamAnthropicMessages(
   try {
     let response: Response;
     try {
-      response = await fetchImpl(url, {
+      response = await control.waitFor(() => fetchImpl(url, {
         method: 'POST',
         headers: {
           'x-api-key': apiKey,
@@ -356,7 +358,7 @@ export async function* streamAnthropicMessages(
         },
         body: JSON.stringify(body),
         signal: control.signal,
-      });
+      }));
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') {
         yield providerAbortEvent(control, 'Anthropic messages call');
@@ -372,7 +374,10 @@ export async function* streamAnthropicMessages(
     }
 
     if (!response.ok) {
-      const text = await response.text().catch(() => '');
+      const text = await control.waitFor(() => response.text()).catch((error) => {
+        if (control.signal.aborted) throw error;
+        return '';
+      });
       const snippetRaw = scrubSecrets(text.slice(0, 240), [apiKey]);
       const snippet = snippetRaw.length > 0 ? ` — ${snippetRaw}` : '';
       const err = classifyHttpFailure(response.status, snippet);
@@ -386,13 +391,13 @@ export async function* streamAnthropicMessages(
 
     const contentType = response.headers?.get?.('content-type') ?? '';
     if (contentType.includes('application/json') && !contentType.includes('text/event-stream')) {
-      const text = await response.text();
+      const text = await control.waitFor(() => response.text());
       yield* emitFromJsonMessage(text, apiKey);
       return;
     }
 
     if (!response.body) {
-      const text = await response.text();
+      const text = await control.waitFor(() => response.text());
       if (text.includes('data:')) {
         yield* emitFromSseText(text, apiKey);
       } else {
@@ -414,7 +419,7 @@ export async function* streamAnthropicMessages(
       let done: boolean;
       let value: Uint8Array | undefined;
       try {
-        ({ done, value } = await reader.read());
+        ({ done, value } = await control.waitFor(() => reader!.read()));
       } catch (error) {
         if (error instanceof Error && error.name === 'AbortError') {
           yield providerAbortEvent(control, 'Anthropic messages call');
@@ -440,6 +445,12 @@ export async function* streamAnthropicMessages(
         for (const event of finishAnthropicStream(parseState)) yield event;
       }
     }
+  } catch (error) {
+    if (control.signal.aborted) {
+      yield providerAbortEvent(control, 'Anthropic messages call');
+      return;
+    }
+    throw error;
   } finally {
     control.cleanup();
     await closeResponseReader(reader);

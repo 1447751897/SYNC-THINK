@@ -96,6 +96,39 @@ afterEach(() => {
 });
 
 describe('ChatView pending tool approval reconnect', () => {
+  it('keeps Skill approval above the task checklist, expanded or collapsed', async () => {
+    runtime.listPendingToolApprovals.mockResolvedValue({ approvals: [{
+      ...approval(), toolName: 'update_skill', title: '更新 Skill「repo-to-agent」',
+    }] });
+    runtime.listConversationMessages.mockResolvedValue({
+      messages: [], hasMore: false,
+      taskPlan: {
+        sequence: 1, running: true, pending: {},
+        items: [
+          { title: '读取草案', status: 'completed' },
+          { title: '登记 1.1.0 到能力中心', status: 'in_progress' },
+          { title: '绑定五个成员', status: 'pending' },
+        ],
+      },
+    });
+    renderChat();
+    const card = await screen.findByTestId('tool-approval-approval-reconnect-a');
+    const checklist = await screen.findByTestId('composer-task-panel');
+    const expectOrder = () => expect(
+      card.compareDocumentPosition(checklist) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expectOrder();
+    const toggle = screen.getByRole('button', { name: '任务进度 1/3' });
+    fireEvent.click(toggle);
+    expectOrder();
+    fireEvent.click(toggle);
+    expectOrder();
+    expect(screen.getAllByRole('button', { name: '仅本次允许' })).toHaveLength(1);
+    fireEvent.click(screen.getByRole('button', { name: '仅本次允许' }));
+    await waitFor(() => expect(runtime.decideToolApproval).toHaveBeenCalledTimes(1));
+    expect(screen.getByTestId('composer-task-panel')).toBeTruthy();
+  });
+
   it('keeps submission pending until acknowledgement and suppresses a stale pending snapshot', async () => {
     let resolve!: (value: unknown) => void;
     runtime.decideToolApproval.mockImplementation(() => new Promise((done) => { resolve = done; }));

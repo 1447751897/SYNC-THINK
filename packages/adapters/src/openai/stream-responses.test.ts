@@ -109,6 +109,104 @@ describe('streamOpenAIResponses', () => {
     expect(body.input[0]).toMatchObject({ role: 'user', content: 'hello responses' });
   });
 
+  it.each(['high', 'xhigh', 'max'])(
+    'sends explicitly selected %s effort in Responses request bodies',
+    async (effort) => {
+      fetchMock.mockResolvedValue(new Response(sseStream([
+        'data: {"type":"response.completed","response":{"status":"completed"}}\n\n',
+      ]), { headers: { 'Content-Type': 'text/event-stream' } }));
+
+      const events = await collect(streamOpenAIResponses(
+        req({ modelId: 'gpt-6.1-sol', reasoningEffort: effort }),
+        { fetchImpl: fetchMock as unknown as typeof fetch },
+      ));
+      const body = JSON.parse((fetchMock.mock.calls[0]![1] as { body: string }).body);
+      expect(body.reasoning).toEqual({ effort, summary: 'auto' });
+      expect(body).not.toHaveProperty('reasoning_effort');
+      expect(events).toContainEqual({ type: 'finished', reason: 'stop' });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each(['high', 'xhigh', 'max'])(
+    'reports gateway rejection of %s without dropping explicit Responses reasoning',
+    async (effort) => {
+      fetchMock.mockResolvedValueOnce(new Response(
+        'Unsupported parameter(s): `reasoning`', { status: 400 },
+      )).mockResolvedValueOnce(new Response(sseStream([
+        'data: {"type":"response.completed","response":{"status":"completed"}}\n\n',
+      ]), { headers: { 'Content-Type': 'text/event-stream' } }));
+
+      const events = await collect(streamOpenAIResponses(
+        req({ modelId: 'gpt-6.1-sol', reasoningEffort: effort }),
+        { fetchImpl: fetchMock as unknown as typeof fetch },
+      ));
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const failure = events.find(event => event.type === 'error');
+      expect(failure).toBeDefined();
+      expect(JSON.stringify(failure)).toContain('Unsupported parameter(s): `reasoning`');
+      const body = JSON.parse((fetchMock.mock.calls[0]![1] as { body: string }).body);
+      expect(body.reasoning.effort).toBe(effort);
+    },
+  );
+
+  it('retains the compatibility retry for automatic Responses reasoning', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(
+      'Unsupported parameter(s): `reasoning`', { status: 400 },
+    )).mockResolvedValueOnce(new Response(sseStream([
+      'data: {"type":"response.completed","response":{"status":"completed"}}\n\n',
+    ]), { headers: { 'Content-Type': 'text/event-stream' } }));
+
+    const events = await collect(streamOpenAIResponses(
+      req({ reasoningEffort: 'auto' }),
+      { fetchImpl: fetchMock as unknown as typeof fetch },
+    ));
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const firstBody = JSON.parse((fetchMock.mock.calls[0]![1] as { body: string }).body);
+    const retryBody = JSON.parse((fetchMock.mock.calls[1]![1] as { body: string }).body);
+    expect(firstBody.reasoning.effort).toBe('high');
+    expect(retryBody).not.toHaveProperty('reasoning');
+    expect(events).toContainEqual({ type: 'finished', reason: 'stop' });
+  });
+
+  it('keeps maximum Responses effort when retrying an unrelated optional parameter', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(
+      'Unsupported parameter(s): `instructions`', { status: 400 },
+    )).mockResolvedValueOnce(new Response(sseStream([
+      'data: {"type":"response.completed","response":{"status":"completed"}}\n\n',
+    ]), { headers: { 'Content-Type': 'text/event-stream' } }));
+
+    await collect(streamOpenAIResponses(
+      req({ modelId: 'gpt-6.1-sol', reasoningEffort: 'max' }),
+      { fetchImpl: fetchMock as unknown as typeof fetch },
+    ));
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    for (const [, init] of fetchMock.mock.calls) {
+      const body = JSON.parse((init as { body: string }).body);
+      expect(body.reasoning.effort).toBe('max');
+    }
+    const retryBody = JSON.parse((fetchMock.mock.calls[1]![1] as { body: string }).body);
+    expect(retryBody).not.toHaveProperty('instructions');
+  });
+
+  it('preserves a one-shot non-degradable HTTP failure body and scrubs secrets', async () => {
+    const request = req();
+    fetchMock.mockResolvedValueOnce(new Response('context length exceeded; token=' + request.apiKey, { status: 400 }));
+    const events = await collect(streamOpenAIResponses(request, { fetchImpl: fetchMock as unknown as typeof fetch }));
+    const failure = events.find(event => event.type === 'error');
+    expect(failure).toMatchObject({ type: 'error' });
+    expect(JSON.stringify(failure)).toContain('context length exceeded');
+    expect(JSON.stringify(failure)).not.toContain(request.apiKey); expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports the new failure body after a parameter-degradation retry', async () => {
+    fetchMock.mockResolvedValueOnce(new Response('Unsupported parameter(s): `instructions`', { status: 400 }))
+      .mockResolvedValueOnce(new Response('retry gateway detail', { status: 400 }));
+    const events = await collect(streamOpenAIResponses(req(), { fetchImpl: fetchMock as unknown as typeof fetch }));
+    expect(JSON.stringify(events.find(event => event.type === 'error'))).toContain('retry gateway detail');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it('degrades once on gateway 400 "Unsupported parameter(s)" and retries', async () => {
     fetchMock
       .mockResolvedValueOnce({
@@ -818,5 +916,37 @@ describe('capability probe media blocks', () => {
       { type: 'video' },
     ]);
     expect(content).toEqual([{ type: 'input_text', text: 'summarize' }]);
+  });
+});
+
+
+describe('Responses incomplete termination', () => {
+  it.each(['sse', 'json'] as const)('prioritizes length over tool proposals for %s max-output truncation', async format => {
+    const response = { status: 'incomplete', incomplete_details: { reason: 'max_output_tokens' },
+      output: [{ type: 'function_call', call_id: 'partial-write', name: 'write_file', arguments: '{"path":"result.md"' }],
+      usage: { input_tokens: 100, output_tokens: 2048, output_tokens_details: { reasoning_tokens: 2048 } } };
+    const fetchImpl = vi.fn().mockResolvedValue(format === 'sse'
+      ? new Response(sseStream(['data: ' + JSON.stringify({ type: 'response.incomplete', response }) + '\n\n']), { headers: { 'Content-Type': 'text/event-stream' } })
+      : new Response(JSON.stringify(response), { headers: { 'Content-Type': 'application/json' } }));
+    const events = await collect(streamOpenAIResponses(req(), { fetchImpl }));
+    expect(events.at(-1)).toEqual({ type: 'finished', reason: 'length' });
+    expect(events.filter(e => e.type === 'finished')).toHaveLength(1);
+    expect(events).toContainEqual(expect.objectContaining({ type: 'usage', reasoningTokens: 2048 }));
+  });
+
+  it('does not misclassify a content-filter incomplete response as a length limit eligible for continuation', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(new Response(sseStream(['data: ' + JSON.stringify({
+      type: 'response.incomplete', response: { status: 'incomplete', incomplete_details: { reason: 'content_filter' } },
+    }) + '\n\n']), { headers: { 'Content-Type': 'text/event-stream' } }));
+    const events = await collect(streamOpenAIResponses(req(), { fetchImpl }));
+    expect(events.at(-1)).toMatchObject({ type: 'error', failureClass: 'permission' });
+    expect(events.some(e => e.type === 'finished' && e.reason === 'length')).toBe(false);
+  });
+
+  it('retains length compatibility for gateways omitting incomplete details', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(new Response(sseStream([
+      'data: {"type":"response.incomplete","response":{"status":"incomplete"}}\n\n',
+    ]), { headers: { 'Content-Type': 'text/event-stream' } }));
+    expect((await collect(streamOpenAIResponses(req(), { fetchImpl }))).at(-1)).toEqual({ type: 'finished', reason: 'length' });
   });
 });

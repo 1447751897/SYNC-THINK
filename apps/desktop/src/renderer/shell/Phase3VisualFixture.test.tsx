@@ -90,7 +90,8 @@ describe('Phase3VisualFixture routing', () => {
     expect(resolvePhase3VisualCase('?phase3-visual=connection-settings')).toBe(
       'connection-settings',
     );
-    expect(PHASE3_VISUAL_CASES).toHaveLength(16);
+    expect(resolvePhase3VisualCase('?phase3-visual=agent-thinking')).toBe('agent-thinking');
+    expect(PHASE3_VISUAL_CASES).toHaveLength(18);
   });
 
   it('renders the deterministic 656px Composer slash-menu state', () => {
@@ -173,7 +174,8 @@ describe('Phase3VisualFixture routing', () => {
     expect(within(panel).queryByTestId('inline-process-fixture-final')).toBeNull();
     expect(screen.getByTestId('inline-process-fixture-final')).toBeTruthy();
     expect(panel.lastElementChild).toBe(screen.getByTestId('process-panel-activity'));
-    expect(screen.getByTestId('loading-pixel-grid').children).toHaveLength(9);
+    expect(screen.getByTestId('process-activity').getAttribute('data-variant')).toBe('spin');
+    expect(screen.getByTestId('agent-thinking-indicator').firstElementChild?.children).toHaveLength(9);
     expect(document.querySelector('[data-source-connector="youtube"] img')).toBeTruthy();
     expect(screen.getByText('3 个来源')).toBeTruthy();
   });

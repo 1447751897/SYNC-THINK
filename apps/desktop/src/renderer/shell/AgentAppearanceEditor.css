@@ -1,0 +1,33 @@
+.aw-appearance { --appearance-text: var(--aw-text, var(--color-text)); --appearance-muted: var(--aw-secondary, var(--color-text-secondary)); --appearance-border: var(--aw-border, var(--color-border)); --appearance-fill: var(--aw-hover, var(--color-cap-surface-soft)); color: var(--appearance-text); width: 100%; min-width: 0; }
+.aw-appearance .collab-avatar-orbit { position: relative; display: grid; place-items: center; width: 268px; height: 268px; margin: 0 auto; }
+.aw-appearance .collab-avatar-orbit > button { position: absolute; left: var(--orbit-x); top: var(--orbit-y); translate: -50% -50%; width: 34px; height: 34px; padding: 1px; border: 1px solid transparent; border-radius: 50%; background: transparent; transition: left 220ms ease, top 220ms ease, border-color 120ms; }
+.aw-appearance .collab-avatar-orbit > button[aria-pressed=true] { border-color: var(--appearance-text); }
+.aw-appearance .aw-shape-carousel { position: relative; display: block; height: 98px; margin: -32px -4px 8px; padding: 0; overflow: hidden; mask-image: linear-gradient(to right, transparent, black 8%, black 92%, transparent); }
+.aw-appearance .collab-editor__shape { position: absolute; bottom: 2px; left: 50%; width: 56px; height: 58px; padding: 4px; border: 1px solid transparent; border-radius: 14px; background: transparent; transform: translate(calc(-50% + var(--shape-x)), var(--shape-y)); transition: transform 240ms ease, background 120ms; }
+.aw-appearance .collab-editor__shape[hidden] { display: none; }
+.aw-appearance .collab-editor__shape[aria-pressed=true] { background: var(--appearance-fill); border-color: var(--appearance-border); }
+.aw-appearance .collab-editor__colors { display: flex; flex-wrap: wrap; justify-content: center; padding: 5px; gap: 5px; margin-top: 4px; }
+.aw-appearance .collab-editor__colors button { width: 24px; height: 24px; padding: 0; border: 2px solid transparent; border-radius: 50%; background: var(--swatch-color); }
+.aw-appearance .collab-editor__colors button[aria-pressed=true] { border-color: var(--appearance-text); }
+.aw-appearance .aw-custom-color { width: 24px; height: 24px; border-radius: 50%; overflow: hidden; flex-shrink: 0; cursor: pointer; background: conic-gradient(var(--color-avatar-1), var(--color-avatar-2), var(--color-avatar-3), var(--color-avatar-4), var(--color-avatar-5), var(--color-avatar-1)); }
+.aw-appearance .aw-custom-color input { width: 100%; height: 100%; opacity: 0; cursor: pointer; }
+.aw-appearance .collab-editor__preview-label { margin: 9px 0 16px; font-size: 11px; text-align: center; color: var(--appearance-muted); }
+.aw-accessories { padding-top: 14px; border-top: 1px solid var(--appearance-border); }
+.aw-accessories header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; font-size: 12px; }
+.aw-accessories header button { border: 0; background: transparent; padding: 2px; color: var(--appearance-muted); font-size: 11px; }
+.aw-accessories header button:disabled { opacity: .45; cursor: default; }
+.aw-accessories__row { display: grid; grid-template-columns: 30px minmax(0, 1fr); gap: 8px; margin: 8px 0; align-items: start; }
+.aw-accessories__row > span { padding-top: 7px; font-size: 11px; color: var(--appearance-muted); }
+.aw-accessories__row > div { display: flex; flex-wrap: wrap; gap: 5px; }
+.aw-accessories__row button { padding: 5px 8px; border: 1px solid var(--appearance-border); border-radius: 8px; font-size: 11px; background: transparent; color: var(--appearance-muted); transition: background 120ms, color 120ms; }
+.aw-accessories__row button[aria-pressed=true] { color: var(--appearance-text); background: var(--appearance-fill); border-color: var(--appearance-text); }
+.aw-accessories__row button:hover { color: var(--appearance-text); background: var(--appearance-fill); }
+.aw-accessories p { margin: 12px 0 0; font-size: 10px; color: var(--appearance-muted); }
+.aw-appearance button:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) { .aw-appearance .collab-avatar-orbit > button, .aw-appearance .collab-editor__shape, .aw-accessories__row button { transition: none; } }
+
+.aw-appearance__all-shapes { display: block; margin: 0 auto 8px; padding: 3px 8px; border: 0; border-radius: 7px; font-size: 11px; color: var(--appearance-muted); background: transparent; }
+.aw-appearance__all-shapes:hover { background: var(--appearance-fill); color: var(--appearance-text); }
+.aw-appearance__shape-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 5px; max-height: 240px; overflow-y: auto; padding: 5px; margin: 8px 0 12px; border: 1px solid var(--appearance-border); border-radius: 14px; }
+.aw-appearance__shape-grid button { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 6px 2px; border: 1px solid transparent; border-radius: 9px; background: transparent; font-size: 10px; color: var(--appearance-muted); }
+.aw-appearance__shape-grid button[aria-pressed=true], .aw-appearance__shape-grid button:hover { border-color: var(--appearance-border); background: var(--appearance-fill); color: var(--appearance-text); }

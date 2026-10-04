@@ -1,3 +1,4 @@
+import { parseNativeTaskContinuation } from './native-task-continuation.js';
 import type { AdapterEvent, ProviderAdapter, ProviderCallRequest } from '@sync-think/adapters';
 import {
   type AssistantTurnSegment,
@@ -7,6 +8,7 @@ import {
 import { normalizeAssistantTurnPhases } from '@sync-think/protocol/assistant-turn';
 import type { ContextSnapshot, ContextSnapshotSource } from './context-snapshot.js';
 import { applyRunStateDelta } from './run-state-delta.js';
+import { parseScheduledTaskRunContext, type ScheduledTaskRunContext } from './scheduled-task-run-context.js';
 import { isRetryable } from '@sync-think/shared';
 import type {
   Event,
@@ -74,6 +76,8 @@ export interface DemoRunImage {
 }
 
 export interface DemoRunState {
+  /** Exact host-frozen scheduled occurrence; survives native provider recovery. */
+  scheduledTaskContext?: ScheduledTaskRunContext;
   runId: RunId;
   threadId: string;
   /** Conversation authority track captured when this run is created. */
@@ -95,6 +99,10 @@ export interface DemoRunState {
   /** Child runs created by model-track delegation use a hard read-only allowlist. */
   delegatedReadOnly?: boolean;
   delegatedToolAllowlist?: string[];
+  /** Set only by the host for a direct human chat, never by model arguments or scheduled work. */
+  definitionProposalsAllowed?: boolean;
+  /** Once a definition is proposed, this turn saves configuration rather than dispatching work. */
+  definitionManagementStarted?: boolean;
   userText: string;
   /**
    * Kernel that executes this run. Absent = native (in-process runtime loop);
@@ -155,6 +163,7 @@ export interface DemoRunState {
   contextWindow?: number;
   /** Provider model context window before applying a conversation override. */
   modelContextWindow?: number;
+  modelMaxOutputTokens?: number;
   /** Persisted conversation override used for this run. */
   contextWindowOverride?: number;
   /** True when contextWindow fell back to the 128k default (no model metadata). */
@@ -179,6 +188,8 @@ export interface DemoRunState {
   contextSources?: ContextSnapshotSource[];
   /** Last provider request snapshot; in-memory only and safe for UI projection. */
   contextSnapshot?: ContextSnapshot;
+  nativeContextCheckpoint?: import('./native-context-maintenance.js').NativeContextCheckpoint;
+  nativeTaskContinuation?: import('./native-task-continuation.js').NativeTaskContinuationState;
   compactSummary?: string;
   compactedAt?: string;
   /** Compose 推理强度（auto/off/low/medium/high…）；透传到 adapter。 */
@@ -565,6 +576,7 @@ export interface CreateDemoRunInput {
   mcpServerIds?: string[];
   contextWindow?: number;
   modelContextWindow?: number;
+  modelMaxOutputTokens?: number;
   contextWindowOverride?: number;
   /** True when contextWindow fell back to the 128k default (no model metadata). */
   contextWindowEstimated?: boolean;
@@ -647,6 +659,7 @@ export function createDemoRun(
       extras.mcpServerIds && extras.mcpServerIds.length > 0 ? [...extras.mcpServerIds] : undefined,
     contextWindow: extras.contextWindow,
     modelContextWindow: extras.modelContextWindow,
+    modelMaxOutputTokens: extras.modelMaxOutputTokens,
     contextWindowOverride: extras.contextWindowOverride,
     contextWindowEstimated: extras.contextWindowEstimated === true,
     projectContextPromptBlocks:
@@ -796,10 +809,11 @@ export function projectAdapterEvent(
   if (adapterEvent.type === 'finished') {
     return {
       category: 'run',
-      type: 'run.completed',
+      type: adapterEvent.reason === 'length' ? 'run.failed' : 'run.completed',
       payload: {
         threadId: run.threadId,
         reason: adapterEvent.reason,
+        ...(adapterEvent.reason === 'length' ? { failureClass: 'output_limit', errorMessage: '单轮模型输出达到长度上限，任务尚未完成；已有进度已保留。' } : {}),
         assistantText: run.assistantText,
         ...(run.commentaryText ? { commentaryText: run.commentaryText } : {}),
         ...(run.reasoningText ? { reasoningText: run.reasoningText } : {}),
@@ -996,6 +1010,7 @@ export function serializeDemoRun(run: DemoRunState): DemoRunState {
   delete durable.contextSnapshot;
   const result = {
     ...durable,
+    scheduledTaskContext: run.scheduledTaskContext ? structuredClone(run.scheduledTaskContext) : undefined,
     images: run.images
       ?.filter((image) => Boolean(image.stagingPath))
       .map(({ dataUrl: _dataUrl, ...image }) => image),
@@ -1151,6 +1166,7 @@ function parseDemoRun(value: unknown): DemoRunState {
   return {
     runId: run.runId as RunId,
     threadId: run.threadId,
+    scheduledTaskContext: parseScheduledTaskRunContext(run.scheduledTaskContext, run.threadId),
     userText: run.userText,
     modelId,
     providerModelId: typeof run.providerModelId === 'string' ? run.providerModelId : modelId,
@@ -1183,12 +1199,22 @@ function parseDemoRun(value: unknown): DemoRunState {
       typeof run.modelContextWindow === 'number' && Number.isFinite(run.modelContextWindow)
         ? run.modelContextWindow
         : undefined,
+    modelMaxOutputTokens: typeof run.modelMaxOutputTokens === 'number' && Number.isSafeInteger(run.modelMaxOutputTokens) && run.modelMaxOutputTokens > 0 ? run.modelMaxOutputTokens : undefined,
     contextWindowOverride:
       typeof run.contextWindowOverride === 'number' && Number.isFinite(run.contextWindowOverride)
         ? run.contextWindowOverride
         : undefined,
     projectContextPromptBlocks: stringArray(run.projectContextPromptBlocks, 256),
     contextSources,
+    nativeContextCheckpoint: (() => {
+      const value = run.nativeContextCheckpoint as Record<string, unknown> | undefined;
+      if (!value || typeof value.bindingKey !== 'string' || typeof value.summary !== 'string' ||
+          !Number.isSafeInteger(value.sourceMessageCount) || Number(value.sourceMessageCount) <= 0 ||
+          typeof value.sourcePrefixFingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(value.sourcePrefixFingerprint)) return undefined;
+      return { bindingKey: value.bindingKey, summary: value.summary,
+        sourceMessageCount: Number(value.sourceMessageCount), sourcePrefixFingerprint: value.sourcePrefixFingerprint };
+    })(),
+    nativeTaskContinuation: parseNativeTaskContinuation(run.nativeTaskContinuation),
     compactSummary: typeof run.compactSummary === 'string' ? run.compactSummary : undefined,
     compactedAt: typeof run.compactedAt === 'string' ? run.compactedAt : undefined,
     reasoningEffort: typeof run.reasoningEffort === 'string' ? run.reasoningEffort : undefined,

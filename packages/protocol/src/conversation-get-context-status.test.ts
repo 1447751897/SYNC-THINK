@@ -29,12 +29,18 @@ const validResponse: ConversationGetContextStatusResponse = {
   contextWindowSource: 'model-default',
   estimatedUsedTokens: 700,
   usageRatio: 0.7,
-  compactThreshold: 0.7,
+  compactThreshold: 0.85,
   compactedAt: '2026-07-27T12:34:56.000Z',
   sections: validSections,
 };
 
 describe('conversation.getContextStatus protocol', () => {
+  it('round-trips bounded calibrated provenance and rejects a forged/missing anchor',()=>{
+    const measurement={source:'provider-calibrated' as const,estimatedTokens:600,providerInputTokens:700};
+    expect(parseConversationGetContextStatusResponse({...validResponse,measurement}).measurement).toEqual(measurement);
+    expect(()=>parseConversationGetContextStatusResponse({...validResponse,measurement:{source:'provider-calibrated',estimatedTokens:600}})).toThrow();
+    expect(()=>parseConversationGetContextStatusResponse({...validResponse,measurement:{...measurement,apiKey:'hidden'}})).toThrow();
+  });
   it('registers the command and builds its typed request', () => {
     expect(DEFAULT_FEATURES).toContain('conversation.getContextStatus');
     expect(DEFAULT_FEATURES).toContain('conversation.setContextWindowOverride');
@@ -153,7 +159,7 @@ describe('conversation.getContextStatus protocol', () => {
     { ...validResponse, usageRatio: Number.POSITIVE_INFINITY },
     { ...validResponse, usageRatio: 1.1 },
     { ...validResponse, usageRatio: MAX_CONTEXT_STATUS_USAGE_RATIO + 1 },
-    { ...validResponse, compactThreshold: 0.69 },
+    { ...validResponse, compactThreshold: 0.9 },
     { ...validResponse, compactedAt: 'not-a-date' },
     { ...validResponse, estimatedUsedTokens: 699 },
     { ...validResponse, usageRatio: 0.69 },
@@ -184,5 +190,26 @@ describe('conversation.getContextStatus protocol', () => {
     expect(() =>
       parseConversationGetContextStatusResponse({ ...validResponse, sections }),
     ).toThrow();
+  });
+});
+
+
+describe('fixed-cost context budget contract', () => {
+  const budget = { contextWindow: 1000, reservedOutputTokens: 100, safetyMarginTokens: 50,
+    fixedInputTokens: 460, availableInputTokens: 850, availableHistoryTokens: 390,
+    compactTriggerTokens: 850, retainedTailTokens: 144 };
+  it('accepts a budget whose reservations and categories describe the same request', () => {
+    const response = { ...validResponse, budget };
+    expect(parseConversationGetContextStatusResponse(response)).toEqual(response);
+  });
+  it.each([{ fixedInputTokens: 400 }, { availableHistoryTokens: 460 }, { availableInputTokens: 1000 }])
+    ('rejects independently forged fixed-cost or remaining-budget values: %j', override => {
+      expect(() => parseConversationGetContextStatusResponse({ ...validResponse, budget: { ...budget, ...override } })).toThrow();
+    });
+  it('allows an earlier soft boundary only when output and safety reserves account for it', () => {
+    const response = { ...validResponse, compactThreshold: .7, budget: { ...budget,
+      reservedOutputTokens: 200, safetyMarginTokens: 100, availableInputTokens: 700,
+      availableHistoryTokens: 240, compactTriggerTokens: 700, retainedTailTokens: 128 } };
+    expect(parseConversationGetContextStatusResponse(response)).toEqual(response);
   });
 });

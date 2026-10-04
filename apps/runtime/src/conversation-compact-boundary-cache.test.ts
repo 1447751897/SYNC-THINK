@@ -69,3 +69,15 @@ describe('conversation compact boundary cache', () => {
     expect(loadEvents).not.toHaveBeenCalled();
   });
 });
+
+
+it('rehydrates exact message coverage after restart without confusing it with a larger event sequence', () => {
+ const log = [event(900, 'summary', { payload: { threadId: 'thread-a', summaryText: 'summary',
+  coveredThroughMessageSequence: 4, coveredEventSequences: [101,102,103,104], keepRecent: 8 } })];
+ const cache = new ConversationCompactBoundaryCache({ loadEvents: () => log });
+ const restored = cache.get('thread-a')!;
+ expect(restored.coveredThroughMessageSequence).toBe(4);
+ expect(restored.coveredEventSequences).toEqual([101,102,103,104]);
+ restored.coveredEventSequences!.push(105);
+ expect(cache.get('thread-a')?.coveredEventSequences).toEqual([101,102,103,104]);
+});

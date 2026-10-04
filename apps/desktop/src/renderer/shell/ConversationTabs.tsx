@@ -41,12 +41,13 @@ import { FileTypeIcon } from './FileTypeIcon.js';
 import { browserTabFaviconSrc } from './ExternalSourceIcon.js';
 import { PANE_TAB_GLIDE } from './pane-tab-surface.js';
 import { listenForFrameCoalescedViewportChange } from './viewport-frame.js';
+import { ATTENTION_LABELS, type ConversationActivityView } from '../../conversation-attention.js';
 import { pointerDragLeft, tabTranslate, visualIndexFor } from './workspace-tab-morph.js';
 
 const PaneConversationManager = lazyPanel(() => import('./PaneConversationManager.js'), '会话管理');
 
 export interface ConversationTabsProps {
-  /** Conversation-only pane: leave resource/menu actions beside the breadcrumb. */
+  /** Single conversation-only pane: the sidebar owns navigation, so omit its tab strip. */
   compactHeader?: boolean;
   /** Main chat navigation is owned by the sidebar; resource tabs remain visible. */
   hideConversationTabs?: boolean;
@@ -102,7 +103,7 @@ export interface ConversationTabsProps {
    */
   onTabDragStateChange?(dragging: PaneResourceRef | null): void;
   /** 各对话任务状态（运行中动效 / 完成未读圆点）。key = conversationId。 */
-  conversationActivity?: ReadonlyMap<string, { running: boolean; unread: boolean }>;
+  conversationActivity?: ReadonlyMap<string, ConversationActivityView>;
 }
 
 const TRACK_TAB_ICON: Record<ConversationTrack, typeof MessageSquare> = {
@@ -254,6 +255,13 @@ function beginResourceDrag(
 }
 
 export function ConversationTabs(props: ConversationTabsProps) {
+  // Single-pane chat uses the sidebar. Unmount the strip entirely so hidden
+  // menus close and resource-pane measurements start fresh when it returns.
+  if (props.compactHeader) return null;
+  return <PaneResourceTabStrip {...props} />;
+}
+
+function PaneResourceTabStrip(props: ConversationTabsProps) {
   const byId = new Map(props.conversations.map((c) => [String(c.id), c] as const));
   const allConversationTabs = props.openIds.map((id) => byId.get(id)).filter((c): c is Conversation => Boolean(c));
   const tabs = props.hideConversationTabs ? [] : allConversationTabs;
@@ -457,7 +465,6 @@ export function ConversationTabs(props: ConversationTabsProps) {
   return (
     <div
       data-testid="conversation-tabs"
-      data-compact-header={props.compactHeader ? 'true' : undefined}
       data-pane-tab-bar="true"
       className="shell-conversation-tabs relative flex h-10 shrink-0 items-center gap-[3px] p-1"
       style={{ '--shell-pane-tab-glide': PANE_TAB_GLIDE } as React.CSSProperties}
@@ -509,6 +516,8 @@ export function ConversationTabs(props: ConversationTabsProps) {
                         splitId={props.splitId}
                         running={props.conversationActivity?.get(id)?.running ?? false}
                         unread={props.conversationActivity?.get(id)?.unread ?? false}
+                        attention={props.conversationActivity?.get(id)?.attention}
+                        failed={props.conversationActivity?.get(id)?.failed}
                         left={index * (paneTabWidth + PANE_TAB_GAP)}
                         onSelect={() => props.onSelect(id)}
                         onClose={() => props.onClose(id)}
@@ -1097,6 +1106,8 @@ function SortableConversationTab(props: {
   splitId?: string;
   running: boolean;
   unread: boolean;
+  attention?: ConversationActivityView['attention'];
+  failed?: boolean;
   left: number;
   hasSplitAction: boolean;
   onSelect(): void;
@@ -1144,7 +1155,12 @@ function SortableConversationTab(props: {
       {/* Status marker sits at the left of each conversation tab: a pulsing
           dot while running/thinking, a static dot when finished-but-unread.
           Visual-only — no text — so the tab row stays compact. */}
-      {props.running ? (
+      {props.attention || props.failed ? (
+        <span className={`shell-activity-dot shell-activity-dot--${props.attention ? 'attention' : 'failed'}`}
+          data-testid={`conversation-attention-${props.conversationId}`}
+          title={props.attention ? ATTENTION_LABELS[props.attention] : '执行失败待查看'}
+          aria-label={props.attention ? ATTENTION_LABELS[props.attention] : '执行失败待查看'} />
+      ) : props.running ? (
         <span
           className="shell-activity-dot shell-activity-dot--running"
           data-testid={`conversation-running-${props.conversationId}`}

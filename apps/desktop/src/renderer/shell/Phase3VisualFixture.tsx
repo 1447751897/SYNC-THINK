@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import type {
-  BotChannelPlatform,
+  BotChannelPlatform, McpServerSummary,
   CommentaryTimelineSegment,
   ContextStatusSection,
   GoalStatus,
@@ -36,11 +36,13 @@ import { ExecutionTimeline } from './ExecutionTimeline.js';
 import { FIRST_LAUNCH_GUIDE_KEY } from './FirstLaunchGuide.js';
 import { FileTypeIcon } from './FileTypeIcon.js';
 import { InlineProcessFlow } from './InlineProcessFlow.js';
+import AgentThinkingFixture from './AgentThinkingFixture.js';
 import { MarkdownContent } from './MarkdownContent.js';
 import { SlidingTabs } from './SlidingTabs.js';
 import { TaskStatusPanel } from './TaskStatusPanel.js';
 import type { TodoProjection } from './todo-projection.js';
 import { DataDiagnosticsSection, SettingsPage } from './SettingsPage.js';
+import { DialogProvider } from './Dialog.js';
 import { WorkspaceFileView } from './WorkspaceFileView.js';
 import { KernelUpdatePanel } from './KernelUpdatePanel.js';
 import type {
@@ -56,11 +58,13 @@ export const PHASE3_VISUAL_CASES = [
   'streaming-follow',
   'streaming-text',
   'diagnostics',
+  'agent-thinking',
   'composer-context',
   'composer-slash-open',
   'workspace-file',
   'execution-auto-disclosure',
   'inline-process-hierarchy',
+  'tool-result-details',
   'task-status-panel',
   'sliding-tabs',
   'kernel-update-panel',
@@ -368,6 +372,36 @@ function DiagnosticsFixture() {
       </div>
     </FixtureFrame>
   );
+}
+
+function ToolResultDetailsFixture() {
+  const items: InlineProcessItem[] = [{
+    kind: 'tool', id: 'artifact-detail-failure', toolCallId: 'artifact-detail-failure',
+    name: 'automation_export_artifact', displayName: 'Automation Export Artifact',
+    argumentsJson: JSON.stringify({format: 'spreadsheet', fileName: 'review.xlsx', title: '昨日改动回顾',
+      columns: ['章节', '事项', '状态', '范围或结果', '来源引用', '限制与后续需要'],
+      rows: Array.from({length: 14}, (_, index) => ['可验证事项', '工作记录 ' + (index + 1), '待核对',
+        '按冻结的工作区与日期范围核对真实记录，保留来源和证据。', '本地工作区', '待完成验收']), slides: []}),
+    result: JSON.stringify({ok: false, error: 'spreadsheet 参数只接收 columns/rows。'}), status: 'failed',
+    startedAt: '2026-10-04T04:24:08.000Z', completedAt: '2026-10-04T04:24:09.000Z',
+  }, {
+    kind: 'tool', id: 'artifact-detail-success', toolCallId: 'artifact-detail-success',
+    name: 'automation_export_artifact', displayName: 'Automation Export Artifact',
+    argumentsJson: JSON.stringify({format: 'spreadsheet', fileName: 'review.xlsx', title: '昨日改动回顾',
+      columns: ['事项', '状态'], rows: [['已核对工作区变更', '通过']], slides: []}),
+    result: JSON.stringify({ok: true, format: 'spreadsheet', fileName: 'review.xlsx', size: 4096}),
+    status: 'completed', startedAt: '2026-10-04T04:24:10.000Z', completedAt: '2026-10-04T04:24:11.000Z',
+  }];
+  return <FixtureFrame label="工具参数与结果卡片验收">
+    <div className="phase3-visual__conversation"><div className="phase3-visual__conversation-column">
+      <article className="shell-message-window-item phase3-visual__message phase3-visual__trace" data-role="assistant" aria-label="导出工具详情示例">
+        <div className="phase3-visual__avatar" aria-hidden="true"><Bot size={13} /></div>
+        <div className="phase3-visual__trace-content"><strong>宿主系统</strong>
+          <InlineProcessFlow items={items} runId="phase3-tool-result-details" durationMs={3000} defaultOpen answerStarted terminalState="failed" />
+        </div>
+      </article>
+    </div></div>
+  </FixtureFrame>;
 }
 
 function InlineProcessHierarchyFixture() {
@@ -1450,6 +1484,18 @@ const CONNECTION_SETTINGS_SERVER = {
 } as const;
 
 function installConnectionSettingsFixtureRuntime() {
+  let servers: McpServerSummary[] = [CONNECTION_SETTINGS_SERVER as unknown as McpServerSummary, {
+    ...CONNECTION_SETTINGS_SERVER, mcpServerId: 'qa-boardui', name: 'boardui', transport: 'local-stdio',
+    endpoint: JSON.stringify({ command: 'npx', args: ['-y', 'boardui@latest', 'mcp'] }), tools: [{ name: 'component_search', description: '搜索 UI 组件' }],
+    notes: 'BoardUI 组件库 MCP：按需拉取 shadcn 风格 UI 组件、安装规则与用法示例', authConfigured: false,
+  }];
+
+  const register = (payload: { mcpServerId?: string; name: string; endpoint?: string; notes?: string; transport?: string }) => {
+    const existing = servers.find((server) => payload.mcpServerId ? server.mcpServerId === payload.mcpServerId : server.name === payload.name);
+    const server: McpServerSummary = { ...CONNECTION_SETTINGS_SERVER, ...existing, ...payload, endpoint: payload.endpoint ?? '',
+      notes: payload.notes ?? '', mcpServerId: existing?.mcpServerId ?? 'qa-' + payload.name, transport: payload.transport ?? 'remote-http', tools: [{ name: 'ping', description: '验收工具' }] };
+    servers = [...servers.filter((value) => value.mcpServerId !== server.mcpServerId), server]; return { server, updated: Boolean(existing) };
+  };
   let botEnabled = true;
   Object.defineProperty(window, 'syncThink', {
     configurable: true,
@@ -1461,22 +1507,17 @@ function installConnectionSettingsFixtureRuntime() {
           value,
           updatedAt: '2026-08-29T00:00:00.000Z',
         }),
-        listMcpServers: async () => ({ servers: [CONNECTION_SETTINGS_SERVER] }),
-        setMcpServerEnabled: async ({ enabled }: { enabled: boolean }) => ({
-          server: { ...CONNECTION_SETTINGS_SERVER, enabled },
-        }),
-        refreshMcpTools: async () => ({ server: CONNECTION_SETTINGS_SERVER }),
-        registerRemoteMcpServer: async () => ({
-          server: CONNECTION_SETTINGS_SERVER,
-          updated: false,
-          endpoint: CONNECTION_SETTINGS_SERVER.endpoint,
-          authConfigured: true,
-          discovered: true,
-        }),
-        deleteMcpServer: async () => ({
-          mcpServerId: CONNECTION_SETTINGS_SERVER.mcpServerId,
-          deleted: true,
-        }),
+        listMcpServers: async () => ({ servers }),
+        setMcpServerEnabled: async ({ mcpServerId, enabled }: { mcpServerId: string; enabled: boolean }) => {
+          servers = servers.map((server) => server.mcpServerId === mcpServerId ? { ...server, enabled } : server);
+          return { server: servers.find((server) => server.mcpServerId === mcpServerId) };
+        },
+        refreshMcpTools: async ({ mcpServerId }: { mcpServerId: string }) => ({ server: servers.find((server) => server.mcpServerId === mcpServerId) }),
+        registerMcpServer: async (payload: Parameters<typeof register>[0]) => register(payload),
+        registerRemoteMcpServer: async (payload: Parameters<typeof register>[0]) => ({ ...register({ ...payload, transport: 'remote-http' }), endpoint: payload.endpoint, authConfigured: false, discovered: true }),
+        deleteMcpServer: async ({ mcpServerId }: { mcpServerId: string }) => { servers = servers.filter((server) => server.mcpServerId !== mcpServerId); return { mcpServerId, deleted: true }; },
+        listGlobalAgents: async () => ({ agents: [{ id: 'qa-research-agent', name: '研究助手', archived: false }, { id: 'qa-code-agent', name: '代码助手', archived: false }] }),
+
         getBotChannelConfig: async ({ platform }: { platform: BotChannelPlatform }) => ({
           platform,
           enabled: platform === 'telegram' ? botEnabled : false,
@@ -1539,7 +1580,9 @@ function ConnectionSettingsFixture() {
     <main className="phase3-settings-page" data-phase3-ready="true" aria-label="连接设置验收">
       <div className="settings-modal-positioner">
         <div className="settings-modal-content">
-          <SettingsPage />
+          <DialogProvider>
+            <SettingsPage />
+          </DialogProvider>
         </div>
       </div>
     </main>
@@ -1548,6 +1591,7 @@ function ConnectionSettingsFixture() {
 
 export function Phase3VisualFixture({ visualCase }: { visualCase: Phase3VisualCase }) {
   if (visualCase === 'welcome') return <WelcomeFixture />;
+  if (visualCase === 'agent-thinking') return <AgentThinkingFixture />;
   if (visualCase === 'diagnostics') return <DiagnosticsFixture />;
   if (visualCase === 'connection-and-code') return <ConnectionAndCodeFixture />;
   if (visualCase === 'streaming-follow') return <StreamingFollowFixture />;
@@ -1557,6 +1601,7 @@ export function Phase3VisualFixture({ visualCase }: { visualCase: Phase3VisualCa
   if (visualCase === 'workspace-file') return <WorkspaceFileFixture />;
   if (visualCase === 'execution-auto-disclosure') return <ExecutionAutoDisclosureFixture />;
   if (visualCase === 'inline-process-hierarchy') return <InlineProcessHierarchyFixture />;
+  if (visualCase === 'tool-result-details') return <ToolResultDetailsFixture />;
   if (visualCase === 'task-status-panel') return <TaskStatusFixture />;
   if (visualCase === 'sliding-tabs') return <SlidingTabsFixture />;
   if (visualCase === 'kernel-update-panel') return <KernelUpdateFixture />;

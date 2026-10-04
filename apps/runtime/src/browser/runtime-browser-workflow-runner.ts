@@ -217,7 +217,7 @@ export class BrowserWorkflowRunner {
     // Resolve variable references up front so a missing variable fails fast
     // before any browser side effect happens.
     const variableNames = collectStepVariables(steps);
-    const missingVariables = variableNames.filter((name) => input.variables?.[name] === undefined);
+    const missingVariables = variableNames.filter((name) => !Object.hasOwn(input.variables ?? {}, name));
     if (missingVariables.length > 0) {
       throw new BrowserWorkflowRunnerError(
         'browser.workflow-variables-required',

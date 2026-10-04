@@ -15,7 +15,7 @@ export interface ComposerPeekItem {
 export interface ComposerApprovalStackProps {
   tool?: ComposerPeekItem;
   plan?: ComposerPeekItem;
-  /** A Plan/Goal banner below the approvals owns the overlap with the composer. */
+  /** A task checklist or Plan/Goal banner below owns its own composer spacing. */
   hasSurfaceBelow?: boolean;
 }
 
@@ -106,13 +106,13 @@ function ComposerPeekSurface(props: {
   );
 }
 
-/** NewMax ordering: tool approval, plan approval, mode banner, composer. */
+/** NewMax ordering: tool approval, plan approval, task checklist, mode banner, composer. */
 export function ComposerApprovalStack(props: ComposerApprovalStackProps) {
   if (!props.tool && !props.plan) {
     return (
       <div className="shell-composer-approval-stack" aria-hidden="true">
         <ComposerPeekSurface kind="tool" detached />
-        <ComposerPeekSurface kind="plan" detached={false} />
+        <ComposerPeekSurface kind="plan" detached={Boolean(props.hasSurfaceBelow)} />
       </div>
     );
   }

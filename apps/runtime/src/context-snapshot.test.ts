@@ -126,6 +126,37 @@ describe('ContextSnapshotBuilder', () => {
     }
   });
 
+  it('rejects an included MCP source when the final login-gated request has no tools', () => {
+    expect(() =>
+      new ContextSnapshotBuilder().build({
+        modelId: 'model-1',
+        contextWindow: 1000,
+        systemInstructions: [],
+        agentInstructions: [],
+        projectContext: [],
+        messages: [
+          {
+            role: 'tool',
+            toolCallId: 'login-fenced-mutation',
+            content: 'task_room.tool_not_allowed',
+          },
+        ],
+        tools: [],
+        sources: [
+          {
+            id: 'tool:scheduled-login-local-mail:send_email',
+            kind: 'tool-schema',
+            section: 'tools',
+            disposition: 'included',
+            toolName: 'mcp__scheduled-login-local-mail__send_email',
+          },
+        ],
+      }),
+    ).toThrowError(
+      'included source is absent from provider payload: tool:scheduled-login-local-mail:send_email',
+    );
+  });
+
   it('matches multiline quoted message sources against structured string content', () => {
     const userText = [
       '使用 Computer Use 操作标题包含“SYNC THINK Desktop Handoff Fixture [manual]”的窗口。',

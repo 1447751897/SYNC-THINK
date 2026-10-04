@@ -7,10 +7,12 @@ import {
   type PropsWithRef,
   type ReactNode,
 } from 'react';
+import { createPortal } from 'react-dom';
 import { loadShellPanel } from './shell-chunk-retry.js';
+import { useKeepAliveActive } from './KeepAliveLayer.js';
 
 class PanelLoadBoundary extends Component<
-  { label: string; onRetry: () => void; children: ReactNode },
+  { label: string; onRetry: () => void; children: ReactNode; renderPlaceholder?(content: ReactNode): ReactNode },
   { failed: boolean; moduleLoadFailed: boolean }
 > {
   state = { failed: false, moduleLoadFailed: false };
@@ -28,7 +30,7 @@ class PanelLoadBoundary extends Component<
 
   render() {
     if (!this.state.failed) return this.props.children;
-    return (
+    const placeholder = (
       <div className="shell-panel-load-state" role="alert">
         <span>{this.props.label}加载失败</span>
         <button type="button" onClick={this.props.onRetry}>
@@ -44,6 +46,7 @@ class PanelLoadBoundary extends Component<
         )}
       </div>
     );
+    return this.props.renderPlaceholder?.(placeholder) ?? placeholder;
   }
 }
 
@@ -51,14 +54,21 @@ export function lazyPanel<Props extends object>(
   load: () => Promise<{ default: (props: Props) => ReactNode }>,
   label: string,
   entry?: string,
+  placeholderHost?: (props: Props) => Element | null | undefined,
 ): ComponentType<Props> {
   return function DeferredPanel(props: Props) {
     const [state, setState] = useState(() => ({ Panel: lazy(load), attempt: 0 }));
     const { Panel, attempt } = state;
+    const active = useKeepAliveActive();
+    const host = placeholderHost?.(props);
+    // A frozen parent retains old props, including the portal target. Context is
+    // the live visibility signal; hidden panels must release sidebar placeholders.
+    const renderPlaceholder = (content: ReactNode) => host ? (active ? createPortal(content, host) : null) : content;
     return (
       <PanelLoadBoundary
         key={attempt}
         label={label}
+        renderPlaceholder={renderPlaceholder}
         onRetry={() =>
           setState({
             Panel: lazy(() => loadShellPanel(load, entry, attempt + 1)),
@@ -67,11 +77,11 @@ export function lazyPanel<Props extends object>(
         }
       >
         <Suspense
-          fallback={
+          fallback={renderPlaceholder(
             <div className="shell-panel-load-state" role="status" aria-busy="true">
               正在加载{label}…
-            </div>
-          }
+            </div>,
+          )}
         >
           <Panel key="page" {...(props as PropsWithRef<Props>)} />
         </Suspense>

@@ -271,7 +271,7 @@ describe('resolveFloatingMenuStyle', () => {
 });
 
 describe('ContextRing', () => {
-  it('shows the complete runtime context window, compact threshold, and saved summary', () => {
+  it('shows the complete runtime context window, compact threshold, and saved summary', async () => {
     render(
       <ContextRing
         used={12_500}
@@ -294,9 +294,10 @@ describe('ContextRing', () => {
     const ring = screen.getByTestId('context-ring');
     expect(ring.getAttribute('aria-label')).toContain('125%');
     fireEvent.mouseEnter(ring);
+    fireEvent.click(await screen.findByRole('button', { name: /窗口与压缩详情/ }));
 
     expect(screen.getByText('当前上下文窗口')).toBeTruthy();
-    expect(screen.getByText('当前模型实际可见的完整上下文窗口')).toBeTruthy();
+    expect(screen.getByText('请求估算，非累计计费用量')).toBeTruthy();
     expect(screen.getByText('当前对话上下文构成')).toBeTruthy();
     expect(screen.getByTestId('context-used-value').getAttribute('title')).toBe('12,500 Token');
     expect(screen.getByText('自动压缩')).toBeTruthy();
@@ -321,7 +322,7 @@ describe('ContextRing', () => {
     expect(screen.queryByText(/不参与自动压缩判定/)).toBeNull();
   });
 
-  it('opens on click and reports remaining capacity before automatic compact', () => {
+  it('opens on click and reports remaining capacity before automatic compact', async () => {
     render(
       <ContextRing
         used={17_000}
@@ -340,14 +341,15 @@ describe('ContextRing', () => {
     );
 
     fireEvent.click(screen.getByTestId('context-ring'));
+    fireEvent.click(await screen.findByRole('button', { name: /窗口与压缩详情/ }));
 
-    expect(screen.getByText('达到 70% 时，在发送下一条消息前自动压缩')).toBeTruthy();
+    expect(screen.getByText('请求前先整理，必要时摘要')).toBeTruthy();
     expect(screen.getByTestId('context-compact-distance').textContent).toBe('263k');
     expect(screen.getByTestId('context-compacted-at').textContent).toBe('尚未发生');
     expect(screen.getByRole('progressbar').getAttribute('aria-valuemax')).toBe('400000');
   });
 
-  it('marks cumulative token usage as unreported instead of fabricating zero', () => {
+  it('marks cumulative token usage as unreported instead of fabricating zero', async () => {
     render(
       <ContextRing
         used={9_000}
@@ -359,13 +361,14 @@ describe('ContextRing', () => {
     );
 
     fireEvent.click(screen.getByTestId('context-ring'));
+    fireEvent.click(await screen.findByRole('button', { name: /窗口与压缩详情/ }));
 
     expect(screen.getByText('当前上下文窗口')).toBeTruthy();
     expect(screen.getByText('累计 Token 消耗')).toBeTruthy();
     expect(screen.getByTestId('context-session-tokens').textContent).toBe('尚未上报');
   });
 
-  it('labels a kernel-capped limit (non-overridable native cap) on the capacity row', () => {
+  it('labels a kernel-capped limit (non-overridable native cap) on the capacity row', async () => {
     render(
       <ContextRing
         used={100_000}
@@ -377,12 +380,13 @@ describe('ContextRing', () => {
     );
 
     fireEvent.click(screen.getByTestId('context-ring'));
+    fireEvent.click(await screen.findByRole('button', { name: /窗口与压缩详情/ }));
 
     expect(screen.getByTestId('context-limit-kernel-capped').textContent).toContain('受内核限制');
     expect(screen.queryByTestId('context-limit-estimated')).toBeNull();
   });
 
-  it('prefers the estimated label when metadata is missing even under a cap', () => {
+  it('prefers the estimated label when metadata is missing even under a cap', async () => {
     render(
       <ContextRing
         used={20_000}
@@ -395,12 +399,13 @@ describe('ContextRing', () => {
     );
 
     fireEvent.click(screen.getByTestId('context-ring'));
+    fireEvent.click(await screen.findByRole('button', { name: /窗口与压缩详情/ }));
 
     expect(screen.getByTestId('context-limit-estimated').textContent).toContain('估算');
     expect(screen.queryByTestId('context-limit-kernel-capped')).toBeNull();
   });
 
-  it('uses the configured model capacity without exposing a conversation editor', () => {
+  it('uses the configured model capacity without exposing a conversation editor', async () => {
     render(
       <ContextRing
         used={20_000}
@@ -413,6 +418,7 @@ describe('ContextRing', () => {
     );
 
     fireEvent.click(screen.getByTestId('context-ring'));
+    fireEvent.click(await screen.findByRole('button', { name: /窗口与压缩详情/ }));
     expect(screen.getByTestId('context-model-default').textContent).toContain('200k');
     expect(screen.queryByText('会话设置')).toBeNull();
     expect(screen.queryByRole('button', { name: '编辑会话容量' })).toBeNull();
@@ -420,7 +426,7 @@ describe('ContextRing', () => {
 
   it.each(['GPT', 'ClaudeCode'] as const)(
     'lets the %s kernel own compaction without host 70%% copy',
-    (kernelLabel) => {
+    async (kernelLabel) => {
       render(
         <ContextRing
           used={80_000}
@@ -436,6 +442,7 @@ describe('ContextRing', () => {
       );
 
       fireEvent.click(screen.getByTestId('context-ring'));
+    fireEvent.click(await screen.findByRole('button', { name: /窗口与压缩详情/ }));
 
       expect(screen.getByTestId('context-kernel-self-managed').textContent).toBe(
         `上下文压缩由 ${kernelLabel} 内核自行管理`,
@@ -449,7 +456,7 @@ describe('ContextRing', () => {
     },
   );
 
-  it('shows the active kernel in the context window header', () => {
+  it('shows the active kernel in the context window header', async () => {
     render(
       <ContextRing
         used={20_000}
@@ -462,6 +469,7 @@ describe('ContextRing', () => {
     );
 
     fireEvent.click(screen.getByTestId('context-ring'));
+    fireEvent.click(await screen.findByRole('button', { name: /窗口与压缩详情/ }));
 
     const badge = screen.getByTestId('context-kernel-label');
     expect(badge.getAttribute('title')).toBe('当前内核：ClaudeCode');
@@ -469,7 +477,7 @@ describe('ContextRing', () => {
     expect(badge.textContent).toBe('');
   });
 
-  it('labels a kernel-reported occupancy window and shows kernel category rows', () => {
+  it('labels a kernel-reported occupancy window and shows kernel category rows', async () => {
     render(
       <ContextRing
         used={57_234}
@@ -487,6 +495,7 @@ describe('ContextRing', () => {
     );
 
     fireEvent.click(screen.getByTestId('context-ring'));
+    fireEvent.click(await screen.findByRole('button', { name: /窗口与压缩详情/ }));
 
     expect(screen.getByTestId('context-limit-kernel-reported').textContent).toContain('内核窗口');
     expect(screen.getByTestId('context-model-default').textContent).toContain('372k');
@@ -498,7 +507,7 @@ describe('ContextRing', () => {
     expect(screen.queryByText('当前对话上下文构成')).toBeNull();
   });
 
-  it('uses the GPT brand mark instead of the GPT word', () => {
+  it('uses the GPT brand mark instead of the GPT word', async () => {
     render(
       <ContextRing
         used={20_000}
@@ -510,6 +519,7 @@ describe('ContextRing', () => {
     );
 
     fireEvent.click(screen.getByTestId('context-ring'));
+    fireEvent.click(await screen.findByRole('button', { name: /窗口与压缩详情/ }));
 
     const badge = screen.getByTestId('context-kernel-label');
     expect(badge.getAttribute('title')).toBe('当前内核：GPT');
@@ -519,7 +529,7 @@ describe('ContextRing', () => {
 });
 
 describe('ModelPickerMenu', () => {
-  it('keeps model menus above the bottom composer and other shell surfaces', () => {
+  it('keeps model menus above the bottom composer and other shell surfaces', async () => {
     const shellCss = readFileSync(resolve(process.cwd(), 'src/renderer/shell/shell.css'), 'utf8');
     const menuRule = shellCss.match(
       /\.shell-menu--model-providers,[\s\S]*?\.shell-menu--reasoning-flyout\s*\{([\s\S]*?)\}/,
@@ -606,7 +616,7 @@ describe('ModelPickerMenu', () => {
     expect(onReasoningChange).toHaveBeenCalledWith('max');
   });
 
-  it('shows the current thinking effort beside the model without wrapping it into the name', () => {
+  it('shows the current thinking effort beside the model without wrapping it into the name', async () => {
     render(
       <ModelTrigger label="GPT-5.6 Luna" reasoningLabel="超高" open={false} onClick={vi.fn()} />,
     );
@@ -620,7 +630,7 @@ describe('ModelPickerMenu', () => {
     expect(screen.getByTitle('切换模型，思考强度：超高')).toBeTruthy();
   });
 
-  it('shows the planning model while Plan mode is active and restores the execution model', () => {
+  it('shows the planning model while Plan mode is active and restores the execution model', async () => {
     const { rerender } = render(
       <ModelTrigger
         label="GPT-5.6 Luna"

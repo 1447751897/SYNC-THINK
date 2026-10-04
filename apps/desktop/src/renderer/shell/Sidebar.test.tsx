@@ -3,7 +3,8 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import type { Conversation, GlobalAgent, Team } from '@sync-think/shared';
+import type { Conversation, Event, GlobalAgent, Team } from '@sync-think/shared';
+import { buildConversationActivity } from '../conversation-activity.js';
 import type { DesktopUpdateSnapshot } from '../../desktop-update-contract.js';
 import { DialogProvider } from './Dialog.js';
 import { Sidebar, type SidebarProps } from './Sidebar.js';
@@ -86,11 +87,17 @@ function renderSidebar(overrides: Partial<SidebarProps> = {}) {
     onResizeStart: noop,
     ...overrides,
   };
-  return render(
+  const tree = (nextProps: SidebarProps) => (
     <DialogProvider>
-      <Sidebar {...props} />
-    </DialogProvider>,
+      <Sidebar {...nextProps} />
+    </DialogProvider>
   );
+  const result = render(tree(props));
+  return {
+    ...result,
+    rerenderSidebar: (nextOverrides: Partial<SidebarProps>) =>
+      result.rerender(tree({ ...props, ...nextOverrides })),
+  };
 }
 
 afterEach(() => {
@@ -201,6 +208,83 @@ describe('Sidebar conversation row layout', () => {
   });
 });
 
+describe('Sidebar task thinking indicator', () => {
+  const conversations = [
+    conv({ id: 'task-running', track: 'model', title: '任务 · 我是gpt', taskId: 'sidebar-task-gpt' as Conversation['taskId'] }),
+    conv({ id: 'task-other', track: 'model', title: '任务 · 测试' }),
+  ];
+
+  it('shows the infinity comet beside a running title, preserving the badge and date', () => {
+    renderSidebar({
+      conversations,
+      nav: { ...INITIAL_NAV, selectedConversationId: 'task-other' },
+      conversationActivity: new Map([
+        ['task-running', { running: true, unread: true }],
+        ['task-other', { running: false, unread: true }],
+      ]),
+    });
+    const row = screen.getByTestId('conversation-task-running');
+    const indicator = within(row).getByRole('status', { name: '正在运行' });
+    expect(indicator.closest('.st-conv-row__body')).toBeTruthy();
+    expect(indicator.querySelector('path[pathLength="100"]')?.getAttribute('stroke-dasharray')).toBe('11 89');
+    expect(within(row).getByText('任务')).toBeTruthy();
+    expect(within(row).getByTestId('conversation-time-task-running')).toBeTruthy();
+    expect(row.querySelector('.shell-activity-dot')).toBeNull();
+    expect(screen.queryByTestId('conversation-thinking-task-other')).toBeNull();
+    expect(within(screen.getByTestId('conversation-task-other')).getByLabelText('已完成待查看')).toBeTruthy();
+  });
+
+  it('keeps background task animation mounted when the selected conversation changes', () => {
+    const { rerenderSidebar } = renderSidebar({
+      conversations,
+      nav: { ...INITIAL_NAV, selectedConversationId: 'task-running' },
+      conversationActivity: new Map([['task-running', { running: true, unread: false }]]),
+    });
+    const indicator = screen.getByTestId('conversation-thinking-task-running');
+    rerenderSidebar({ nav: { ...INITIAL_NAV, selectedConversationId: 'task-other' } });
+    expect(screen.getByTestId('conversation-thinking-task-running')).toBe(indicator);
+  });
+
+  it.each(['completed', 'failed', 'cancelled', 'paused'])('removes the animation after a %s state update', (terminal) => {
+    const runEvent = (sequence: number, type: string): Event => ({
+      id: `sidebar-event-${sequence}` as Event['id'],
+      workspaceId: 'ws-a' as Event['workspaceId'],
+      taskId: 'sidebar-task-gpt' as Event['taskId'],
+      category: 'run', type, sequence,
+      occurredAt: '2026-10-03T11:00:00.000Z',
+      payload: { threadId: 'task-running' },
+    });
+    const started = runEvent(1, 'run.started');
+    const projectActivity = (events: Event[]) => new Map(
+      [...buildConversationActivity(events, conversations)].map(([id, activity]) => [id, {
+        running: activity.running, unread: activity.lastFinishedSequence !== null,
+      }]),
+    );
+    const { rerenderSidebar } = renderSidebar({
+      conversations,
+      conversationActivity: projectActivity([started]),
+    });
+    expect(screen.getByTestId('conversation-thinking-task-running')).toBeTruthy();
+    rerenderSidebar({ conversationActivity: projectActivity([started, runEvent(2, `run.${terminal}`)]) });
+    expect(screen.queryByTestId('conversation-thinking-task-running')).toBeNull();
+    expect(within(screen.getByTestId('conversation-task-running')).getByLabelText('已完成待查看')).toBeTruthy();
+  });
+
+  it('tracks concurrently running tasks independently', () => {
+    const { rerenderSidebar } = renderSidebar({
+      conversations,
+      conversationActivity: new Map(conversations.map(c => [String(c.id), { running: true, unread: false }])),
+    });
+    expect(screen.getAllByRole('status', { name: '正在运行' })).toHaveLength(2);
+    rerenderSidebar({ conversationActivity: new Map([
+      ['task-running', { running: false, unread: false }],
+      ['task-other', { running: true, unread: false }],
+    ]) });
+    expect(screen.queryByTestId('conversation-thinking-task-running')).toBeNull();
+    expect(screen.getByTestId('conversation-thinking-task-other')).toBeTruthy();
+  });
+});
+
 const updateSnapshot: DesktopUpdateSnapshot = {
   schemaVersion: 1,
   phase: 'available',
@@ -235,7 +319,7 @@ describe('Sidebar update badge', () => {
     renderSidebar();
 
     expect(screen.queryByTestId('sidebar-update-badge')).toBeNull();
-    expect(screen.getByTestId('sidebar-settings-box').getAttribute('title')).toBe('设置');
+    expect(screen.getByTestId('nav-settings').getAttribute('aria-label')).toBe('本地用户 · 设置');
   });
 
   it('hangs the pending version on the settings entry without blocking it', async () => {
@@ -245,9 +329,9 @@ describe('Sidebar update badge', () => {
 
     const badge = await screen.findByTestId('sidebar-update-badge');
     expect(badge.textContent).toBe('v0.1.0-rc.6');
-    expect(screen.getByTestId('sidebar-settings-box').getAttribute('title')).toBe(
-      '设置 · 可更新到 v0.1.0-rc.6',
-    );
+    fireEvent.mouseEnter(screen.getByTestId('nav-settings'));
+    expect(screen.getByRole('tooltip').textContent).toBe('本地用户 · 设置 · 可更新到 v0.1.0-rc.6');
+    expect(screen.getByTestId('nav-settings').getAttribute('title')).toBeNull();
 
     // 徽标只是提示：点它应当和点设置入口一样打开设置，而不是变成另一个入口。
     fireEvent.click(badge);
@@ -263,7 +347,7 @@ describe('Sidebar update badge', () => {
     act(() => bridge.push({ ...updateSnapshot, phase: 'up-to-date' }));
 
     await waitFor(() => expect(screen.queryByTestId('sidebar-update-badge')).toBeNull());
-    expect(screen.getByTestId('sidebar-settings-box').getAttribute('title')).toBe('设置');
+    expect(screen.getByTestId('nav-settings').getAttribute('aria-label')).toBe('本地用户 · 设置');
   });
 });
 
@@ -273,11 +357,7 @@ it('keeps primary navigation readable and search presented as an available actio
     'nav-new-chat',
     'nav-search',
     'nav-scheduled',
-    'nav-activity',
-    'nav-browser',
     'nav-agents',
-    'nav-teams',
-    'nav-abilities',
   ]) {
     const button = screen.getByTestId(id);
     expect(button.classList.contains('text-text')).toBe(true);
@@ -301,7 +381,7 @@ it('switches to contacts and back without navigating away from the current chat'
     },
   });
   renderSidebar({ onSelectStage });
-  fireEvent.click(screen.getAllByRole('button', { name: '智能体' })[0]!);
+  fireEvent.click(within(screen.getByRole('group', { name: '侧栏视图' })).getByRole('button', { name: '智能体' }));
   await screen.findByRole('region', { name: '智能体聊天列表' });
   expect(screen.queryByTestId('nav-new-chat')).toBeNull();
   expect(localStorage.getItem('sync-think.sidebar-mode.v1')).toBe('agents');
@@ -333,13 +413,12 @@ describe('main chat project navigation', () => {
     expect(screen.getByTestId('recent-section-toggle').getAttribute('aria-expanded')).toBe('true');
   });
 
-  it('toggles the same persisted appearance setting used by Settings', () => {
+  it('keeps theme selection exclusively in Settings', () => {
     renderSidebar();
-    fireEvent.click(screen.getByRole('button', { name: '深色模式' }));
-    expect(document.documentElement.classList.contains('dark')).toBe(true);
-    expect(screen.getByRole('button', { name: '深色模式' }).getAttribute('aria-pressed')).toBe('true');
-    fireEvent.click(screen.getByRole('button', { name: '浅色模式' }));
-    expect(document.documentElement.classList.contains('dark')).toBe(false);
+    expect(screen.queryByRole('group', { name: '外观模式' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '浅色模式' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '深色模式' })).toBeNull();
+    expect(screen.getByTestId('nav-settings')).toBeTruthy();
   });
 });
 
@@ -418,4 +497,156 @@ it('renders and toggles groups using their owning workspace, not the current wor
   expect(branchB.textContent).not.toContain('A 分组');
   fireEvent.click(within(branchB).getByRole('button', { name: 'B 分组 1' }));
   expect(onToggleGroupCollapsed).toHaveBeenCalledWith('model', 'b-group', 'ws-b');
+});
+
+
+describe('compact navigation rail', () => {
+  it('shows every destination directly in the navigation rail without an overflow menu', () => {
+    renderSidebar();
+    const rail = screen.getByRole('navigation', { name: '主导航' });
+    expect(within(rail).getAllByRole('button')).toHaveLength(7);
+    expect(within(rail).getAllByRole('button').map(button => button.getAttribute('aria-label'))).toEqual(['主页', '收件箱', '定时任务', '浏览器', '智能体', '小队', '能力']);
+    expect(screen.queryByTestId('nav-more')).toBeNull();
+    expect(screen.queryByRole('menu')).toBeNull();
+    expect(within(rail).getByRole('button', { name: '主页' }).getAttribute('aria-current')).toBe('page');
+    expect(within(rail).getByTestId('nav-activity')).toBeTruthy();
+    expect(within(rail).getByTestId('nav-browser')).toBeTruthy();
+    expect(screen.getByTestId('nav-new-chat').closest('.shell-navigation-rail')).toBeNull();
+  });
+
+  it.each([['定时任务', 'tasks'], ['智能体', 'agents']] as const)('preserves the direct %s destination', (name, stage) => {
+    const onSelectStage = vi.fn();
+    renderSidebar({ onSelectStage, nav: { ...INITIAL_NAV, stage } });
+    const action = within(screen.getByRole('navigation', { name: '主导航' })).getByRole('button', { name });
+    expect(action.getAttribute('aria-current')).toBe('page');
+    fireEvent.click(action);
+    expect(onSelectStage).toHaveBeenCalledWith(stage);
+  });
+
+  it.each([['收件箱', 'activity'], ['浏览器', 'browser'], ['小队', 'teams'], ['能力', 'abilities']] as const)('opens %s directly without expanding a menu', (name, stage) => {
+    const onSelectStage = vi.fn();
+    renderSidebar({ onSelectStage, nav: { ...INITIAL_NAV, stage } });
+    const action = within(screen.getByRole('navigation', { name: '主导航' })).getByRole('button', { name });
+    expect(action.getAttribute('aria-label')).toBe(name);
+    fireEvent.mouseEnter(action);
+    expect(screen.getByRole('tooltip').textContent).toBe(name);
+    fireEvent.mouseLeave(action);
+    expect(action.classList.contains('is-active')).toBe(true);
+    expect(action.getAttribute('aria-current')).toBe('page');
+    expect(action.getAttribute('aria-haspopup')).toBeNull();
+    fireEvent.click(action);
+    expect(onSelectStage).toHaveBeenCalledWith(stage);
+    expect(onSelectStage).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('menu')).toBeNull();
+  });
+
+  it('returns Home to regular conversations without creating or replacing a conversation', async () => {
+    const onSelectStage = vi.fn();
+    const onNewConversation = vi.fn();
+    renderSidebar({ onSelectStage, onNewConversation });
+    fireEvent.click(within(screen.getByRole('group', { name: '侧栏视图' })).getByRole('button', { name: '智能体' }));
+    await screen.findByRole('region', { name: '智能体聊天列表' });
+    expect(screen.getByRole('navigation', { name: '主导航' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '主页' }));
+    expect(screen.getByTestId('nav-new-chat')).toBeTruthy();
+    expect(onSelectStage).toHaveBeenCalledWith('talk');
+    expect(onNewConversation).not.toHaveBeenCalled();
+  });
+});
+
+
+describe('shared shell sidebar modes', () => {
+  it('switches only the list in controlled mode while retaining the navigation and account area', () => {
+    const onSidebarModeChange = vi.fn();
+    const onAgentSidebarMount = vi.fn();
+    const view = renderSidebar({ sidebarMode: 'conversations', onSidebarModeChange, onAgentSidebarMount });
+    const rail = screen.getByRole('navigation', { name: '主导航' });
+    const brand = screen.getByAltText('Sync-Think');
+    const switcher = screen.getByRole('group', { name: '侧栏视图' });
+    fireEvent.click(within(switcher).getByRole('button', { name: '智能体' }));
+    expect(onSidebarModeChange).toHaveBeenCalledWith('agents');
+    view.rerenderSidebar({ sidebarMode: 'agents' });
+    expect(screen.getByRole('navigation', { name: '主导航' })).toBe(rail);
+    expect(screen.getByAltText('Sync-Think')).toBe(brand);
+    expect(screen.getByRole('group', { name: '侧栏视图' })).toBe(switcher);
+    expect(onAgentSidebarMount).toHaveBeenLastCalledWith(screen.getByTestId('sidebar-agent-host'));
+    expect(screen.queryByTestId('nav-new-chat')).toBeNull();
+    fireEvent.click(within(switcher).getByRole('button', { name: '会话' }));
+    expect(onSidebarModeChange).toHaveBeenLastCalledWith('conversations');
+    view.rerenderSidebar({ sidebarMode: 'conversations' });
+    expect(onAgentSidebarMount).toHaveBeenLastCalledWith(null);
+    expect(screen.getByRole('navigation', { name: '主导航' })).toBe(rail);
+    expect(screen.getByTestId('nav-new-chat')).toBeTruthy();
+  });
+});
+
+
+it('never reuses the portal target as the regular conversation list', () => {
+  const onAgentSidebarMount = vi.fn();
+  const view = renderSidebar({ sidebarMode: 'agents', onAgentSidebarMount });
+  const oldHost = screen.getByTestId('sidebar-agent-host');
+  view.rerenderSidebar({ sidebarMode: 'conversations' });
+  expect(oldHost.isConnected).toBe(false);
+  expect(screen.getByTestId('nav-new-chat')).toBeTruthy();
+  view.rerenderSidebar({ sidebarMode: 'agents' });
+  expect(screen.getByTestId('sidebar-agent-host')).not.toBe(oldHost);
+});
+
+
+it('anchors one account button to the rail across list switches, not to the scrolling body', () => {
+  const onSelectStage = vi.fn();
+  const view = renderSidebar({ sidebarMode: 'conversations', onSelectStage });
+  const account = screen.getByTestId('nav-settings');
+  expect(account.tagName).toBe('BUTTON');
+  expect(account.closest('.shell-navigation-rail__footer')).toBeTruthy();
+  expect(account.closest('.shell-sidebar-panel__body')).toBeNull();
+  expect(screen.queryByText('本地用户')).toBeNull();
+  fireEvent.focus(account);
+  expect(screen.getByRole('tooltip').textContent).toBe('本地用户 · 设置');
+  fireEvent.keyDown(account, { key: 'Escape' });
+  expect(screen.queryByRole('tooltip')).toBeNull();
+  fireEvent.click(account);
+  expect(onSelectStage).toHaveBeenCalledWith('settings');
+  view.rerenderSidebar({ sidebarMode: 'agents', onAgentSidebarMount: vi.fn(), settingsOpen: true });
+  expect(screen.getByTestId('nav-settings')).toBe(account);
+  expect(account.getAttribute('aria-expanded')).toBe('true');
+  expect(account.getAttribute('aria-haspopup')).toBe('dialog');
+  expect(account.classList.contains('is-active')).toBe(true);
+  view.rerenderSidebar({ sidebarMode: 'conversations' });
+  expect(screen.getByTestId('nav-settings')).toBe(account);
+  expect(screen.getAllByTestId('nav-settings')).toHaveLength(1);
+});
+
+
+it('keeps appearance controls in Settings, not in either sidebar list', () => {
+  const view = renderSidebar({ sidebarMode: 'conversations' });
+  expect(screen.queryByRole('group', { name: '外观模式' })).toBeNull();
+  expect(screen.queryByRole('button', { name: '浅色模式' })).toBeNull();
+  expect(screen.queryByRole('button', { name: '深色模式' })).toBeNull();
+  view.rerenderSidebar({ sidebarMode: 'agents', onAgentSidebarMount: vi.fn() });
+  expect(screen.queryByRole('group', { name: '外观模式' })).toBeNull();
+  expect(screen.getByTestId('nav-settings')).toBeTruthy();
+});
+
+
+it('owns a separate header target for agent actions and removes it on return to conversations', () => {
+  const onAgentSidebarMount = vi.fn(); const onAgentActionsMount = vi.fn();
+  const view = renderSidebar({ sidebarMode: 'agents', onAgentSidebarMount, onAgentActionsMount });
+  const host = screen.getByTestId('sidebar-agent-actions-host');
+  expect(host.closest('.shell-sidebar-navigation')).toBeTruthy();
+  expect(onAgentActionsMount).toHaveBeenLastCalledWith(host);
+  view.rerenderSidebar({ sidebarMode: 'conversations' });
+  expect(host.isConnected).toBe(false); expect(onAgentActionsMount).toHaveBeenLastCalledWith(null);
+  expect(screen.getAllByTestId('nav-search')).toHaveLength(1);
+});
+
+
+describe('Sidebar pending user interaction', () => {
+  it('shows waiting instead of the thinking indicator even when the run remains active', () => {
+    renderSidebar({ conversations: [conv({ id: 'question-a', track: 'model', title: '数据库迁移' })],
+      conversationActivity: new Map([['question-a', { running: true, unread: false, attention: 'answer' }]]) });
+    expect(screen.getByText('等你回答')).toBeTruthy();
+    expect(screen.getByLabelText('等你回答')).toBeTruthy();
+    expect(document.querySelector('.shell-activity-dot--running')).toBeNull();
+  });
 });

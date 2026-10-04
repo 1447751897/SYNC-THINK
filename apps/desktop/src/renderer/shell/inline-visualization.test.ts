@@ -54,7 +54,7 @@ describe('inline visualization contract', () => {
     });
     const documentSource = decodeURIComponent(encoded.replace(/^data:text\/html[^,]*,/, ''));
     expect(documentSource).toContain(
-      '<main class="viz-root" data-ui-kit="sync-think-v1"><section>Chart</section></main>',
+      '<main class="viz-root" data-ui-kit="sync-think-v2"><section>Chart</section></main>',
     );
     expect(documentSource).toContain('data-reduce-motion="true"');
     expect(documentSource).toContain('sync-think-visualization');

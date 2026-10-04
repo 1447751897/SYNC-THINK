@@ -13,7 +13,6 @@ import { SettingsSectionTabs } from './SettingsSectionTabs.js';
 import { ToggleControl } from './ToggleControl.js';
 import {
   COLOR_THEME_OPTIONS,
-  CUSTOM_IMAGE_THEME_ID,
   DEFAULT_SHORTCUT_PREFERENCES,
   IMAGE_THEME_OPTIONS,
   PERSONALIZATION_CACHE_KEY,
@@ -36,6 +35,7 @@ import {
   type ShortcutPreferences,
   type ThemeMode,
   type ImageThemeVariant,
+  type CustomImageTheme,
 } from './preferences-store.js';
 
 type PreferencesTab = 'theme' | 'shortcuts' | 'personalization';
@@ -91,20 +91,25 @@ function ThemePreferences() {
   const uploadRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string>();
-  const [editingCustomImage, setEditingCustomImage] = useState(false);
+  const preferencesRef = useRef(preferences);
+  const [editingCustomImageId, setEditingCustomImageId] = useState<string | null>(null);
+  const editingCustomImage = preferences.customImageThemes.find(image => image.id === editingCustomImageId);
   const visibleImageThemes = IMAGE_THEME_OPTIONS.filter(
     (theme) => !preferences.dismissedImageThemeIds.includes(theme.id),
   );
 
-  const commit = useCallback(
-    (update: Partial<AppearancePreferences>) => {
-      const next = { ...preferences, ...update, version: 1 as const };
-      setPreferences(next);
-      writeAppearancePreferences(next);
-      applyAppearancePreferences(next);
-    },
-    [preferences],
-  );
+  const commit = useCallback((update: Partial<AppearancePreferences>): boolean => {
+    const next = { ...preferencesRef.current, ...update, version: 1 as const };
+    if (!writeAppearancePreferences(next)) {
+      setUploadError('本地存储空间不足，设置未保存。请删除一些已上传图片后重试；已有图片会保留。');
+      return false;
+    }
+    preferencesRef.current = next;
+    setPreferences(next);
+    setUploadError(undefined);
+    applyAppearancePreferences(next, { persist: false });
+    return true;
+  }, []);
 
   const selectColorTheme = (id: (typeof COLOR_THEME_OPTIONS)[number]['id']) => {
     if (id === 'random' && preferences.colorTheme === 'random' && !preferences.imageThemeId) {
@@ -121,17 +126,32 @@ function ThemePreferences() {
     commit({ imageThemeId: null, colorTheme: id });
   };
 
-  const handleUpload = async (file: File | undefined) => {
-    if (!file) return;
+  const handleUpload = async (files: readonly File[]) => {
+    if (files.length === 0) return;
     setUploading(true);
     setUploadError(undefined);
     try {
-      const generated = await compressThemeImage(file);
+      const uploaded: CustomImageTheme[] = [];
+      const names = new Set(preferencesRef.current.customImageThemes.map(image => image.name));
+      for (const file of files) {
+        const generated = await compressThemeImage(file);
+        const baseName = (file.name.replace(/\.[^.]+$/, '').trim() || '我的图片').slice(0, 40);
+        let name = baseName;
+        let suffix = 2;
+        while (names.has(name)) name = `${baseName}（${suffix++}）`;
+        names.add(name);
+        uploaded.push({
+          id: `custom-upload-${crypto.randomUUID()}`, name,
+          dataUrl: generated.dataUrl, background: generated.background, accent: generated.accent,
+          focalPoint: { x: 50, y: 50 },
+        });
+      }
+      // Read the latest state after compression so changes made while uploading
+      // (such as mask strength) are not overwritten by an old async closure.
       commit({
-        imageThemeId: CUSTOM_IMAGE_THEME_ID,
-        customImageDataUrl: generated.dataUrl,
-        customImageBackground: generated.background,
-        customImageAccent: generated.accent,
+        customImageThemes: [...preferencesRef.current.customImageThemes, ...uploaded],
+        imageThemeId: uploaded[uploaded.length - 1]!.id,
+        customImageDataUrl: null,
       });
     } catch (error) {
       setUploadError(error instanceof Error ? error.message : '图片处理失败');
@@ -213,12 +233,28 @@ function ThemePreferences() {
               className="settings-image-theme__input"
               type="file"
               accept="image/jpeg,image/png,image/webp"
+              multiple
               aria-label="上传图片主题"
-              onChange={(event) => void handleUpload(event.target.files?.[0])}
+              onChange={(event) => void handleUpload(Array.from(event.target.files ?? []))}
             />
           </div>
         }
       >
+        <div className="settings-image-theme__controls">
+          <label className="settings-image-theme__opacity">
+            <span><span>遮罩强度</span><output>{preferences.imageOverlayOpacity}%</output></span>
+            <input type="range" min={0} max={100} step={1} value={preferences.imageOverlayOpacity}
+              aria-label="遮罩强度" aria-valuetext={`${preferences.imageOverlayOpacity}%`}
+              aria-describedby="settings-wallpaper-mask-help"
+              onChange={(event) => commit({ imageOverlayOpacity: Number(event.target.value) })} />
+          </label>
+          <button type="button" className="settings-preference-button"
+            aria-label="恢复默认遮罩" disabled={preferences.imageOverlayOpacity === 50}
+            onClick={() => commit({ imageOverlayOpacity: 50 })}>恢复默认</button>
+        </div>
+        <p id="settings-wallpaper-mask-help" className="settings-image-theme__hint">
+          数值越低，背景图片越清晰。可一次上传多张图片，新增图片会保留已有主题。
+        </p>
         <div className="settings-image-theme__grid">
           {visibleImageThemes.map((theme) => (
             <ImageThemeCard
@@ -253,43 +289,28 @@ function ThemePreferences() {
               }}
             />
           ))}
-          {preferences.customImageDataUrl ? (
+          {preferences.customImageThemes.map(image => (
             <ImageThemeCard
-              name={preferences.customImageName}
-              description="基于上传图片生成"
-              imageUrl={preferences.customImageDataUrl}
-              focalPoint={preferences.customImageFocalPoint}
-              active={preferences.imageThemeId === CUSTOM_IMAGE_THEME_ID}
-              onSelect={() => commit({ imageThemeId: CUSTOM_IMAGE_THEME_ID })}
-              variant={preferences.imageThemeVariants[CUSTOM_IMAGE_THEME_ID] ?? 'soft'}
-              variantColors={IMAGE_THEME_VARIANTS.map((variant) =>
-                imageThemeVariantAccent(
-                  preferences.customImageBackground,
-                  preferences.customImageAccent,
-                  variant.id,
-                ),
-              )}
-              onVariantChange={(variant) =>
-                commit({
-                  imageThemeId: CUSTOM_IMAGE_THEME_ID,
-                  imageThemeVariants: {
-                    ...preferences.imageThemeVariants,
-                    [CUSTOM_IMAGE_THEME_ID]: variant,
-                  },
-                })
-              }
+              key={image.id} name={image.name} description="基于上传图片生成"
+              imageUrl={image.dataUrl} focalPoint={image.focalPoint}
+              active={preferences.imageThemeId === image.id}
+              onSelect={() => commit({ imageThemeId: image.id })}
+              variant={preferences.imageThemeVariants[image.id] ?? 'soft'}
+              variantColors={IMAGE_THEME_VARIANTS.map(variant => imageThemeVariantAccent(image.background, image.accent, variant.id))}
+              onVariantChange={variant => commit({ imageThemeId: image.id, imageThemeVariants: { ...preferences.imageThemeVariants, [image.id]: variant } })}
               onDelete={() => {
-                const imageThemeVariants = { ...preferences.imageThemeVariants };
-                delete imageThemeVariants[CUSTOM_IMAGE_THEME_ID];
+                const current = preferencesRef.current;
+                const remaining = current.customImageThemes.filter(item => item.id !== image.id);
+                const imageThemeVariants = { ...current.imageThemeVariants };
+                delete imageThemeVariants[image.id];
                 commit({
-                  imageThemeId: null,
-                  customImageDataUrl: null,
-                  imageThemeVariants,
+                  customImageThemes: remaining, customImageDataUrl: null, imageThemeVariants,
+                  imageThemeId: current.imageThemeId === image.id ? (remaining[remaining.length - 1]?.id ?? null) : current.imageThemeId,
                 });
               }}
-              onEdit={() => setEditingCustomImage(true)}
+              onEdit={() => setEditingCustomImageId(image.id)}
             />
-          ) : null}
+          ))}
         </div>
         {uploadError ? (
           <p className="settings-preferences__error" role="alert">
@@ -475,15 +496,14 @@ function ThemePreferences() {
           这是对话中的预览文字效果。The quick brown fox jumps over the lazy dog.
         </div>
       </PreferenceSection>
-      {editingCustomImage && preferences.customImageDataUrl ? (
-        <CustomImageThemeEditor
-          imageUrl={preferences.customImageDataUrl}
-          name={preferences.customImageName}
-          focalPoint={preferences.customImageFocalPoint}
-          onClose={() => setEditingCustomImage(false)}
-          onSave={(customImageName, customImageFocalPoint) => {
-            commit({ customImageName, customImageFocalPoint });
-            setEditingCustomImage(false);
+      {editingCustomImage ? (
+        <CustomImageThemeEditor key={editingCustomImage.id}
+          imageUrl={editingCustomImage.dataUrl} name={editingCustomImage.name} focalPoint={editingCustomImage.focalPoint}
+          onClose={() => setEditingCustomImageId(null)}
+          onSave={(name, focalPoint) => {
+            if (commit({ customImageThemes: preferencesRef.current.customImageThemes.map(image => image.id === editingCustomImage.id ? { ...image, name, focalPoint } : image) })) {
+              setEditingCustomImageId(null);
+            }
           }}
         />
       ) : null}
@@ -664,8 +684,8 @@ function CustomImageThemeEditor({
     const rect = event.currentTarget.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) return;
     setDraftFocalPoint({
-      x: Math.round(((event.clientX - rect.left) / rect.width) * 100),
-      y: Math.round(((event.clientY - rect.top) / rect.height) * 100),
+      x: Math.max(0, Math.min(100, Math.round(((event.clientX - rect.left) / rect.width) * 100))),
+      y: Math.max(0, Math.min(100, Math.round(((event.clientY - rect.top) / rect.height) * 100))),
     });
   };
 

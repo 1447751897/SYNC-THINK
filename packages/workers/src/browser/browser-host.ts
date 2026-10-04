@@ -74,6 +74,23 @@ export interface BrowserReadLink {
   href: string;
 }
 
+export interface BrowserViewport {
+  width: number;
+  height: number;
+  devicePixelRatio: number;
+}
+
+/** Visible page controls; locators are observed from the live DOM, never guessed. */
+export interface BrowserReadControl {
+  name: string;
+  tag: string;
+  role: string;
+  selector: string;
+  x: number;
+  y: number;
+  inViewport: boolean;
+}
+
 export interface BrowserReadInput {
   name: string;
   type: string;
@@ -87,6 +104,9 @@ export interface BrowserPageExecutionResult {
   text?: string;
   links?: BrowserReadLink[];
   buttons?: string[];
+  controls?: BrowserReadControl[];
+  viewport?: BrowserViewport;
+  imageSize?: { width: number; height: number };
   inputs?: BrowserReadInput[];
   matched?: boolean;
   absolutePath?: string;
@@ -2247,8 +2267,7 @@ class PlaywrightCdpSession implements BrowserDriverSession {
   async close(options: { preserve?: boolean } = {}): Promise<void> {
     if (this.closed) {
       if (!options.preserve) {
-        await unlink(this.metadataPath).catch(() => undefined);
-        if (this.child) terminateOwnedBrowser(this.child);
+        await this.closeBrowserProcess();
       }
       return;
     }
@@ -2260,11 +2279,17 @@ class PlaywrightCdpSession implements BrowserDriverSession {
       this.activePages.clear();
       return;
     }
+    await this.closeBrowserProcess();
+  }
+
+  private async closeBrowserProcess(): Promise<void> {
     const browserSession = await this.browser.newBrowserCDPSession().catch(() => undefined);
     await browserSession?.send('Browser.close').catch(() => undefined);
     await browserSession?.detach().catch(() => undefined);
     await this.browser.close().catch(() => undefined);
-    if (this.child) terminateOwnedBrowser(this.child);
+    // Browser.close starts a graceful exit; wait for Chrome to flush the Profile
+    // before using the owned-process kill fallback (notably important on Windows).
+    if (this.child) await waitForOwnedBrowserExit(this.child, 5_000);
     await waitForCdpShutdown(this.cdpEndpoint, 5_000);
     await unlink(this.metadataPath).catch(() => undefined);
   }
@@ -3148,13 +3173,14 @@ export class PlaywrightDriverPage implements BrowserDriverPage {
             'permission',
           );
         }
-        await this.page.screenshot({
+        const image = await this.page.screenshot({
           path: target.absolutePath,
           type: 'png',
           fullPage: action.fullPage ?? false,
           timeout,
         });
-        return target;
+        const viewport = await this.page.evaluate('({ width: innerWidth, height: innerHeight, devicePixelRatio })') as BrowserViewport;
+        return { ...target, viewport, imageSize: { width: image.readUInt32BE(16), height: image.readUInt32BE(20) } };
       }
     }
   }
@@ -3164,15 +3190,29 @@ export class PlaywrightDriverPage implements BrowserDriverPage {
     maxChars: number | undefined,
     maxOutputBytes: number,
   ): Promise<
-    Pick<BrowserPageExecutionResult, 'text' | 'links' | 'buttons' | 'inputs' | 'matched'>
+    Pick<BrowserPageExecutionResult, 'text' | 'links' | 'buttons' | 'controls' | 'viewport' | 'inputs' | 'matched'>
   > {
     const boundedChars = clamp(maxChars ?? 8_000, 1, 64_000);
     const selectorJson = JSON.stringify(selector ?? 'body');
+    if (!selector || selector === 'body') {
+      // DOMContentLoaded precedes SPA hydration. Avoid treating an empty mount
+      // (or invisible script source) as an actionable rendered page.
+      await this.page.waitForFunction(`(() => {
+        const body = document.body;
+        return Boolean(body && (body.innerText.trim() || body.querySelector('button,a[href],input:not([type="hidden"]),[role="button"],[tabindex]')));
+      })()`, undefined, { timeout: 2_500, polling: 100 }).catch(() => undefined);
+    }
     const expression = `(() => {
-      const root = document.querySelector(${selectorJson});
-      if (!root) return { matched: false, text: '', links: [], buttons: [], inputs: [] };
+      const viewport = { width: innerWidth, height: innerHeight, devicePixelRatio };
+      const focusedDialog = ${JSON.stringify(!selector)} ? Array.from(document.querySelectorAll('[role="dialog"],[aria-modal="true"],dialog[open]')).filter(node => {
+        const rect = node.getBoundingClientRect();
+        const style = getComputedStyle(node);
+        return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden' && !node.closest('[hidden],[aria-hidden="true"]');
+      }).at(-1) : undefined;
+      const root = focusedDialog || document.querySelector(${selectorJson});
+      if (!root) return { matched: false, viewport, text: '', links: [], buttons: [], controls: [], inputs: [] };
       const clean = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
-      const text = String(root.innerText || root.textContent || '').slice(0, ${boundedChars});
+      const text = String(typeof root.innerText === 'string' ? root.innerText : root.textContent || '').slice(0, ${boundedChars});
       const links = Array.from(root.querySelectorAll('a[href]')).slice(0, 50).map((node) => ({
         text: clean(node.innerText || node.textContent),
         href: String(node.href || '')
@@ -3184,28 +3224,70 @@ export class PlaywrightDriverPage implements BrowserDriverPage {
         name: String(node.getAttribute('name') || node.getAttribute('aria-label') || ''),
         type: String(node.getAttribute('type') || node.tagName || '').toLowerCase(),
         placeholder: String(node.getAttribute('placeholder') || ''),
-        value: node.getAttribute('type') === 'password' ? '' : String(node.value || '')
+        value: ['password', 'hidden'].includes(String(node.getAttribute('type') || '').toLowerCase()) ? '' : String(node.value || '')
       }));
-      return { matched: true, text, links, buttons, inputs };
+      const controls = [];
+      const nativeSelector = 'button,a[href],input:not([type="hidden"]):not([type="password"]),textarea,select,[role="button"],[role="link"],[tabindex],[onclick]';
+      const candidates = [root, ...Array.from(root.querySelectorAll(nativeSelector + ',[title],[aria-label],svg,[class]')).slice(0, 4000)];
+      const uniqueSelector = (node) => {
+        if (node.id && node.id.length < 128) {
+          const id = '#' + CSS.escape(node.id);
+          if (document.querySelectorAll(id).length === 1) return id;
+        }
+        const parts = [];
+        let current = node;
+        while (current && current.nodeType === 1 && parts.length < 12) {
+          const tag = current.tagName.toLowerCase();
+          const siblings = current.parentElement ? Array.from(current.parentElement.children).filter(s => s.tagName === current.tagName) : [current];
+          parts.unshift(tag + ':nth-of-type(' + (siblings.indexOf(current) + 1) + ')');
+          const path = parts.join(' > ');
+          if (document.querySelectorAll(path).length === 1) return path;
+          current = current.parentElement;
+        }
+        return '';
+      };
+      for (const node of candidates) {
+        if (controls.length >= 80) break;
+        const rect = node.getBoundingClientRect();
+        const style = getComputedStyle(node);
+        const visualIcon = node.tagName.toLowerCase() === 'svg';
+        if (!rect.width || !rect.height || style.visibility === 'hidden' || style.display === 'none' || node.closest('[hidden]') || (!visualIcon && node.closest('[aria-hidden="true"]'))) continue;
+        const native = node.matches(nativeSelector);
+        if (!native && !visualIcon && style.cursor !== 'pointer') continue;
+        if (!native && !visualIcon && node !== root && node.parentElement && getComputedStyle(node.parentElement).cursor === 'pointer') continue;
+        // Pointer cursors inherit into icon descendants. Return one actionable owner.
+        const parentControl = node.parentElement?.closest(nativeSelector + ',[title],[aria-label]');
+        if (!native && !visualIcon && parentControl && (parentControl === root || root.contains(parentControl))) continue;
+        if (node.tagName === 'INPUT' && ['password','hidden'].includes(String(node.type).toLowerCase())) continue;
+        const selector = uniqueSelector(node);
+        if (!selector) continue;
+        const name = clean(node.getAttribute('aria-label') || node.getAttribute('title') || node.querySelector('svg title')?.textContent || (node.tagName.toLowerCase() === 'svg' ? node.querySelector('title')?.textContent : '') || node.innerText || node.getAttribute('placeholder') || node.getAttribute('name') || (typeof node.className === 'string' ? node.className : '') || node.tagName).slice(0, 160);
+        controls.push({ name, tag: node.tagName.toLowerCase(), role: visualIcon ? 'icon' : node.getAttribute('role') || (node.tagName === 'A' ? 'link' : ['INPUT','TEXTAREA','SELECT'].includes(node.tagName) ? 'input' : 'button'), selector, x: Math.round(rect.left + rect.width/2), y: Math.round(rect.top + rect.height/2), inViewport: rect.left >= 0 && rect.top >= 0 && rect.right <= innerWidth && rect.bottom <= innerHeight });
+      }
+      return { matched: true, viewport, controls, text, links, buttons, inputs };
     })()`;
     const raw = (await this.page.evaluate(expression)) as {
       matched: boolean;
       text: string;
       links: BrowserReadLink[];
       buttons: string[];
+      controls: BrowserReadControl[];
+      viewport: BrowserViewport;
       inputs: BrowserReadInput[];
     };
     const serialized = JSON.stringify(raw);
     if (Buffer.byteLength(serialized, 'utf8') <= maxOutputBytes) return raw;
     const structuralBytes = Buffer.byteLength(
-      JSON.stringify({ ...raw, text: '', links: [], buttons: [], inputs: [] }),
+      JSON.stringify({ ...raw, text: '', links: [], buttons: [], controls: [], inputs: [] }),
       'utf8',
     );
     return {
       matched: raw.matched,
+      viewport: raw.viewport,
       text: clampUtf8(raw.text, Math.max(0, maxOutputBytes - structuralBytes)),
       links: [],
       buttons: [],
+      controls: [],
       inputs: [],
     };
   }
@@ -3369,6 +3451,16 @@ async function probeCdp(url: string): Promise<boolean> {
     });
     req.once('error', () => resolveProbe(false));
     req.end();
+  });
+}
+
+export async function waitForOwnedBrowserExit(child: ChildProcess, timeoutMs: number): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  await new Promise<void>(resolve => {
+    const done = () => { clearTimeout(timer); child.removeListener('exit', done); resolve(); };
+    const timer = setTimeout(() => { terminateOwnedBrowser(child); done(); }, Math.max(1, timeoutMs));
+    child.once('exit', done);
+    if (child.exitCode !== null || child.signalCode !== null) done();
   });
 }
 

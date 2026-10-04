@@ -2,7 +2,10 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import type { ReactElement } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { DialogProvider } from './Dialog.js';
+import { readDefaultEmbeddedBrowserProfile, writeDefaultEmbeddedBrowserProfile } from './embedded-browser-profile.js';
 import {
   BrowserPanel,
   browserGuestBox,
@@ -11,6 +14,7 @@ import {
   normalizeBrowserInput,
   parseGuestZoomDelta,
 } from './BrowserPanel.js';
+import { getOwnedBrowserWebview, registerBrowserWebview } from './browser-commands.js';
 
 const shellCss = readFileSync(resolve(process.cwd(), 'src/renderer/shell/shell.css'), 'utf8');
 
@@ -30,6 +34,11 @@ const webviewMethods = {
   print: vi.fn(),
 };
 
+/** The panel's 清除浏览数据 confirmation resolves through the app dialog host. */
+function renderPanel(ui: ReactElement) {
+  return render(<DialogProvider>{ui}</DialogProvider>);
+}
+
 function attachWebviewMethods() {
   const webview = screen.getByTestId('browser-panel').querySelector('webview') as HTMLElement;
   Object.assign(webview, webviewMethods);
@@ -40,24 +49,149 @@ function attachWebviewMethods() {
 
 afterEach(() => {
   cleanup();
+  registerBrowserWebview(null);
   vi.clearAllMocks();
   vi.unstubAllGlobals();
+  window.localStorage.removeItem('sync-think:embedded-browser-default-profile:v1');
   Object.defineProperty(window, 'syncThink', { configurable: true, value: undefined });
 });
 
 describe('BrowserPanel layout contract', () => {
+  it('gives the nested clear-data trigger the same horizontal row and states as direct menu items', () => {
+    const rules = [...shellCss.replace(/\/\*[\s\S]*?\*\//g, '').matchAll(/([^{}]+)\{([^{}]*)\}/g)];
+    for (const suffix of ['', ':hover:not(:disabled)', ':disabled', ' small', ' svg']) {
+      const selector = `.shell-browser__more-menu > button${suffix}`;
+      const rule = rules.find((match) => match[1].split(',').map((part) => part.trim()).includes(selector));
+      expect(rule, selector).toBeTruthy();
+      expect(rule![1].split(',').map((part) => part.trim())).toContain(
+        `.shell-browser__submenu-row > button${suffix}`,
+      );
+      if (!suffix) {
+        expect(rule![2]).toMatch(/display:\s*flex;/);
+        expect(rule![2]).toMatch(/align-items:\s*center;/);
+        expect(rule![2]).toMatch(/min-height:\s*30px;/);
+        expect(rule![2]).toMatch(/text-align:\s*left;/);
+      }
+    }
+  });
+
+  it('keeps the clear-data submenu attached to its row and toggles it without closing the parent menu', async () => {
+    renderPanel(<BrowserPanel initialUrl="https://example.test" onClose={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: '更多浏览器选项' }));
+    const trigger = screen.getByRole('menuitem', { name: '清除浏览数据' }) as HTMLButtonElement;
+    expect(trigger.disabled).toBe(true);
+    expect(trigger.getAttribute('aria-expanded')).toBe('false');
+    attachWebviewMethods();
+    await waitFor(() => expect(trigger.disabled).toBe(false));
+    fireEvent.click(trigger);
+    expect(trigger.getAttribute('aria-expanded')).toBe('true');
+    const submenu = screen.getByRole('menu', { name: '清除浏览数据' });
+    expect(trigger.parentElement?.contains(submenu)).toBe(true);
+    expect(screen.getByRole('menuitem', { name: 'Cookie 和网站数据' })).toBeTruthy();
+    expect(screen.getByRole('menuitem', { name: '浏览历史记录' })).toBeTruthy();
+    fireEvent.click(trigger);
+    expect(trigger.getAttribute('aria-expanded')).toBe('false');
+    expect(screen.queryByRole('menu', { name: '清除浏览数据' })).toBeNull();
+    expect(screen.getByTestId('browser-more-menu')).toBeTruthy();
+  });
+
+  it('uses a stable persisted browser profile and exposes its actual directory', async () => {
+    const info=vi.fn(async()=>({engine:'electron-webview',persistent:true,storagePath:'C:/fixture/Partitions/browser-panel'}));
+    const writeText=vi.fn(async()=>undefined);
+    Object.defineProperty(window,'syncThink',{configurable:true,value:{runtime:{getEmbeddedBrowserSessionInfo:info},editing:{writeText}}});
+    renderPanel(<BrowserPanel initialUrl="https://example.test" onClose={vi.fn()}/>);
+    const view=attachWebviewMethods();
+    expect(view.getAttribute('partition')).toBe('persist:browser-panel');
+    fireEvent.click(screen.getByRole('button',{name:'浏览器资料与登录保存位置'}));
+    expect(await screen.findByText('C:/fixture/Partitions/browser-panel')).toBeTruthy();
+    const card = screen.getByRole('region', { name: '当前浏览器资料' });
+    expect(screen.getByTestId('browser-panel').contains(card)).toBe(false);
+    fireEvent.pointerDown(card);
+    expect(screen.getByRole('region', { name: '当前浏览器资料' })).toBeTruthy();
+    expect(info).toHaveBeenCalledWith({webContentsId:42});
+    expect(screen.getByText(/登录状态保存在本机/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '复制目录' }));
+    expect(await screen.findByText('目录已复制')).toBeTruthy();
+    expect(writeText).toHaveBeenCalledWith('C:/fixture/Partitions/browser-panel');
+  });
+  it('uses the configured default on subsequent tabs without creating a fresh partition', () => {
+    expect(writeDefaultEmbeddedBrowserProfile('persist:browser-panel')).toBe(true);
+    const first = renderPanel(<BrowserPanel onClose={vi.fn()} />);
+    expect(first.container.querySelector('webview')?.getAttribute('partition')).toBe('persist:browser-panel');
+    expect(screen.getByText('默认浏览器资料')).toBeTruthy();
+    first.unmount();
+    const second = renderPanel(<BrowserPanel onClose={vi.fn()} />);
+    expect(second.container.querySelector('webview')?.getAttribute('partition')).toBe('persist:browser-panel');
+  });
+  it('keeps a mounted guest stable and respects an explicitly saved older profile on subsequent tabs', () => {
+    const first = renderPanel(<BrowserPanel onClose={vi.fn()} />);
+    const original = attachWebviewMethods();
+    writeDefaultEmbeddedBrowserProfile('');
+    fireEvent.click(screen.getByRole('button', { name: '浏览器资料与登录保存位置' }));
+    expect(screen.queryByRole('combobox', { name: '新标签默认资料' })).toBeNull();
+    expect(first.container.querySelector('webview')).toBe(original);
+    expect(original.getAttribute('partition')).toBe('persist:browser-panel');
+    first.unmount();
+    const next = renderPanel(<BrowserPanel onClose={vi.fn()} />);
+    expect(next.container.querySelector('webview')?.getAttribute('partition')).toBe('');
+    expect(readDefaultEmbeddedBrowserProfile()).toBe('');
+  });
+  it('opens password and Cookie settings for the actual guest from the browser menu', async () => {
+    const api = vi.fn(async () => ({ ok: true, snapshot: { storagePath: 'C:/fixture/Partitions/browser-panel', persistent: true, encryptionAvailable: true, passwords: [], sites: [] } }));
+    Object.defineProperty(window, 'syncThink', { configurable: true, value: { runtime: { manageEmbeddedBrowserData: api } } });
+    renderPanel(<BrowserPanel initialUrl="https://example.test" onClose={vi.fn()} />);
+    attachWebviewMethods();
+    fireEvent.click(screen.getByRole('button', { name: '更多浏览器选项' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: '密码和自动填充' }));
+    expect(await screen.findByRole('dialog', { name: '密码和自动填充' })).toBeTruthy();
+    await waitFor(() => expect(api).toHaveBeenCalledWith({ action: 'list', webContentsId: 42 }));
+  });
+  it('restores the conversation owner when an automation guest is remounted', () => {
+    const first = renderPanel(<BrowserPanel automationOwnerId="thread-a" initialUrl="https://example.test" onClose={vi.fn()} />);
+    const original = attachWebviewMethods();
+    expect(getOwnedBrowserWebview('thread-a')).toBe(original);
+    first.unmount();
+    expect(getOwnedBrowserWebview('thread-a')).toBeUndefined();
+    renderPanel(<BrowserPanel automationOwnerId="thread-a" initialUrl="https://example.test" onClose={vi.fn()} />);
+    const replacement = attachWebviewMethods();
+    replacement.dispatchEvent(new Event('did-attach'));
+    expect(replacement).not.toBe(original);
+    expect(getOwnedBrowserWebview('thread-a')).toBe(replacement);
+  });
   it('uses NewMax blank-tab semantics for empty address input', () => {
     expect(normalizeBrowserInput('')).toBe('about:blank');
     expect(normalizeBrowserInput('   ')).toBe('about:blank');
   });
 
   it('preserves tokenized local-page URLs when re-entered in the address bar', () => {
-    const url = 'newmax-local-web://token/index.html';
+    const url = 'sync-think-local-web://token/index.html';
     expect(normalizeBrowserInput(url)).toBe(url);
   });
 
+  it('canonicalizes legacy local-page addresses instead of treating them as search queries', () => {
+    expect(normalizeBrowserInput('newmax-local-web://token/index.html?mode=1#page')).toBe('sync-think-local-web://token/index.html?mode=1#page');
+  });
+
+  it('restores an old browser tab with the branded address and unchanged token', async () => {
+    const onPageMeta = vi.fn();
+    renderPanel(<BrowserPanel embedded registerForAutomation={false} initialUrl="newmax-local-web://token/index.html" onPageMeta={onPageMeta} onClose={vi.fn()} />);
+    const guest = screen.getByTestId('browser-panel').querySelector('webview');
+    expect(guest?.getAttribute('src')).toBe('sync-think-local-web://token/index.html');
+    await waitFor(() => expect(onPageMeta).toHaveBeenCalledWith(expect.objectContaining({ url: 'sync-think-local-web://token/index.html' })));
+  });
+
+  it('keeps the displayed address canonical when a legacy page reports navigation', async () => {
+    const onPageMeta = vi.fn();
+    renderPanel(<BrowserPanel embedded registerForAutomation={false} initialUrl="about:blank" onPageMeta={onPageMeta} onClose={vi.fn()} />);
+    const guest = attachWebviewMethods();
+    const event = new Event('did-navigate') as Event & { url: string };
+    event.url = 'newmax-local-web://token/index.html?view=1#page';
+    fireEvent(guest, event);
+    await waitFor(() => expect(onPageMeta).toHaveBeenCalledWith(expect.objectContaining({ url: 'sync-think-local-web://token/index.html?view=1#page' })));
+  });
+
   it('fills a flex pane host instead of shrinking to the toolbar width', () => {
-    render(
+    renderPanel(
       <BrowserPanel
         embedded
         registerForAutomation={false}
@@ -99,7 +233,7 @@ describe('BrowserPanel layout contract', () => {
       },
     );
 
-    render(
+    renderPanel(
       <BrowserPanel
         embedded
         registerForAutomation={false}
@@ -130,7 +264,7 @@ describe('BrowserPanel layout contract', () => {
   });
 
   it('does not reset Electron zoom to 1 while measuring a page that already fits', async () => {
-    render(
+    renderPanel(
       <BrowserPanel
         embedded
         registerForAutomation={false}
@@ -148,7 +282,7 @@ describe('BrowserPanel layout contract', () => {
   });
 
   it('renders NewMax empty state for a blank tab without showing a loading skeleton', () => {
-    render(
+    renderPanel(
       <BrowserPanel
         embedded
         registerForAutomation={false}
@@ -171,7 +305,7 @@ describe('BrowserPanel layout contract', () => {
       configurable: true,
       value: { runtime: { openExternalUrl } },
     });
-    render(
+    renderPanel(
       <BrowserPanel
         embedded
         registerForAutomation={false}
@@ -188,7 +322,7 @@ describe('BrowserPanel layout contract', () => {
   });
 
   it('keeps the NewMax three-layer progress chrome while a page is loading', () => {
-    render(
+    renderPanel(
       <BrowserPanel
         embedded
         registerForAutomation={false}
@@ -203,7 +337,7 @@ describe('BrowserPanel layout contract', () => {
   });
 
   it('keeps the NewMax browser controls available after the guest is ready', async () => {
-    render(
+    renderPanel(
       <BrowserPanel
         embedded
         registerForAutomation={false}
@@ -259,7 +393,7 @@ describe('BrowserPanel layout contract', () => {
         },
       },
     });
-    const view = render(
+    const view = renderPanel(
       <BrowserPanel
         embedded
         registerForAutomation={false}
@@ -287,7 +421,7 @@ describe('BrowserPanel layout contract', () => {
 
   it('does not render a page-title strip and reports live chrome to the host', async () => {
     const onPageMeta = vi.fn();
-    render(
+    renderPanel(
       <BrowserPanel
         embedded
         registerForAutomation={false}
@@ -332,7 +466,7 @@ describe('BrowserPanel layout contract', () => {
   });
 
   it('zooms the guest from Ctrl+wheel on the host viewport and from guest console zoom marks', async () => {
-    render(
+    renderPanel(
       <BrowserPanel
         embedded
         registerForAutomation={false}

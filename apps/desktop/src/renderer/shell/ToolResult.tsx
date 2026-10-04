@@ -3,15 +3,17 @@
  * Copyright (c) 2026 Saurabh Chauhan. See third-party/beui-code-block.LICENSE.
  * ToolRow owns the single disclosure; this surface owns result status and output.
  */
-import { useMemo, type ReactNode } from 'react';
+import { useMemo, useState, type ReactNode } from 'react';
 import { Ban, CircleCheck, CircleDashed, CircleX, LoaderCircle, Pause, RotateCcw, Shield } from 'lucide-react';
 import { CodeBlock, type CodeBlockReadingState } from './CodeBlock.js';
+import { languageFromPath } from './code-highlight.js';
 
 export type ToolResultStatus = 'running' | 'success' | 'error' | 'cancelled' | 'paused' | 'waiting' | 'interrupted';
 export interface ToolResultProps {
   output?: string;
   status: ToolResultStatus;
-  kind?: 'terminal' | 'request' | 'custom';
+  kind?: 'terminal' | 'request' | 'custom' | 'file';
+  filename?: string;
   truncated?: boolean;
   readingState?: CodeBlockReadingState;
   onRead?: () => void;
@@ -33,30 +35,51 @@ export function ToolResult({
   output,
   status,
   kind = 'custom',
+  filename,
   truncated,
   readingState,
   onRead,
   onRetry,
   testId,
 }: ToolResultProps) {
-  const content = useMemo(() => {
-    if (!output) return { code: '', language: 'text', lines: 0 };
-    let code = output;
+  // Associate the raw selection with this payload so a new result opens in its
+  // readable view rather than inheriting an earlier result's display choice.
+  const [rawOutputSelection, setRawOutputSelection] = useState<string>();
+  const { raw, file } = useMemo(() => {
+    let code = output ?? '';
     let language = 'text';
-    if (kind !== 'terminal' && /^[\s]*[\[{]/.test(output)) {
+    let parsed: unknown;
+    if (/^[\s]*[\[{]/.test(code)) {
       try {
-        code = JSON.stringify(JSON.parse(output), null, 2);
+        parsed = JSON.parse(code);
+        code = JSON.stringify(parsed, null, 2);
         language = 'json';
       } catch {
         /* Partial/plain output stays text. */
       }
     }
-    return {
-      code,
-      language,
-      lines: code.replace(/\r\n/g, '\n').replace(/\n$/, '').split('\n').length,
-    };
-  }, [output, kind]);
+    const prepare = (source: string, syntax: string) => ({
+      code: source,
+      language: syntax,
+      lines: source ? source.replace(/\r\n/g, '\n').replace(/\n$/, '').split('\n').length : 0,
+    });
+    const raw = prepare(code, language);
+    if (kind === 'file' && status === 'success' && parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      const envelope = parsed as Record<string, unknown>;
+      const source = typeof envelope.content === 'string' ? envelope.content : envelope.text;
+      // Unwrap only a successful file-worker envelope. Never globally replace
+      // escaped characters: literal backslashes inside file contents are data.
+      if (envelope.ok === true && !envelope.error &&
+          typeof envelope.bytes === 'number' && Number.isFinite(envelope.bytes) && envelope.bytes >= 0 &&
+          typeof source === 'string') {
+        const path = filename ?? (typeof envelope.path === 'string' ? envelope.path : undefined);
+        return { raw, file: prepare(source, languageFromPath(path) ?? 'text') };
+      }
+    }
+    return { raw, file: undefined };
+  }, [output, kind, status, filename]);
+  const showRaw = file !== undefined && rawOutputSelection === output;
+  const content = file && !showRaw ? file : raw;
   const Icon =
     status === 'running'
       ? LoaderCircle
@@ -75,11 +98,22 @@ export function ToolResult({
         />
         {STATUS_LABEL[status]}
       </span>
-      {content.lines > 0 ? (
-        <span className="shell-beui-result__meta">
-          {content.language === 'json' ? 'JSON' : kind === 'terminal' ? '终端输出' : '返回内容'} ·{' '}
+      {content.lines > 0 || file ? (
+        <span className="shell-beui-result__meta" title={filename}>
+          {file ? (showRaw ? '原始 JSON' : `文件内容 · ${content.language.toUpperCase()}`) :
+            content.language === 'json' ? 'JSON' : kind === 'terminal' ? '终端输出' : '返回内容'} ·{' '}
           {content.lines} 行
         </span>
+      ) : null}
+      {file ? (
+        <button
+          type="button"
+          className="shell-beui-result__mode"
+          aria-pressed={showRaw}
+          onClick={() => setRawOutputSelection(showRaw ? undefined : output)}
+        >
+          {showRaw ? '查看文件内容' : '查看原始结果'}
+        </button>
       ) : null}
     </span>
   );
@@ -89,6 +123,7 @@ export function ToolResult({
       data-testid={testId}
       data-status={status}
       data-kind={kind}
+      data-view={file && !showRaw ? 'file' : 'raw'}
       aria-busy={status === 'running'}
       onPointerDownCapture={() => onRead?.()}
       onWheelCapture={(event) => {
@@ -109,13 +144,15 @@ export function ToolResult({
           maxHeight={240}
           readingState={readingState}
           wrapControl
-          copyLabel={truncated ? '复制当前日志片段' : status === 'error' ? '复制错误' : '复制输出'}
+          copyLabel={truncated ? '复制当前日志片段' : status === 'error' ? '复制错误' : file && !showRaw ? '复制文件内容' : '复制输出'}
         />
       ) : (
         <div className="shell-beui-result__empty">
           {identity}
           <p>
-            {status === 'running'
+            {file && !showRaw
+              ? '文件为空。'
+              : status === 'running'
               ? '等待工具返回输出…'
               : status === 'error'
                 ? '工具未返回错误详情'

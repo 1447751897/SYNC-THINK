@@ -199,17 +199,13 @@ export class RuntimeBrowserWorkflowService {
         );
       }
       const version = this.store.getWorkflowVersion(task.publishedVersionId);
-      const needsRuntimeInput = version?.steps.some(
-        (step) => (step.kind === 'fill' || step.kind === 'select') && step.value.kind !== 'literal',
-      );
-      if (input.enabled && needsRuntimeInput) {
-        throw new RuntimeBrowserWorkflowError(
-          'browser.workflow-schedule-input-required',
-          'Scheduled workflows cannot contain variable or secret inputs.',
-        );
+      const variables = input.variables ?? this.store.getWorkflowSchedule(task.id)?.variables ?? {};
+      const inputs = version?.steps.filter(step => step.kind === 'fill' || step.kind === 'select') ?? [];
+      if (input.enabled && inputs.some(step => (step.kind === 'fill' || step.kind === 'select') && (step.value.kind === 'secret' || step.value.kind === 'variable' && !Object.hasOwn(variables, step.value.name)))) {
+        throw new RuntimeBrowserWorkflowError('browser.workflow-schedule-input-required', 'Provide all non-secret variables before enabling this schedule. Secret inputs require interactive execution.');
       }
       return {
-        schedule: toPublicSchedule(this.store.upsertWorkflowSchedule(input)),
+        schedule: toPublicSchedule(this.store.upsertWorkflowSchedule({ ...input, variables })),
       };
     });
   }
@@ -346,6 +342,7 @@ function toPublicRun(run: BrowserWorkflowRunRecord) {
 function toPublicSchedule(schedule: BrowserWorkflowScheduleRecord) {
   return {
     taskId: schedule.taskId,
+    variables: schedule.variables,
     enabled: schedule.enabled,
     intervalMinutes: schedule.intervalMinutes,
     ...(schedule.nextRunAt ? { nextRunAt: schedule.nextRunAt } : {}),

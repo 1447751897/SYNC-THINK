@@ -393,7 +393,7 @@ describe('mcp commands (§9.3 authz skeleton)', () => {
     expect(toolSummaries.length).toBeGreaterThanOrEqual(1);
     expect(toolSummaries[0]?.summary).toMatch(/MCP|filesystem|read_file|tool/i);
 
-    // Empty allowlist → no tool-schema (register ≠ available)
+    // Ordinary model chats inherit enabled registry entries independently of the legacy Agent binding.
     const cleared = await writeAndRead(sock, reader, {
       id: 'agent-clear-mcp',
       kind: 'request',
@@ -407,6 +407,16 @@ describe('mcp commands (§9.3 authz skeleton)', () => {
     });
     expect(cleared.error).toBeUndefined();
 
+    const stillEnabled = await writeAndRead(sock, reader, {
+      id: 'peek-registry-after-binding-clear', kind: 'request', type: 'context.packet.peek',
+      payload: { threadId: taskPayload.threadId },
+    });
+    expect((stillEnabled.payload as { mcpServerIds: string[] }).mcpServerIds).toContain(mcpServerId);
+    const disabled = await writeAndRead(sock, reader, {
+      id: 'disable-registry-entry', kind: 'request', type: 'mcp.setEnabled',
+      payload: { mcpServerId, enabled: false },
+    });
+    expect(disabled.error).toBeUndefined();
     const peekEmpty = await writeAndRead(sock, reader, {
       id: 'peek-empty-mcp',
       kind: 'request',

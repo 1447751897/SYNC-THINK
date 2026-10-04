@@ -1,3 +1,4 @@
+import { readConversationNotificationPreferences } from './conversation-notification-preferences.js';
 import { installDesktopLibraryNavigation } from './design-system/navigation.js';
 import { createRoot } from 'react-dom/client';
 import { ShellApp } from './ShellApp.js';
@@ -9,6 +10,8 @@ import {
   readTrayPreferences,
 } from './preferences-store.js';
 
+// Apply saved delivery preferences before the Runtime starts replaying events.
+void window.syncThink?.runtime?.setConversationNotificationPreferences?.(readConversationNotificationPreferences()).catch(() => undefined);
 installDesktopLibraryNavigation();
 applyAppearancePreferences(readAppearancePreferences());
 

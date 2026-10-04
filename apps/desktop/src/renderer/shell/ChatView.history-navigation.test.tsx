@@ -161,6 +161,34 @@ afterEach(() => {
 });
 
 describe('ChatView complete history navigation', () => {
+  it('shows a load failure instead of pretending history is empty, then retries the real page', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    runtime.listConversationMessages.mockRejectedValue(new Error('connect EPERM'));
+    const conversation = {
+      id: 'failed-history-' + ++fixtureIndex,
+      workspaceId: 'history-workspace',
+      taskId: 'history-task',
+      track: 'model',
+      targetRef: 'history-model',
+      title: 'Failed history',
+      executionMode: 'full-access',
+      createdAt: '2026-09-05T00:00:00Z',
+      updatedAt: '2026-09-05T00:00:00Z',
+    } as Conversation;
+    render(
+      <ChatView conversation={conversation} modelName="History model" models={[]}
+        eventHistory={[]} onTitleUpdated={vi.fn()} />,
+    );
+    const notice = await screen.findByRole('alert', { name: '聊天记录加载失败' });
+    expect(notice.textContent).toContain('聊天记录暂未加载');
+    expect(notice.textContent).toContain('权限');
+    expect(screen.queryByText('发送消息开始对话')).toBeNull();
+    runtime.listConversationMessages.mockImplementation(async () => page(100, 150));
+    fireEvent.click(screen.getByRole('button', { name: '重试加载聊天记录' }));
+    await screen.findByText('历史正文 148');
+    expect(screen.queryByText('聊天记录暂未加载')).toBeNull();
+  });
+
   it('discards an older gap read after a newer navigation intent and keeps loading notices out of message flow', async () => {
     const { scroller } = await fixture();
     fireEvent.click(screen.getByTestId('conversation-minimap-history-message-11'));

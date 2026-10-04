@@ -77,6 +77,7 @@ export function installPreviewRuntime() {
           serverId: 'demo-mcp',
           id: 'demo-mcp',
           name: 'Project Files',
+          tools: [],
           transport: 'stdio',
           enabled: true,
           status: 'connected',

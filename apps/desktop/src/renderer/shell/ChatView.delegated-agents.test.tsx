@@ -119,7 +119,8 @@ describe('DelegatedAgentTasks card', () => {
     await waitFor(() => {
       const avatar = screen.getByRole('img', { name: '代码审查 Agent' });
       expect(avatar.tagName).toBe('CANVAS');
-      expect(avatar.getAttribute('data-bot-avatar')).toBeTruthy();
+      expect(avatar.classList.contains('agent-workspace-avatar')).toBe(true);
+      expect(avatar.getAttribute('data-shape')).toBeTruthy();
     });
   });
 
@@ -317,7 +318,7 @@ describe('DelegatedAgentTasks card', () => {
     expect(headers[0]?.textContent).toContain('2 个任务');
   });
 
-  it('rebuilds a card from the durable agent_delegate tool result', () => {
+  it('rebuilds a card from the durable agent_delegate tool result', async () => {
     const items: InlineProcessItem[] = [
       {
         kind: 'tool',
@@ -354,7 +355,7 @@ describe('DelegatedAgentTasks card', () => {
     const row = screen.getByTestId('delegated-agent-tool');
     expect(within(row).getByText('Rg')).toBeTruthy();
     fireEvent.click(within(row).getByRole('button'));
-    expect(within(row).getByTestId('inline-process-tool-arguments')).toBeTruthy();
+    expect(await within(row).findByTestId('inline-process-tool-arguments')).toBeTruthy();
     expect(within(row).getByTestId('inline-process-tool-result')).toBeTruthy();
     expect(within(row).getByText('rg')).toBeTruthy();
     expect(screen.queryByText('agent-explorer')).toBeNull();
@@ -428,7 +429,7 @@ describe('DelegatedAgentTasks card', () => {
     expect(screen.queryByText('agent-persistent')).toBeNull();
   });
 
-  it('rebuilds a card from the durable agent_run tool result', () => {
+  it('rebuilds a card from the durable agent_run tool result', async () => {
     // `agent_run` (agent-library MCP) delegates to an existing Agent through the
     // same child run as `agent_delegate`. Without this the card survived only
     // while the live projection lived, then disappeared once the run settled.
@@ -471,7 +472,7 @@ describe('DelegatedAgentTasks card', () => {
     expect(within(rows[0]!).getByText('读取文件')).toBeTruthy();
     expect(within(rows[1]!).getByText('搜索内容')).toBeTruthy();
     fireEvent.click(within(rows[0]!).getByRole('button'));
-    expect(within(rows[0]!).getByTestId('inline-process-tool-arguments')).toBeTruthy();
+    expect(await within(rows[0]!).findByTestId('inline-process-tool-arguments')).toBeTruthy();
     expect(within(rows[0]!).getByTestId('inline-process-tool-result')).toBeTruthy();
   });
 

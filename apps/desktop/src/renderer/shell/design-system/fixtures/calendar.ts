@@ -135,6 +135,8 @@ export function createCalendarPreviewRuntime(
           patch.skillVersionIds === null
             ? undefined
             : (patch.skillVersionIds ?? current.skillVersionIds),
+        automation:
+          patch.automation === null ? undefined : (patch.automation ?? current.automation),
         nextRunAt: patch.nextRunAt === null ? undefined : (patch.nextRunAt ?? current.nextRunAt),
         updatedAt: new Date().toISOString(),
       };

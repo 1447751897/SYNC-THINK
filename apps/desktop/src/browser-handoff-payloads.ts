@@ -22,7 +22,10 @@ export function parseListWaitingBrowserHandoffsPayload(
   value: unknown,
 ): ListWaitingBrowserHandoffsPayload {
   if (value === undefined || value === null) return {};
-  if (!isRecord(value) || !hasOnlyKeys(value, ['workspaceId', 'runId'])) {
+  if (!isRecord(value) || !hasOnlyKeys(value, ['workspaceId', 'runId', 'conversationId'])) {
+    throw new Error('Invalid list-waiting-browser-handoffs payload');
+  }
+  if (value.conversationId !== undefined && !validId(value.conversationId)) {
     throw new Error('Invalid list-waiting-browser-handoffs payload');
   }
   if (value.workspaceId !== undefined && !validId(value.workspaceId)) {
@@ -32,6 +35,7 @@ export function parseListWaitingBrowserHandoffsPayload(
     throw new Error('Invalid list-waiting-browser-handoffs payload');
   }
   return {
+    ...(typeof value.conversationId === 'string' ? { conversationId: value.conversationId } : {}),
     ...(typeof value.workspaceId === 'string'
       ? { workspaceId: value.workspaceId.trim() as ListWaitingBrowserHandoffsPayload['workspaceId'] }
       : {}),

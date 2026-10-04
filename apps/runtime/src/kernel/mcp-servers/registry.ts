@@ -10,7 +10,7 @@
  * filters `planningDenied` tools out of the visible catalog. The `hostOnly`
  * flag (desktop-automation) keeps a server away from every external kernel.
  */
-import { AGENT_DEFINITION_TOOLS, managementToolAllowed, type AgentManagementIntent } from '../../agent-management-intent.js';
+import { LIBRARY_DEFINITION_TOOLS, SKILL_DEFINITION_TOOLS, managementToolAllowed, type AgentManagementIntent } from '../../agent-management-intent.js';
 import { createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import type {
   McpSdkServerConfigWithInstance,
@@ -178,6 +178,7 @@ export function selectKernelMcpRun(options: {
   planningMode?: boolean;
   conversationTrack?: ConversationTrack;
   agentManagementIntent?: AgentManagementIntent;
+  allowAgentDefinitionProposals?: boolean;
   collaborationSettings?: unknown;
 }): KernelMcpRunSelection {
   const servers: KernelMcpServerDefinition[] = [];
@@ -207,12 +208,13 @@ export function selectKernelMcpRun(options: {
     ).filter(
       (tool) =>
         (!(options.agentManagementIntent && options.agentManagementIntent !== 'none') || !['agent_run', 'agent_delegate'].includes(tool.name)) &&
-        (!AGENT_DEFINITION_TOOLS.has(tool.name) || managementToolAllowed(options.agentManagementIntent ?? 'none', tool.name)) &&
+        (((tool.name === 'list_teams' || SKILL_DEFINITION_TOOLS.has(tool.name)) && options.agentManagementIntent === undefined && !options.allowAgentDefinitionProposals) || !LIBRARY_DEFINITION_TOOLS.has(tool.name) || managementToolAllowed(options.agentManagementIntent ?? 'none', tool.name, options.allowAgentDefinitionProposals)) &&
         (tool.name !== 'goal_manage' || currentConditions.hasActiveGoal === true) &&
         (!options.conversationTrack ||
           isCollaborationToolAllowed({
             track: options.conversationTrack,
             agentManagementIntent: options.agentManagementIntent,
+            allowAgentDefinitionProposals: options.allowAgentDefinitionProposals,
             toolName: tool.name,
             settings: normalizeCollaborationSettings(options.collaborationSettings),
           })),

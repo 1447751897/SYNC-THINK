@@ -23,6 +23,18 @@ describe('browser handoff payloads', () => {
     ).toEqual({ handoffId: 'handoff-1', expectedRevision: 1, leaseDisposition: 'release' });
   });
 
+  it('preserves the group conversation scope through the desktop boundary', () => {
+    expect(parseListWaitingBrowserHandoffsPayload({
+      workspaceId: 'workspace-1', conversationId: 'group-1', runId: 'run-1',
+    })).toEqual({ workspaceId: 'workspace-1', conversationId: 'group-1', runId: 'run-1' });
+  });
+
+  it.each(['', 'group 1', 17, null, 'x'.repeat(257)])('rejects invalid conversationId %s', (conversationId) => {
+    expect(() => parseListWaitingBrowserHandoffsPayload({ conversationId })).toThrow(
+      'Invalid list-waiting-browser-handoffs payload',
+    );
+  });
+
   it('keeps cancellation lease disposition optional', () => {
     expect(
       parseCancelBrowserHandoffPayload({ handoffId: 'handoff-1', expectedRevision: 1 }),

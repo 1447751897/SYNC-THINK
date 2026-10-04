@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { CollaborationSnapshot, ThreadId } from '@sync-think/shared';
-import { ToolApprovalCard, type PendingToolApproval } from './ToolApprovalCard.js';
+import { ToolApprovalCard, type PendingToolApproval } from './LazyToolApprovalCard.js';
 
 /** Restore pending approvals for the actual child threads; never another conversation. */
 export function CollaborationApprovals({
@@ -71,13 +71,13 @@ export function CollaborationApprovals({
       unsubscribe?.();
     };
   }, [scope, threads, active, revision]);
-  const decide = async (approvalId: string, decision: 'approve' | 'deny') => {
+  const decide = async (approvalId: string, decision: 'approve' | 'deny', excludedSkillTools?: string[]) => {
     const api = window.syncThink?.runtime;
     if (!api?.decideToolApproval || busy) return;
     setBusy(approvalId);
     setError('');
     try {
-      const result = await api.decideToolApproval({ approvalId, decision, scope: 'once' });
+      const result = await api.decideToolApproval({ approvalId, decision, scope: 'once', ...(decision === 'approve' && excludedSkillTools?.length ? { excludedSkillTools } : {}) });
       if (result.approvalId !== approvalId) throw new Error('审批回执不匹配');
       setCards((current) => current.filter((card) => card.approvalId !== approvalId));
       if (result.outcome === 'expired') setError('原审批已失效，本次点击未授予权限。');
@@ -100,7 +100,7 @@ export function CollaborationApprovals({
           key={approval.approvalId}
           approval={approval}
           busy={Boolean(busy)}
-          onApprove={() => void decide(approval.approvalId, 'approve')}
+          onApprove={(_scope, excludedSkillTools) => void decide(approval.approvalId, 'approve', excludedSkillTools)}
           onDeny={() => void decide(approval.approvalId, 'deny')}
         />
       ))}

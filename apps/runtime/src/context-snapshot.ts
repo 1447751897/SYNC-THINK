@@ -1,7 +1,16 @@
 import type { ProviderMessage, ProviderToolSchema } from '@sync-think/adapters';
 import type { ContextSourceRef } from '@sync-think/shared';
+import {
+  estimateTextTokens,
+  estimateProviderMessageTokens,
+  estimateJsonTokens,
+  measureContextRequest,
+  type ContextUsageAnchor,
+} from './context-token-meter.js';
+export { estimateTextTokens, estimateProviderMessageTokens } from './context-token-meter.js';
 
-export const CONTEXT_COMPACT_THRESHOLD = 0.7 as const;
+import { CONTEXT_COMPACT_THRESHOLD, resolveContextBudget } from './context-policy.js';
+export { CONTEXT_COMPACT_THRESHOLD } from './context-policy.js';
 export type ContextStatusSectionType =
   'system' | 'agent' | 'project' | 'summary' | 'messages' | 'tools';
 export type ContextSourceDisposition = 'included' | 'audit-only';
@@ -24,7 +33,13 @@ export interface ContextSnapshotStatus {
   contextWindowEstimated?: boolean;
   estimatedUsedTokens: number;
   usageRatio: number;
-  compactThreshold: typeof CONTEXT_COMPACT_THRESHOLD;
+  compactThreshold: number;
+  budget: import('./context-policy.js').ContextBudget;
+  measurement?: {
+    source: 'estimate' | 'provider-calibrated';
+    estimatedTokens: number;
+    providerInputTokens?: number;
+  };
   shouldAutoCompact: boolean;
   compactedAt?: string;
   sections: ContextSnapshotSection[];
@@ -67,6 +82,11 @@ export interface BuildContextSnapshotInput {
   tools?: readonly ProviderToolSchema[];
   sources: readonly ContextSnapshotSource[];
   compactedAt?: string;
+  reservedOutputTokens?: number;
+  modelMaxOutputTokens?: number;
+  meterBindingKey?: string;
+  usageAnchor?: ContextUsageAnchor;
+  safetyMarginTokens?: number;
 }
 
 export class ContextSnapshotInvariantError extends Error {
@@ -76,33 +96,6 @@ export class ContextSnapshotInvariantError extends Error {
     super(`included source is absent from provider payload: ${sourceId}`);
     this.name = 'ContextSnapshotInvariantError';
   }
-}
-
-function estimateTextTokens(text: string): number {
-  if (!text) return 0;
-  return Math.max(1, Math.ceil(Buffer.byteLength(text, 'utf8') / 4));
-}
-
-function estimateJsonTokens(value: unknown): number {
-  return estimateTextTokens(JSON.stringify(value));
-}
-
-export function estimateProviderMessageTokens(message: ProviderMessage): number {
-  if (typeof message.content === 'string') {
-    return estimateTextTokens(message.content) + 1;
-  }
-  let tokens = 1;
-  for (const part of message.content) {
-    if (part.type === 'image') {
-      // Stable bounded estimate used by both the request snapshot and the ring.
-      tokens += 1024;
-    } else if (part.text) {
-      tokens += estimateTextTokens(part.text);
-    } else {
-      tokens += estimateJsonTokens(part);
-    }
-  }
-  return tokens;
 }
 
 export function selectRecentMessagesWithinBudget(
@@ -211,7 +204,45 @@ export class ContextSnapshotBuilder {
       },
       { type: 'tools', tokens: tools.length > 0 ? estimateJsonTokens(tools) : 0 },
     ];
-    const estimatedUsedTokens = sections.reduce((sum, section) => sum + section.tokens, 0);
+    // Account for the actual serialized system block, including section separators.
+    const blockTokens = sections
+      .filter((section) => section.type !== 'messages' && section.type !== 'tools')
+      .reduce((sum, section) => sum + section.tokens, 0);
+    const framingSection =
+      sections.find(
+        (section) => section.type !== 'messages' && section.type !== 'tools' && section.tokens > 0,
+      ) ?? sections[0]!;
+    framingSection.tokens += estimateTextTokens(systemPrompt) - blockTokens;
+    const measurement = measureContextRequest(
+      { systemPrompt, messages, tools },
+      input.meterBindingKey ?? input.modelId,
+      input.usageAnchor,
+    );
+    const rawTotal = sections.reduce((sum, section) => sum + section.tokens, 0);
+    if (rawTotal !== measurement.usedTokens) {
+      let assigned = 0;
+      const fixedSections = sections.filter((section) => section.type !== 'messages');
+      const rawFixed = fixedSections.reduce((sum, section) => sum + section.tokens, 0);
+      fixedSections.forEach((section, index) => {
+        section.tokens =
+          index === fixedSections.length - 1
+            ? measurement.fixedInputTokens - assigned
+            : rawFixed
+              ? Math.floor((section.tokens * measurement.fixedInputTokens) / rawFixed)
+              : 0;
+        assigned += section.tokens;
+      });
+      sections.find((section) => section.type === 'messages')!.tokens = measurement.messageTokens;
+    }
+    const estimatedUsedTokens = measurement.usedTokens;
+    const budget = resolveContextBudget({
+      contextWindow,
+      modelMaxOutputTokens: input.modelMaxOutputTokens,
+      reservedOutputTokens: input.reservedOutputTokens,
+      safetyMarginTokens: input.safetyMarginTokens,
+      fixedInputTokens:
+        estimatedUsedTokens - sections.find((section) => section.type === 'messages')!.tokens,
+    });
     const sources = input.sources.map((source) => ({
       ...source,
       tokens:
@@ -248,9 +279,20 @@ export class ContextSnapshotBuilder {
           : {}),
         ...(input.contextWindowEstimated === true ? { contextWindowEstimated: true } : {}),
         estimatedUsedTokens,
+        measurement: {
+          source: measurement.source,
+          estimatedTokens: measurement.estimatedTokens,
+          ...(measurement.providerInputTokens !== undefined
+            ? { providerInputTokens: measurement.providerInputTokens }
+            : {}),
+        },
         usageRatio: estimatedUsedTokens / contextWindow,
-        compactThreshold: CONTEXT_COMPACT_THRESHOLD,
-        shouldAutoCompact: estimatedUsedTokens / contextWindow >= CONTEXT_COMPACT_THRESHOLD,
+        compactThreshold: Math.min(
+          CONTEXT_COMPACT_THRESHOLD,
+          budget.compactTriggerTokens / contextWindow,
+        ),
+        budget,
+        shouldAutoCompact: estimatedUsedTokens >= budget.compactTriggerTokens,
         ...(input.compactedAt ? { compactedAt: input.compactedAt } : {}),
         sections,
       },

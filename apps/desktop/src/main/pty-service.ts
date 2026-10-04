@@ -3,6 +3,7 @@ import { createRequire } from 'node:module';
 import os from 'node:os';
 import type { IpcMain, IpcMainEvent, IpcMainInvokeEvent } from 'electron';
 import { BrowserWindow } from 'electron';
+import { DEFAULT_TERMINAL_SIZE, isValidTerminalDimension, isValidTerminalSize } from '../terminal-dimensions.js';
 
 const require = createRequire(import.meta.url);
 const OUTPUT_BUFFER_LIMIT = 0x186a0;
@@ -177,8 +178,8 @@ export function createPty(
   const sessions = getOrCreateWindowSessions(windowId);
   if (sessions.has(sessionId)) return { sessionId, created: false };
 
-  const cols = Number.isFinite(params.cols) ? Number(params.cols) : 80;
-  const rows = Number.isFinite(params.rows) ? Number(params.rows) : 24;
+  const cols = isValidTerminalDimension(params.cols) ? params.cols : DEFAULT_TERMINAL_SIZE.cols;
+  const rows = isValidTerminalDimension(params.rows) ? params.rows : DEFAULT_TERMINAL_SIZE.rows;
   const shell = resolveShell();
   const cwd = resolveCwd(params.cwd);
   const env = buildTerminalEnv(process.env, params.colorScheme);
@@ -254,10 +255,15 @@ export function writePty(windowId: number, sessionId: string, data: string): voi
 
 export function resizePty(windowId: number, sessionId: string, cols: number, rows: number): void {
   const session = getSession(windowId, sessionId);
-  if (!session || !hasTerminalSizeChanged(session, { cols, rows })) return;
-  session.cols = cols;
-  session.rows = rows;
-  session.ptyProcess.resize(cols, rows);
+  if (!session || !isValidTerminalSize({ cols, rows }) || !hasTerminalSizeChanged(session, { cols, rows })) return;
+  try {
+    session.ptyProcess.resize(cols, rows);
+    // Only deduplicate sizes accepted by the native PTY; a failed resize can retry.
+    session.cols = cols;
+    session.rows = rows;
+  } catch (error) {
+    console.warn(`[terminal:resize] session=${sessionId} cols=${cols} rows=${rows}:`, error);
+  }
 }
 
 export function killPty(windowId: number, sessionId: string): void {

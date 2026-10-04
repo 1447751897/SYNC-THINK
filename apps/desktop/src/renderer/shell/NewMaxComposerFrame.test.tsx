@@ -143,3 +143,24 @@ describe('NewMaxComposerFrame', () => {
     );
   });
 });
+
+
+it.each(['plan', 'goal'] as const)('keeps the attachment backplate directly above the input with a %s mode card', (mode) => {
+  render(
+    <NewMaxComposerFrame
+      variant="conversation"
+      presentation="attachments"
+      modeBanner={mode === 'plan' ? planBanner() : goalBanner()}
+      contextBar={<nav data-testid="backplate">仓库与分支</nav>}
+      input={<textarea aria-label="消息" />}
+    />,
+  );
+  const frame = screen.getByTestId('newmax-composer-frame');
+  const header = screen.getByTestId('backplate');
+  const card = screen.getByTestId('newmax-composer-mode');
+  expect(frame.firstElementChild).toBe(card);
+  expect(card.nextElementSibling).toBe(header);
+  expect(header.nextElementSibling?.classList.contains('shell-compose')).toBe(true);
+  expect(screen.getAllByTestId('backplate')).toHaveLength(1);
+  expect(screen.queryByTestId('composer-status-bar')).toBeNull();
+});

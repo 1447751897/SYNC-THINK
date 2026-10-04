@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { openDatabaseAsync } from './connection.js';
 import { SqliteArtifactStore } from './artifact-store.js';
+import { SqliteScheduledTaskStore } from './scheduled-task-store.js';
 import { SqliteOrchestrationStore } from './orchestration-store.js';
 import { getTableName } from 'drizzle-orm';
 import { getTableConfig } from 'drizzle-orm/sqlite-core';
@@ -107,6 +108,10 @@ async function createLegacy0013TerminalDatabase(dbPath: string) {
       '0061_task_plan_projection_run_scope',
       '0062_browser_workflow_runs_and_schedules',
       '0063_browser_workflow_workspace',
+      '0064_agent_default_kernel',
+      '0065_browser_schedule_variables',
+      '0066_scheduled_task_automation',
+      '0067_scheduled_task_history_lifecycle',
     ]);
     await runMigrations(dbPath);
   } finally {
@@ -343,6 +348,10 @@ async function createLegacy0011Database(dbPath: string, withMatchingEvent: boole
       '0061_task_plan_projection_run_scope',
       '0062_browser_workflow_runs_and_schedules',
       '0063_browser_workflow_workspace',
+      '0064_agent_default_kernel',
+      '0065_browser_schedule_variables',
+      '0066_scheduled_task_automation',
+      '0067_scheduled_task_history_lifecycle',
     ]);
     await runMigrations(dbPath);
   } finally {
@@ -627,6 +636,10 @@ describe('migration planner (pure)', () => {
           '0061_task_plan_projection_run_scope',
           '0062_browser_workflow_runs_and_schedules',
           '0063_browser_workflow_workspace',
+          '0064_agent_default_kernel',
+          '0065_browser_schedule_variables',
+          '0066_scheduled_task_automation',
+          '0067_scheduled_task_history_lifecycle',
         ]);
         const after = await openDatabaseAsync({ path: dbPath });
         try {
@@ -758,6 +771,10 @@ describe('migration planner (pure)', () => {
       '0061_task_plan_projection_run_scope',
       '0062_browser_workflow_runs_and_schedules',
       '0063_browser_workflow_workspace',
+      '0064_agent_default_kernel',
+      '0065_browser_schedule_variables',
+      '0066_scheduled_task_automation',
+      '0067_scheduled_task_history_lifecycle',
     ]);
   });
 
@@ -816,6 +833,10 @@ describe('migration planner (pure)', () => {
       '0061_task_plan_projection_run_scope',
       '0062_browser_workflow_runs_and_schedules',
       '0063_browser_workflow_workspace',
+      '0064_agent_default_kernel',
+      '0065_browser_schedule_variables',
+      '0066_scheduled_task_automation',
+      '0067_scheduled_task_history_lifecycle',
     ]);
   });
 
@@ -882,6 +903,10 @@ describe('migration planner (pure)', () => {
       '0061_task_plan_projection_run_scope',
       '0062_browser_workflow_runs_and_schedules',
       '0063_browser_workflow_workspace',
+      '0064_agent_default_kernel',
+      '0065_browser_schedule_variables',
+      '0066_scheduled_task_automation',
+      '0067_scheduled_task_history_lifecycle',
     ]);
   });
 
@@ -941,6 +966,10 @@ describe('migration planner (pure)', () => {
       '0061_task_plan_projection_run_scope',
       '0062_browser_workflow_runs_and_schedules',
       '0063_browser_workflow_workspace',
+      '0064_agent_default_kernel',
+      '0065_browser_schedule_variables',
+      '0066_scheduled_task_automation',
+      '0067_scheduled_task_history_lifecycle',
     ]);
   });
 
@@ -999,6 +1028,10 @@ describe('migration planner (pure)', () => {
       '0061_task_plan_projection_run_scope',
       '0062_browser_workflow_runs_and_schedules',
       '0063_browser_workflow_workspace',
+      '0064_agent_default_kernel',
+      '0065_browser_schedule_variables',
+      '0066_scheduled_task_automation',
+      '0067_scheduled_task_history_lifecycle',
     ]);
   });
 
@@ -1074,6 +1107,10 @@ describe('migration planner (pure)', () => {
       '0061_task_plan_projection_run_scope',
       '0062_browser_workflow_runs_and_schedules',
       '0063_browser_workflow_workspace',
+      '0064_agent_default_kernel',
+      '0065_browser_schedule_variables',
+      '0066_scheduled_task_automation',
+      '0067_scheduled_task_history_lifecycle',
     ]);
     expect(plan.skipped).toEqual(['0001_baseline_v1']);
   });
@@ -1142,6 +1179,10 @@ describe('migration planner (pure)', () => {
       '0061_task_plan_projection_run_scope',
       '0062_browser_workflow_runs_and_schedules',
       '0063_browser_workflow_workspace',
+      '0064_agent_default_kernel',
+      '0065_browser_schedule_variables',
+      '0066_scheduled_task_automation',
+      '0067_scheduled_task_history_lifecycle',
     ]);
     expect(plan.skipped).toEqual(['0001_baseline_v1', '0002_fts_messages']);
   });
@@ -1213,6 +1254,10 @@ describe('migration planner (pure)', () => {
       '0061_task_plan_projection_run_scope',
       '0062_browser_workflow_runs_and_schedules',
       '0063_browser_workflow_workspace',
+      '0064_agent_default_kernel',
+      '0065_browser_schedule_variables',
+      '0066_scheduled_task_automation',
+      '0067_scheduled_task_history_lifecycle',
     ]);
     expect(plan.skipped).toEqual([
       '0001_baseline_v1',
@@ -1288,6 +1333,10 @@ describe('migration planner (pure)', () => {
       '0061_task_plan_projection_run_scope',
       '0062_browser_workflow_runs_and_schedules',
       '0063_browser_workflow_workspace',
+      '0064_agent_default_kernel',
+      '0065_browser_schedule_variables',
+      '0066_scheduled_task_automation',
+      '0067_scheduled_task_history_lifecycle',
     ]);
     expect(plan.skipped).toEqual([
       '0001_baseline_v1',
@@ -1364,6 +1413,10 @@ describe('migration planner (pure)', () => {
       '0061_task_plan_projection_run_scope',
       '0062_browser_workflow_runs_and_schedules',
       '0063_browser_workflow_workspace',
+      '0064_agent_default_kernel',
+      '0065_browser_schedule_variables',
+      '0066_scheduled_task_automation',
+      '0067_scheduled_task_history_lifecycle',
     ]);
     expect(plan.skipped).toEqual([
       '0001_baseline_v1',
@@ -1441,6 +1494,10 @@ describe('migration planner (pure)', () => {
       '0061_task_plan_projection_run_scope',
       '0062_browser_workflow_runs_and_schedules',
       '0063_browser_workflow_workspace',
+      '0064_agent_default_kernel',
+      '0065_browser_schedule_variables',
+      '0066_scheduled_task_automation',
+      '0067_scheduled_task_history_lifecycle',
     ]);
     expect(plan.skipped).toEqual([
       '0001_baseline_v1',
@@ -1519,6 +1576,10 @@ describe('migration planner (pure)', () => {
       '0061_task_plan_projection_run_scope',
       '0062_browser_workflow_runs_and_schedules',
       '0063_browser_workflow_workspace',
+      '0064_agent_default_kernel',
+      '0065_browser_schedule_variables',
+      '0066_scheduled_task_automation',
+      '0067_scheduled_task_history_lifecycle',
     ]);
     expect(plan.skipped).toEqual([
       '0001_baseline_v1',
@@ -1599,6 +1660,10 @@ describe('migration planner (pure)', () => {
       '0061_task_plan_projection_run_scope',
       '0062_browser_workflow_runs_and_schedules',
       '0063_browser_workflow_workspace',
+      '0064_agent_default_kernel',
+      '0065_browser_schedule_variables',
+      '0066_scheduled_task_automation',
+      '0067_scheduled_task_history_lifecycle',
     ]);
     expect(plan.skipped).toEqual(prior);
   });
@@ -1671,6 +1736,10 @@ describe('migration planner (pure)', () => {
       '0061_task_plan_projection_run_scope',
       '0062_browser_workflow_runs_and_schedules',
       '0063_browser_workflow_workspace',
+      '0064_agent_default_kernel',
+      '0065_browser_schedule_variables',
+      '0066_scheduled_task_automation',
+      '0067_scheduled_task_history_lifecycle',
     ]);
     expect(plan.skipped).toEqual(prior);
   });
@@ -1740,6 +1809,10 @@ describe('migration planner (pure)', () => {
       '0061_task_plan_projection_run_scope',
       '0062_browser_workflow_runs_and_schedules',
       '0063_browser_workflow_workspace',
+      '0064_agent_default_kernel',
+      '0065_browser_schedule_variables',
+      '0066_scheduled_task_automation',
+      '0067_scheduled_task_history_lifecycle',
     ]);
     expect(plan.skipped).toEqual(['0002_fts_messages']);
   });
@@ -2030,6 +2103,10 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0061_task_plan_projection_run_scope',
         '0062_browser_workflow_runs_and_schedules',
         '0063_browser_workflow_workspace',
+        '0064_agent_default_kernel',
+        '0065_browser_schedule_variables',
+        '0066_scheduled_task_automation',
+        '0067_scheduled_task_history_lifecycle',
       ]);
       const after = await openDatabaseAsync({ path: dbPath });
       try {
@@ -2157,6 +2234,10 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0061_task_plan_projection_run_scope',
         '0062_browser_workflow_runs_and_schedules',
         '0063_browser_workflow_workspace',
+        '0064_agent_default_kernel',
+        '0065_browser_schedule_variables',
+        '0066_scheduled_task_automation',
+        '0067_scheduled_task_history_lifecycle',
       ]);
       try {
         await runMigrations(dbPath);
@@ -2241,6 +2322,10 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0061_task_plan_projection_run_scope',
         '0062_browser_workflow_runs_and_schedules',
         '0063_browser_workflow_workspace',
+        '0064_agent_default_kernel',
+        '0065_browser_schedule_variables',
+        '0066_scheduled_task_automation',
+        '0067_scheduled_task_history_lifecycle',
       ]);
       const upgraded = await openDatabaseAsync({ path: dbPath });
       try {
@@ -2652,6 +2737,10 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0061_task_plan_projection_run_scope',
         '0062_browser_workflow_runs_and_schedules',
         '0063_browser_workflow_workspace',
+        '0064_agent_default_kernel',
+        '0065_browser_schedule_variables',
+        '0066_scheduled_task_automation',
+        '0067_scheduled_task_history_lifecycle',
       ]);
       await runMigrations(dbPath);
     } finally {
@@ -2749,6 +2838,10 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0061_task_plan_projection_run_scope',
         '0062_browser_workflow_runs_and_schedules',
         '0063_browser_workflow_workspace',
+        '0064_agent_default_kernel',
+        '0065_browser_schedule_variables',
+        '0066_scheduled_task_automation',
+        '0067_scheduled_task_history_lifecycle',
       ]);
       expect((await runMigrations(dbPath)).applied).toEqual([]);
       const after = await openDatabaseAsync({ path: dbPath });
@@ -2821,6 +2914,10 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0061_task_plan_projection_run_scope',
         '0062_browser_workflow_runs_and_schedules',
         '0063_browser_workflow_workspace',
+        '0064_agent_default_kernel',
+        '0065_browser_schedule_variables',
+        '0066_scheduled_task_automation',
+        '0067_scheduled_task_history_lifecycle',
       ]);
       await runMigrations(dbPath);
     } finally {
@@ -2892,6 +2989,10 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0061_task_plan_projection_run_scope',
         '0062_browser_workflow_runs_and_schedules',
         '0063_browser_workflow_workspace',
+        '0064_agent_default_kernel',
+        '0065_browser_schedule_variables',
+        '0066_scheduled_task_automation',
+        '0067_scheduled_task_history_lifecycle',
       ]);
       expect((await runMigrations(dbPath)).applied).toEqual([]);
       const after = await openDatabaseAsync({ path: dbPath });
@@ -2970,6 +3071,10 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0061_task_plan_projection_run_scope',
         '0062_browser_workflow_runs_and_schedules',
         '0063_browser_workflow_workspace',
+        '0064_agent_default_kernel',
+        '0065_browser_schedule_variables',
+        '0066_scheduled_task_automation',
+        '0067_scheduled_task_history_lifecycle',
       ]);
       const { raw } = await openDatabaseAsync({ path: dbPath });
       try {
@@ -3116,6 +3221,10 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0061_task_plan_projection_run_scope',
         '0062_browser_workflow_runs_and_schedules',
         '0063_browser_workflow_workspace',
+        '0064_agent_default_kernel',
+        '0065_browser_schedule_variables',
+        '0066_scheduled_task_automation',
+        '0067_scheduled_task_history_lifecycle',
       ]);
       const { raw } = await openDatabaseAsync({ path: dbPath });
       try {
@@ -3213,6 +3322,10 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0061_task_plan_projection_run_scope',
         '0062_browser_workflow_runs_and_schedules',
         '0063_browser_workflow_workspace',
+        '0064_agent_default_kernel',
+        '0065_browser_schedule_variables',
+        '0066_scheduled_task_automation',
+        '0067_scheduled_task_history_lifecycle',
       ]);
       const { raw } = await openDatabaseAsync({ path: dbPath });
       try {
@@ -3683,4 +3796,64 @@ describe('0037 Browser recording schema contract', () => {
       }
     },
   );
+});
+
+
+describe.skipIf(!canOpenNativeSqlite())('0066 scheduled task automation upgrade', () => {
+  it('adds nullable bindings without rewriting legacy agent/model/team tasks, indexes or history', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sync-think-0066-automation-'));
+    const dbPath = join(dir, 'sync-think.db');
+    const tail = takeMigrationTail('0066_scheduled_task_automation');
+    const rule = { kind: 'weekly', selection: { mode: 'range', start: 5, end: 1 }, time: '18:30', startDate: '2026-11-01' };
+    let oldRows: unknown[] = [];
+    let oldIndexes: unknown[] = [];
+    try {
+      await runMigrations(dbPath);
+      const before = await openDatabaseAsync({ path: dbPath });
+      try {
+        for (const kind of ['agent', 'model', 'team']) {
+          before.raw.prepare(
+            `INSERT INTO scheduled_task (id, name, instruction, target_kind, target_ref, rule_json, time_zone, enabled, next_run_at, last_run_at, last_result_json, conversation_id, workspace_id, skill_version_ids_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, '["skill-1"]', ?, ?)`,
+          ).run('legacy-' + kind, '旧任务-' + kind, '检查报告', kind, kind + '-1', JSON.stringify(rule),
+            'America/New_York', '2026-11-01T23:30:00.000Z', '2026-10-30T22:30:00.000Z',
+            JSON.stringify({ status: 'success', firedAt: '2026-10-30T22:30:00.000Z' }),
+            'conversation-' + kind, 'workspace-1', '2026-10-01T00:00:00Z', '2026-10-01T00:00:00Z');
+        }
+        before.raw.prepare(`INSERT INTO scheduled_task_history (id, task_id, status, fired_at, summary, created_at) VALUES ('legacy-result', 'legacy-model', 'success', '2026-10-30T22:30:00.000Z', '旧摘要', '2026-10-30T22:30:00.000Z')`).run();
+        oldRows = before.raw.prepare('SELECT * FROM scheduled_task ORDER BY id').all();
+        oldIndexes = before.raw.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'scheduled_task' ORDER BY name").all();
+      } finally { before.raw.close(); }
+      restoreMigrationTail('0066_scheduled_task_automation', tail);
+      const applied = await runMigrations(dbPath);
+      expect(applied.applied).toEqual(['0066_scheduled_task_automation', '0067_scheduled_task_history_lifecycle']);
+      expect(applied.backupPath).toBeTruthy();
+      const after = await openDatabaseAsync({ path: dbPath });
+      try {
+        const store = new SqliteScheduledTaskStore(after.raw);
+        expect(after.raw.prepare('SELECT * FROM scheduled_task ORDER BY id').all())
+          .toEqual(oldRows.map((row) => ({ ...(row as object), automation_json: null })));
+        expect(after.raw.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'scheduled_task' ORDER BY name").all())
+          .toEqual(oldIndexes);
+        for (const kind of ['agent', 'model', 'team']) {
+          const task = store.get('legacy-' + kind)!;
+          expect(task).not.toHaveProperty('automation');
+          expect(task).toMatchObject({ rule, timeZone: 'America/New_York', workspaceId: 'workspace-1',
+            skillVersionIds: ['skill-1'], nextRunAt: '2026-11-01T23:30:00.000Z', conversationId: 'conversation-' + kind });
+          expect(task.target.kind).toBe(kind);
+          const automation = { browser: { profileId: 'profile-1' }, outputs: ['spreadsheet' as const] };
+          expect(store.update(task.id, { automation })?.automation).toEqual({ executionMode: 'workspace', ...automation });
+        }
+        expect(store.listHistory('legacy-model')).toEqual([{ id: 'legacy-result', taskId: 'legacy-model',
+          status: 'success', firedAt: '2026-10-30T22:30:00.000Z', runId: undefined, summary: '旧摘要', reason: undefined }]);
+        const columns = after.raw.prepare('PRAGMA table_info(scheduled_task)').all() as Array<{ name: string; notnull: number; dflt_value: unknown }>;
+        expect(columns.find((column) => column.name === 'automation_json')).toMatchObject({ notnull: 0, dflt_value: null });
+        expect(() => after.raw.prepare('UPDATE scheduled_task SET automation_json = ? WHERE id = ?').run('not-json', 'legacy-model')).toThrow();
+        expect(() => after.raw.prepare('UPDATE scheduled_task SET automation_json = ? WHERE id = ?').run('[]', 'legacy-model')).toThrow();
+      } finally { after.raw.close(); }
+      expect((await runMigrations(dbPath)).applied).toEqual([]);
+    } finally {
+      restoreMigrationTail('0066_scheduled_task_automation', tail);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

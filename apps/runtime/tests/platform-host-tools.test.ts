@@ -32,7 +32,6 @@ describe('host platform tool channel', () => {
       'plan_submit',
       'task_schedule',
       'goal_manage',
-      'ocr_image',
     ]) {
       expect(names.has(tool), `native list must expose ${tool}`).toBe(true);
     }
@@ -42,6 +41,9 @@ describe('host platform tool channel', () => {
     expect(names.has('platform_context')).toBe(false);
     expect(names.has('task_list')).toBe(false);
     expect(names.has('agent_list')).toBe(false);
+    // OCR is opt-in only when the model cannot see images and no vision fallback is available.
+    expect(names.has('ocr_image')).toBe(false);
+    expect(nativePlatformToolSchemas({imageOcrFallbackEnabled:true}).some(tool=>tool.name==='ocr_image')).toBe(process.platform==='win32');
   });
 
   it('CHAT_PLATFORM_HOST_TOOL_NAMES covers every unified executor name', () => {

@@ -251,7 +251,8 @@ describe('ChatView turn Skill draft', () => {
   });
 
   it('measures the toolbar and collapses permission before Skill', async () => {
-    let outerWidth = 460;
+    // Model chats omit the redundant 40px @ button; measure the remaining controls.
+    let outerWidth = 500;
     let resizeToolbar: ResizeObserverCallback | undefined;
     class ResizeObserverMock implements ResizeObserver {
       readonly callback: ResizeObserverCallback;
@@ -292,6 +293,7 @@ describe('ChatView turn Skill draft', () => {
     const permission = screen.getByTestId('compose-permission-control');
     const skill = screen.getByTestId('compose-skill-control');
     expect(toolbar.dataset.collapseLevel).toBe('0');
+    expect(screen.queryByRole('button', { name: '引用工作区文件' })).toBeNull();
 
     const permissionButton = screen.getByTitle('权限：完全访问');
     fireEvent.click(permissionButton);
@@ -800,7 +802,7 @@ describe('ChatView turn Skill draft', () => {
     const input = screen.getByTestId('compose-input') as HTMLTextAreaElement;
     await waitFor(() => expect(input.value).toBe('恢复后仍保留的草稿'));
     expect(input.disabled).toBe(true);
-    expect(screen.queryByTestId('compose-send')).toBeNull();
+    expect((screen.getByTestId('compose-send') as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByTestId('compose-voice') as HTMLButtonElement).disabled).toBe(true);
     expect(runtime.sendConversationMessage).not.toHaveBeenCalled();
   });
@@ -1342,5 +1344,74 @@ describe('ChatView turn Skill draft', () => {
       ),
     );
     expect(screen.getByTestId('turn-skill-trigger').textContent?.trim()).toBe('1');
+  });
+});
+
+
+describe('ChatView composer picker reliability', () => {
+  function mockComposerGeometry() {
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({
+      x: 50, y: 500, left: 50, top: 500, right: 650, bottom: 630,
+      width: 600, height: 130, toJSON: () => ({}),
+    } as DOMRect);
+  }
+
+  it('positions a typed @ popup immediately even after conversation rerenders', async () => {
+    mockComposerGeometry();
+    renderChat(conversation('picker-positioned-mention'));
+    const input = screen.getByTestId('compose-input') as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: '@', selectionStart: 1, selectionEnd: 1 } });
+    const popup = await screen.findByTestId('compose-add-menu');
+    expect(popup.style.position).toBe('fixed');
+    expect(popup.style.width).toBe('600px');
+    expect(popup.style.left).toBe('50px');
+    expect(popup.style.bottom).toBe('276px');
+    fireEvent.change(input, { target: { value: '@src', selectionStart: 4, selectionEnd: 4 } });
+    expect(screen.getByTestId('compose-add-menu').style.width).toBe('600px');
+  });
+
+  it('switches directly from an open @ popup to / and back without leaving stale menu state', async () => {
+    mockComposerGeometry();
+    renderChat(conversation('picker-mention-slash-transition'));
+    const input = screen.getByTestId('compose-input') as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: '@', selectionStart: 1, selectionEnd: 1 } });
+    await screen.findByTestId('compose-add-menu');
+    fireEvent.change(input, { target: { value: '/pl', selectionStart: 3, selectionEnd: 3 } });
+    const slashPopup = await screen.findByTestId('compose-slash-pop');
+    expect(within(slashPopup).getByText('/plan')).toBeTruthy();
+    expect(screen.getByTestId('compose-add-trigger').getAttribute('aria-expanded')).toBe('false');
+    await waitFor(() => expect(screen.queryByTestId('compose-add-menu')).toBeNull());
+    fireEvent.change(input, { target: { value: '@src', selectionStart: 4, selectionEnd: 4 } });
+    expect((await screen.findByTestId('compose-add-menu')).style.position).toBe('fixed');
+    await waitFor(() => expect(screen.queryByTestId('compose-slash-pop')).toBeNull());
+  });
+
+  it('switches from @ to / when the caret moves without changing the draft', async () => {
+    mockComposerGeometry();
+    renderChat(conversation('picker-caret-transition'));
+    const input = screen.getByTestId('compose-input') as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: '@old /pl', selectionStart: 4, selectionEnd: 4 } });
+    await screen.findByTestId('compose-add-menu');
+    await act(async () => input.setSelectionRange(8, 8));
+    expect(within(await screen.findByTestId('compose-slash-pop')).getByText('/plan')).toBeTruthy();
+    expect(input.value).toBe('@old /pl');
+    expect(screen.getByTestId('compose-add-trigger').getAttribute('aria-expanded')).toBe('false');
+  });
+
+  it('removes the duplicate @ toolbar button only for model conversations and retains typed @', async () => {
+    mockComposerGeometry();
+    renderChat({ ...conversation('picker-model-toolbar'), track: 'model', targetRef: 'model-a' });
+    expect(screen.queryByRole('button', { name: '引用工作区文件' })).toBeNull();
+    expect(screen.getByTestId('compose-add-trigger')).toBeTruthy();
+    const input = screen.getByTestId('compose-input') as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: '@', selectionStart: 1, selectionEnd: 1 } });
+    const popup = await screen.findByTestId('compose-add-menu');
+    expect(popup.style.position).toBe('fixed');
+    expect(within(popup).getByText('工作区文件')).toBeTruthy();
+  });
+
+  it('retains the @ toolbar button for agent conversations', () => {
+    renderChat(conversation('picker-agent-toolbar'));
+    expect(screen.getByRole('button', { name: '引用工作区文件' })).toBeTruthy();
   });
 });

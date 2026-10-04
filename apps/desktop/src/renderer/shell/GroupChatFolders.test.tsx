@@ -1,0 +1,40 @@
+/** @vitest-environment jsdom */
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import type { Conversation } from '@sync-think/shared';
+import GroupChatFolders from './GroupChatFolders.js';
+import { readChatFolders, writeChatFolders } from './chat-folders.js';
+const contacts = ['book-a', 'book-b', 'video'].map(id => ({ kind: 'group' as const, id: `group:${id}`, pinned: false, conversation: { id, title: id } as Conversation }));
+const renderContact = (contact: typeof contacts[number]) => <button key={contact.id}>{contact.conversation.title}</button>;
+beforeEach(() => localStorage.clear());
+afterEach(cleanup);
+it('creates named groups, validates duplicates and persists through remount', () => {
+  const p = { scope: 'ws1', contacts, searchTerm: '', onCreateChat: vi.fn(), renderContact };
+  const view = render(<GroupChatFolders {...p} />);
+  fireEvent.click(screen.getByRole('button', { name: '创建群聊分组' }));
+  fireEvent.change(screen.getByLabelText('分组名称'), { target: { value: '  小说组  ' } });
+  fireEvent.click(screen.getByRole('button', { name: '保存分组' }));
+  expect(screen.getByRole('region', { name: '小说组分组' })).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: '创建群聊分组' }));
+  fireEvent.change(screen.getByLabelText('分组名称'), { target: { value: '小说组' } });
+  fireEvent.click(screen.getByRole('button', { name: '保存分组' }));
+  expect(screen.getByRole('alert').textContent).toContain('同名分组');
+  fireEvent.click(screen.getByRole('button', { name: '取消' }));
+  view.unmount(); render(<GroupChatFolders {...p} />);
+  expect(screen.getByRole('region', { name: '小说组分组' })).toBeTruthy();
+  expect(p.onCreateChat).not.toHaveBeenCalled();
+});
+it('collapses grouped chats without touching another group, and search reveals hidden matches', () => {
+  writeChatFolders('ws1', { folders: [{ id: 'novels', name: '小说组', collapsed: false }, { id: 'videos', name: '视频组', collapsed: false }], assignments: { 'book-a': 'novels', 'book-b': 'novels', video: 'videos' } });
+  const p = { scope: 'ws1', contacts, searchTerm: '', onCreateChat: vi.fn(), renderContact };
+  const view = render(<GroupChatFolders {...p} />);
+  const novels = screen.getByRole('region', { name: '小说组分组' });
+  expect(within(novels).getAllByRole('button').map(button => button.textContent)).toContain('book-a');
+  fireEvent.click(screen.getByRole('button', { name: '折叠分组：小说组' }));
+  expect(screen.queryByRole('button', { name: 'book-a' })).toBeNull();
+  expect(screen.getByRole('button', { name: 'video' })).toBeTruthy();
+  expect(readChatFolders('ws1').folders[0].collapsed).toBe(true);
+  view.rerender(<GroupChatFolders {...p} contacts={[contacts[0]]} searchTerm="book-a" />);
+  expect(screen.getByRole('button', { name: 'book-a' })).toBeTruthy();
+  expect(screen.queryByRole('region', { name: '视频组分组' })).toBeNull();
+});

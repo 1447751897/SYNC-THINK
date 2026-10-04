@@ -1,4 +1,6 @@
-import { useCallback, useEffect, useRef, useState, type DragEvent } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type DragEvent } from 'react';
+import { DEFAULT_TERMINAL_SIZE, isValidTerminalSize } from '../../terminal-dimensions.js';
+import { useKeepAliveActive } from './KeepAliveLayer.js';
 import { loadXtermVendor, type XtermInstance } from './xterm-vendor-loader.js';
 import { extractFilePathsFromDrag, isTerminalPathDrag, shellEscapePath } from './terminal/path-drop.js';
 import { getTerminalViewportStyle, getXtermTheme } from './terminal/xterm-theme.js';
@@ -13,13 +15,8 @@ export interface TerminalPaneProps {
   onCwdChange?(cwd: string): void;
 }
 
-interface FitAddonLike {
-  fit(): void;
-  proposeDimensions(): { cols: number; rows: number } | undefined;
-}
-
 function createTerminalResizeScheduler(
-  resize: (dimensions: { cols: number; rows: number }) => void,
+  resize: (dimensions: { cols: number; rows: number }) => boolean,
   delay = 80,
 ) {
   let timer: number | null = null;
@@ -27,20 +24,20 @@ function createTerminalResizeScheduler(
   let lastSent: { cols: number; rows: number } | null = null;
   return {
     schedule(dimensions: { cols: number; rows: number }) {
+      if (!isValidTerminalSize(dimensions)) return;
       pending = dimensions;
-      if (timer) window.clearTimeout(timer);
+      if (timer !== null) window.clearTimeout(timer);
       timer = window.setTimeout(() => {
         timer = null;
         const next = pending;
         pending = null;
         if (!next) return;
         if (lastSent?.cols === next.cols && lastSent.rows === next.rows) return;
-        lastSent = next;
-        resize(next);
+        if (resize(next)) lastSent = next;
       }, delay);
     },
     dispose() {
-      if (timer) window.clearTimeout(timer);
+      if (timer !== null) window.clearTimeout(timer);
       timer = null;
       pending = null;
     },
@@ -51,12 +48,15 @@ export function TerminalPane(props: TerminalPaneProps) {
   const wrapperRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const xtermRef = useRef<XtermInstance | null>(null);
-  const fitAddonRef = useRef<FitAddonLike | null>(null);
   const [termBg, setTermBg] = useState(() => getXtermTheme().background);
   const [isPathDragOver, setIsPathDragOver] = useState(false);
   const [vendorError, setVendorError] = useState<string>();
   const cwd = props.projectFolder?.trim() || props.cwd || '/';
-  const isActive = props.active !== false;
+  const layerActive = useKeepAliveActive();
+  const isActive = layerActive && props.active !== false;
+  const activeRef = useRef(isActive);
+  const resizeSchedulerRef = useRef<ReturnType<typeof createTerminalResizeScheduler> | null>(null);
+  const fitTerminalRef = useRef<(() => void) | null>(null);
 
   const handleDragOver = useCallback((event: DragEvent<HTMLDivElement>) => {
     if (!isTerminalPathDrag(event.dataTransfer)) {
@@ -121,7 +121,6 @@ export function TerminalPane(props: TerminalPaneProps) {
         if (webLinksAddon) term.loadAddon?.(webLinksAddon);
         term.open(container);
         xtermRef.current = term;
-        fitAddonRef.current = fitAddon ?? null;
         setTermBg(getXtermTheme().background);
 
         const writeBufferedOutput = (replay: boolean) => {
@@ -132,23 +131,31 @@ export function TerminalPane(props: TerminalPaneProps) {
         };
 
         let ptyReadyForResize = false;
-        let deferredResize: { cols: number; rows: number } | null = null;
-        const syncPtyDimensions = ({ cols, rows }: { cols: number; rows: number }) => {
-          if (!ptyReadyForResize) {
-            deferredResize = { cols, rows };
-            return;
-          }
-          bridge.resize(props.terminalId, cols, rows);
+        const canResize = () => !disposed && activeRef.current && container.clientWidth > 0 && container.clientHeight > 0;
+        const measureAndFit = () => {
+          if (!canResize()) return;
+          const dimensions = fitAddon?.proposeDimensions();
+          if (!isValidTerminalSize(dimensions)) return;
+          fitAddon?.fit();
+          return dimensions;
         };
-        const enablePtyResize = () => {
-          ptyReadyForResize = true;
-          if (deferredResize) {
-            const dimensions = deferredResize;
-            deferredResize = null;
-            syncPtyDimensions(dimensions);
-          }
+        const syncPtyDimensions = ({ cols, rows }: { cols: number; rows: number }) => {
+          if (!ptyReadyForResize || !canResize()) return false;
+          bridge.resize(props.terminalId, cols, rows);
+          return true;
         };
         resizeScheduler = createTerminalResizeScheduler(syncPtyDimensions);
+        resizeSchedulerRef.current = resizeScheduler;
+        const fitAndSchedule = () => {
+          const dimensions = measureAndFit();
+          if (dimensions) resizeScheduler?.schedule(dimensions);
+        };
+        fitTerminalRef.current = fitAndSchedule;
+        const enablePtyResize = () => {
+          ptyReadyForResize = true;
+          // The pane may have switched while create/exists was pending. Measure now.
+          fitAndSchedule();
+        };
 
         term.attachCustomKeyEventHandler?.((event) => {
           if (event.type === 'keydown' && event.metaKey && event.key === 'Backspace') {
@@ -170,16 +177,13 @@ export function TerminalPane(props: TerminalPaneProps) {
         });
 
         requestAnimationFrame(() => {
-          fitAddon?.fit();
-          const dims = fitAddon?.proposeDimensions();
-          const cols = dims?.cols ?? 80;
-          const rows = dims?.rows ?? 24;
+          if (disposed) return;
+          const { cols, rows } = measureAndFit() ?? DEFAULT_TERMINAL_SIZE;
           void bridge.exists(props.terminalId).then((alive) => {
             if (disposed) return;
             if (alive) {
               writeBufferedOutput(true);
               enablePtyResize();
-              resizeScheduler?.schedule({ cols, rows });
               return;
             }
             const colorScheme = document.documentElement.classList.contains('dark')
@@ -210,14 +214,10 @@ export function TerminalPane(props: TerminalPaneProps) {
                 enablePtyResize();
               });
           });
-          term.focus();
+          if (canResize()) term.focus();
         });
 
-        resizeObserver = new ResizeObserver(() => {
-          fitAddonRef.current?.fit();
-          const next = fitAddonRef.current?.proposeDimensions();
-          if (next) resizeScheduler?.schedule({ cols: next.cols, rows: next.rows });
-        });
+        resizeObserver = new ResizeObserver(fitAndSchedule);
         resizeObserver.observe(container);
 
         applyTheme = () => {
@@ -247,15 +247,23 @@ export function TerminalPane(props: TerminalPaneProps) {
       onDataCleanup?.();
       onExitCleanup?.();
       resizeScheduler?.dispose();
+      resizeSchedulerRef.current = null;
+      fitTerminalRef.current = null;
       xtermRef.current?.dispose();
       xtermRef.current = null;
-      fitAddonRef.current = null;
     };
   }, [cwd, props.terminalId, props.title, props.workspaceId]);
 
-  useEffect(() => {
-    if (!isActive) return;
-    const id = requestAnimationFrame(() => xtermRef.current?.focus());
+  useLayoutEffect(() => {
+    activeRef.current = isActive;
+    if (!isActive) {
+      resizeSchedulerRef.current?.dispose();
+      return;
+    }
+    const id = requestAnimationFrame(() => {
+      fitTerminalRef.current?.();
+      xtermRef.current?.focus();
+    });
     return () => cancelAnimationFrame(id);
   }, [isActive]);
 

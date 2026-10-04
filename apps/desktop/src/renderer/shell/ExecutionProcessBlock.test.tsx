@@ -247,6 +247,197 @@ describe('CodePreview language adaptation', () => {
 });
 
 describe('FileChangesCard interactions', () => {
+  it('keeps the summary, status and both actions visible without hover-only copy', () => {
+    const { container } = render(
+      <FileChangesCard
+        view={processViewWithChanges()}
+        onOpenChange={vi.fn()}
+        onOpenReview={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole('region', { name: '文件变更' })).toBeTruthy();
+    expect(screen.getByLabelText('1 个文件')).toBeTruthy();
+    expect(screen.getByText('修改')).toBeTruthy();
+    expect(screen.getByRole('button', { name: '查看全部变更' }).textContent).toContain(
+      '查看全部变更',
+    );
+    expect(screen.getByRole('button', { name: '打开文件 src/app.ts' }).textContent).toContain(
+      '打开文件',
+    );
+    expect(container.querySelector('button button')).toBeNull();
+    expect(container.querySelector('.shell-changes-card__badge')).toBeNull();
+    expect(container.querySelector('.shell-changes-card__action-hint')).toBeNull();
+    expect(container.querySelector('.shell-changes-card__header-hint')).toBeNull();
+  });
+
+  it('keeps file opening separate from the identity disclosure button', () => {
+    const { container } = render(
+      <FileChangesCard view={processViewWithChanges()} onOpenChange={vi.fn()} />,
+    );
+    const disclosure = screen.getByRole('button', { name: '展开 src/app.ts diff' });
+    const openFile = screen.getByRole('button', { name: '打开文件 src/app.ts' });
+    expect(disclosure.contains(openFile)).toBe(false);
+    expect(disclosure.parentElement).toBe(openFile.parentElement);
+    fireEvent.click(disclosure);
+    expect(disclosure.getAttribute('aria-expanded')).toBe('true');
+    fireEvent.click(screen.getByRole('button', { name: '收起 src/app.ts diff' }));
+    expect(disclosure.getAttribute('aria-expanded')).toBe('false');
+    expect(container.querySelector('.shell-beui-diff-disclosure')?.hasAttribute('hidden')).toBe(
+      true,
+    );
+  });
+
+  it('omits unknown line counts and implementation notices instead of presenting zero totals', () => {
+    const { container } = render(<FileChangesCard view={processViewWithManyChanges(1)} />);
+    expect(screen.queryByText('行数按需计算')).toBeNull();
+    expect(container.querySelector('.shell-changes-card__lines')).toBeNull();
+    expect(container.querySelector('.shell-changes-card__file-lines')).toBeNull();
+    const disclosure = screen.getByRole('button', { name: '展开 file-1.ts diff' });
+    expect(disclosure.getAttribute('aria-disabled')).toBe('true');
+    fireEvent.click(disclosure);
+    expect(disclosure.getAttribute('aria-expanded')).toBe('false');
+  });
+
+  it('shows exact totals only when every file is counted', () => {
+    const known = processViewWithChanges();
+    const { container, rerender } = render(<FileChangesCard view={known} />);
+    expect(screen.getByLabelText('总计新增 1 行，删除 1 行')).toBeTruthy();
+    expect(screen.getByLabelText('新增 1 行，删除 1 行')).toBeTruthy();
+    rerender(
+      <FileChangesCard
+        view={{
+          ...known,
+          fileChanges: [...known.fileChanges, { path: 'unknown.txt', action: 'edited' }],
+        }}
+      />,
+    );
+    expect(container.querySelector('.shell-changes-card__lines')).toBeNull();
+    expect(screen.getByLabelText('新增 1 行，删除 1 行')).toBeTruthy();
+  });
+
+  it('does not use the currently loaded page as a complete change total', () => {
+    const known = processViewWithChanges();
+    const paged = {
+      ...known,
+      pages: {
+        version: 'a'.repeat(64),
+        fileChanges: { offset: 0, total: 3, nextOffset: 1 },
+        steps: { offset: 0, total: 0 },
+        taskPlan: { offset: 0, total: 0 },
+      },
+    } as RunProcessView;
+    const { container } = render(<FileChangesCard view={paged} />);
+    expect(screen.getByLabelText('3 个文件')).toBeTruthy();
+    expect(container.querySelector('.shell-changes-card__lines')).toBeNull();
+  });
+
+  it('displays project-relative directories and preserves the full path tooltip', () => {
+    render(
+      <FileChangesCard
+        view={{
+          ...processView([]),
+          fileChanges: [
+            {
+              path: 'd:\\PROJECTS\\sync-think\\src\\nested\\app.ts',
+              action: 'created',
+              content: 'created',
+            },
+          ],
+        }}
+        projectFolder={'D:\\projects\\SYNC-THINK'}
+      />,
+    );
+    expect(screen.getByText('src/nested')).toBeTruthy();
+    const disclosure = screen.getByRole('button', {
+      name: '展开 d:\\PROJECTS\\sync-think\\src\\nested\\app.ts diff',
+    });
+    fireEvent.focus(disclosure);
+    expect(screen.getByRole('tooltip').textContent).toBe(
+      'd:\\PROJECTS\\sync-think\\src\\nested\\app.ts',
+    );
+  });
+
+  it('does not strip prefixes from paths outside the project', () => {
+    render(
+      <FileChangesCard
+        view={{
+          ...processView([]),
+          fileChanges: [
+            {
+              path: 'D:\\projects\\SYNC-THINK-archive\\app.ts',
+              action: 'created',
+              content: 'created',
+            },
+          ],
+        }}
+        projectFolder={'D:\\projects\\SYNC-THINK'}
+      />,
+    );
+    expect(screen.getByText('D:\\projects\\SYNC-THINK-archive')).toBeTruthy();
+  });
+
+  it('preserves a long filename extension and handles extensionless dotfiles', () => {
+    const name = 'ExecutionProcessBlock.streaming-response.integration.test.tsx';
+    const { container, rerender } = render(
+      <FileChangesCard
+        view={{
+          ...processView([]),
+          fileChanges: [{ path: name, action: 'created', content: 'created' }],
+        }}
+      />,
+    );
+    expect(container.querySelector('.shell-changes-card__name')?.textContent).toBe(name);
+    expect(container.querySelector('.shell-changes-card__name-extension')?.textContent).toBe(
+      '.tsx',
+    );
+    expect(screen.getByText('项目根目录')).toBeTruthy();
+    rerender(
+      <FileChangesCard
+        view={{
+          ...processView([]),
+          fileChanges: [{ path: '.gitignore', action: 'created', content: '*.log' }],
+        }}
+      />,
+    );
+    expect(screen.getByText('.gitignore')).toBeTruthy();
+    expect(container.querySelector('.shell-changes-card__name-extension')).toBeNull();
+  });
+
+  it('shows deleted content instead of trying to open a removed path', () => {
+    const onOpenChange = vi.fn();
+    const { container } = render(
+      <FileChangesCard
+        view={{
+          ...processView([]),
+          fileChanges: [
+            { path: 'removed.ts', action: 'deleted', previousContent: 'const removed = true;' },
+          ],
+        }}
+        onOpenChange={onOpenChange}
+      />,
+    );
+    expect(screen.getByText('删除')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '打开文件 removed.ts' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '查看旧版本 removed.ts' }));
+    expect(onOpenChange).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-kind="del"] code')?.textContent).toBe(
+      'const removed = true;',
+    );
+    expect(
+      screen.getByRole('button', { name: '收起 removed.ts diff' }).getAttribute('aria-expanded'),
+    ).toBe('true');
+  });
+
+  it('keeps collapsed overflow out of the keyboard and accessibility trees', () => {
+    render(<FileChangesCard view={processViewWithManyChanges(8)} />);
+    expect(screen.getByTestId('file-changes-overflow').hasAttribute('hidden')).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: '展开其余 4 个文件' }));
+    expect(screen.getByTestId('file-changes-overflow').hasAttribute('hidden')).toBe(false);
+    fireEvent.click(screen.getByRole('button', { name: '收起其余文件' }));
+    expect(screen.getByTestId('file-changes-overflow').hasAttribute('hidden')).toBe(true);
+    expect(screen.queryByRole('button', { name: '打开文件 file-5.ts' })).toBeNull();
+  });
+
   it('opens a file without toggling its inline diff', () => {
     const onOpenChange = vi.fn();
     render(
@@ -263,11 +454,15 @@ describe('FileChangesCard interactions', () => {
     expect(screen.queryByText('自动换行')).toBeNull();
   });
 
-  it('uses the chevron only to toggle the inline diff', () => {
+  it('uses the whole file identity row to toggle the inline diff', () => {
     const onOpenChange = vi.fn();
     render(<FileChangesCard view={processViewWithChanges()} onOpenChange={onOpenChange} />);
 
-    fireEvent.click(screen.getByRole('button', { name: '展开 src/app.ts diff' }));
+    fireEvent.click(
+      screen
+        .getByRole('button', { name: '展开 src/app.ts diff' })
+        .querySelector('.shell-changes-card__name')!,
+    );
 
     expect(screen.getByRole('button', { name: '自动换行' })).toBeTruthy();
     expect(onOpenChange).not.toHaveBeenCalled();
@@ -284,7 +479,7 @@ describe('FileChangesCard interactions', () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole('button', { name: '查看变动' }));
+    fireEvent.click(screen.getByRole('button', { name: '查看全部变更' }));
 
     expect(onOpenReview).toHaveBeenCalledWith(view);
   });
@@ -296,7 +491,7 @@ describe('FileChangesCard interactions', () => {
         projectFolder={'D:\\projects\\SYNC-THINK'}
       />,
     );
-    const fileButton = screen.getByRole('button', { name: '打开文件 src/app.ts' });
+    const fileButton = screen.getByRole('button', { name: '展开 src/app.ts diff' });
     vi.spyOn(fileButton, 'getBoundingClientRect').mockReturnValue({
       x: 100,
       y: 100,
@@ -331,7 +526,7 @@ describe('FileChangesCard interactions', () => {
         projectFolder={'D:\\projects\\SYNC-THINK'}
       />,
     );
-    const fileButton = screen.getByRole('button', { name: '打开文件 src/app.ts' });
+    const fileButton = screen.getByRole('button', { name: '展开 src/app.ts diff' });
 
     fireEvent.focus(fileButton);
     expect(screen.getByRole('tooltip').textContent).toBe('D:\\projects\\SYNC-THINK\\src\\app.ts');
@@ -343,13 +538,13 @@ describe('FileChangesCard interactions', () => {
   it('shows at most four files until the overflow list is expanded', () => {
     render(<FileChangesCard view={processViewWithManyChanges(8)} />);
 
-    expect(screen.getByText('编辑了 8 个文件')).toBeTruthy();
+    expect(screen.getByLabelText('8 个文件')).toBeTruthy();
     expect(screen.getAllByRole('button', { name: /打开文件/ })).toHaveLength(4);
     expect(screen.queryByRole('button', { name: '打开文件 file-5.ts' })).toBeNull();
 
     const toggle = screen.getByRole('button', { name: '展开其余 4 个文件' });
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
-    expect(toggle.textContent).toContain('还有 4 个文件');
+    expect(toggle.textContent).toContain('显示其余 4 个文件');
 
     fireEvent.click(toggle);
 
@@ -389,7 +584,11 @@ describe('FileChangesCard interactions', () => {
       />,
     );
 
-    expect(screen.getByText('route.test.ts')).toBeTruthy();
+    expect(
+      screen
+        .getByRole('button', { name: '展开 D:\\projects\\cuitaliao\\src\\route.test.ts diff' })
+        .querySelector('.shell-changes-card__name')?.textContent,
+    ).toBe('route.test.ts');
     expect(screen.getByText('D:\\projects\\cuitaliao\\src')).toBeTruthy();
     fireEvent.click(
       screen.getByRole('button', { name: '展开 D:\\projects\\cuitaliao\\src\\route.test.ts diff' }),

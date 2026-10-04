@@ -18,7 +18,7 @@
  */
 
 /** Bumped whenever the guest UI kit stylesheet changes shape. */
-export const VISUALIZATION_UI_KIT_VERSION = 'sync-think-v1';
+export const VISUALIZATION_UI_KIT_VERSION = 'sync-think-v2';
 
 /** Guest <-> host channels. Must match apps/desktop/src/preload/visualization.ts. */
 export const VISUALIZATION_CHANNELS = {

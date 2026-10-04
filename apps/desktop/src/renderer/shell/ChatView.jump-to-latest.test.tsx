@@ -4,7 +4,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { Conversation, Event } from '@sync-think/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { ChatView } from './ChatView.js';
+import { ChatView, resetRecentConversationPageCacheForTests } from './ChatView.js';
 import { ScrollToBottomButton } from './ScrollToBottomButton.js';
 
 interface ResizeObserverProbe {
@@ -55,6 +55,7 @@ function event(sequence: number, type: string, payload: Record<string, unknown> 
 }
 
 beforeEach(() => {
+  resetRecentConversationPageCacheForTests();
   resizeObservers.length = 0;
   window.localStorage.removeItem('sync-think.conversationScrollPositions');
   runtime.openTask.mockReset().mockResolvedValue({
@@ -103,6 +104,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  resetRecentConversationPageCacheForTests();
   vi.unstubAllGlobals();
   Reflect.deleteProperty(window, 'syncThink');
 });

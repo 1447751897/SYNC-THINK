@@ -1,3 +1,4 @@
+import { parseScheduledTaskAutomation } from '@sync-think/shared';
 import { parseWeeklyRule } from '@sync-think/shared/task-schedule';
 // Payload validation for the mutable global Agent / Team / Conversation
 // commands (2026-07-22 model). Same strict style as agent-payloads.ts: reject
@@ -813,7 +814,12 @@ export function parseCreateScheduledTaskPayload(value: unknown): CreateScheduled
     value.skillVersionIds.every((item) => typeof item === 'string')
       ? value.skillVersionIds
       : undefined;
+  const automation = value.automation === undefined ? undefined : parseScheduledTaskAutomation(value.automation);
+  if (value.automation !== undefined && !automation) throw new Error(label);
+  const collaborationConversationId = value.collaborationConversationId === undefined ? undefined : requiredString(value.collaborationConversationId, label);
   return {
+    ...(automation ? { automation } : {}),
+    ...(collaborationConversationId ? { collaborationConversationId } : {}),
     name,
     instruction,
     target,
@@ -855,6 +861,14 @@ export function parseUpdateScheduledTaskPayload(value: unknown): UpdateScheduled
   if (workspaceId !== undefined) out.workspaceId = workspaceId;
   const skillVersionIds = parseOptionalSkillVersionIds(patch.skillVersionIds, label);
   if (skillVersionIds !== undefined) out.skillVersionIds = skillVersionIds;
+  if (patch.automation !== undefined) {
+    if (patch.automation === null) out.automation = null;
+    else {
+      const automation = parseScheduledTaskAutomation(patch.automation);
+      if (!automation) throw new Error(label);
+      out.automation = automation;
+    }
+  }
   return { taskId, patch: out };
 }
 

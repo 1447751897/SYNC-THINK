@@ -3,6 +3,7 @@ import { ConversationContentScope, DeferredToolContent } from './DeferredToolCon
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
+  ArrowUpRight,
   CheckCircle2,
   ChevronDown,
   CircleDashed,
@@ -20,7 +21,11 @@ import { highlightCodeLines, languageFromPath } from './code-highlight.js';
 import { FileDiffToolbar, FileDiffViewport, formatFilePatch } from './FileDiffSurface.js';
 import { CodeBlockSource } from './CodeBlockSource.js';
 import { CopyTextButton } from './CopyTextButton.js';
-import { DeferredFileDiff, needsDeferredFileDiff } from './DeferredFileDiff.js';
+import {
+  DeferredFileDiff,
+  needsDeferredFileDiff,
+  type FileDiffCounts,
+} from './DeferredFileDiff.js';
 import { WordSegments, wordHighlightMap } from './word-diff.js';
 import { useRunProcessPage } from './use-run-process-page.js';
 import type {
@@ -226,9 +231,9 @@ export function ExecutionProcessBlock({
 }
 
 function actionLabel(action: 'created' | 'edited' | 'deleted'): string {
-  if (action === 'created') return '已创建';
-  if (action === 'deleted') return '已删除';
-  return '已修改';
+  if (action === 'created') return '新增';
+  if (action === 'deleted') return '删除';
+  return '修改';
 }
 
 function fileName(path: string): string {
@@ -241,6 +246,18 @@ function fileDir(path: string): string {
   const separator = normalized.includes('\\') ? '\\' : '/';
   const parts = normalized.split(/[\\/]/);
   return parts.length > 1 ? parts.slice(0, -1).join(separator) : '';
+}
+
+function projectRelativeFilePath(projectFolder: string | undefined, path: string): string {
+  if (!projectFolder) return path.replace(/^\.[\\/]/, '');
+  const normalizedPath = path.replace(/\\/g, '/');
+  const root = projectFolder.replace(/\\/g, '/').replace(/\/+$/, '');
+  const windowsPath = /^[a-z]:/i.test(root) || root.startsWith('//');
+  const prefix = `${root}/`;
+  const insideProject = windowsPath
+    ? normalizedPath.toLowerCase().startsWith(prefix.toLowerCase())
+    : normalizedPath.startsWith(prefix);
+  return insideProject ? normalizedPath.slice(prefix.length) : path.replace(/^\.[\\/]/, '');
 }
 
 export function looksLikeUnifiedDiff(text: string): boolean {
@@ -320,7 +337,10 @@ export function UnifiedDiffPreview({ text, path }: { text: string; path?: string
   }, [language, rows]);
 
   return (
-    <div className="shell-changes-card__diff-body shell-beui-diff" onContextMenu={event => diffContextMenu(event, { path, patch: text })}>
+    <div
+      className="shell-changes-card__diff-body shell-beui-diff"
+      onContextMenu={(event) => diffContextMenu(event, { path, patch: text })}
+    >
       <FileDiffToolbar
         copyText={text}
         additions={rows.filter((row) => row.kind === 'add').length}
@@ -460,13 +480,21 @@ export function FileChangeDiff({
   item,
   conversationId,
   streaming = false,
+  onCountsChange,
 }: {
   item: FileChangeItem;
   conversationId?: string;
   streaming?: boolean;
+  onCountsChange?: (counts: FileDiffCounts) => void;
 }) {
   if (needsDeferredFileDiff(item))
-    return <DeferredFileDiff item={item} conversationId={conversationId} />;
+    return (
+      <DeferredFileDiff
+        item={item}
+        conversationId={conversationId}
+        onCountsChange={onCountsChange}
+      />
+    );
   const before = item.previousContent ?? (item.action === 'created' ? '' : undefined);
   const after = item.content ?? (item.action === 'deleted' ? '' : undefined);
   if (before !== undefined && after !== undefined)
@@ -511,9 +539,11 @@ export function FileChangesCard({
 }) {
   const { process, controls } = useRunProcessPage(sourceView, 'fileChanges', conversationId);
   const view = process ?? sourceView;
-  // File changes stay folded by default; the user expands a file to see its diff.
   const [expandedPaths, setExpandedPaths] = useState<ReadonlySet<string>>(() => new Set());
   const [visitedPaths, setVisitedPaths] = useState<ReadonlySet<string>>(() => new Set());
+  const [loadedCounts, setLoadedCounts] = useState<
+    ReadonlyMap<string, { item: FileChangeItem; counts: FileDiffCounts }>
+  >(() => new Map());
   const disclosureId = useId();
   const [overflowOpen, setOverflowOpen] = useState(false);
   const [pathTooltip, setPathTooltip] = useState<{
@@ -525,14 +555,15 @@ export function FileChangesCard({
 
   if (view.fileChanges.length === 0) return null;
 
-  const totals = view.fileChanges.reduce<{
-    added: number;
-    removed: number;
-    countable: boolean;
-    unknown: boolean;
-  }>(
+  const itemKeyFor = (item: FileChangeItem) =>
+    `${view.runId}:${item.toolCallId ?? ''}:${item.action}:${item.path}`;
+  const countsFor = (item: FileChangeItem) => {
+    const cached = loadedCounts.get(itemKeyFor(item));
+    return countLineChanges(item) ?? (cached?.item === item ? cached.counts : undefined);
+  };
+  const totals = view.fileChanges.reduce(
     (acc, item) => {
-      const counts = countLineChanges(item);
+      const counts = countsFor(item);
       if (!counts) return { ...acc, unknown: true };
       return {
         added: acc.added + counts.added,
@@ -551,62 +582,51 @@ export function FileChangesCard({
   const previewItems = view.fileChanges.slice(0, FILE_CHANGES_CARD_PREVIEW_LIMIT);
   const overflowItems = view.fileChanges.slice(FILE_CHANGES_CARD_PREVIEW_LIMIT);
   const overflowCount = overflowItems.length;
+  const fileCount = view.pages?.fileChanges.total ?? view.fileChanges.length;
+
+  const revealFile = (itemKey: string, toggle: boolean) => {
+    setVisitedPaths((previous) => new Set(previous).add(itemKey));
+    setExpandedPaths((previous) => {
+      const next = new Set(previous);
+      if (toggle && next.has(itemKey)) next.delete(itemKey);
+      else next.add(itemKey);
+      return next;
+    });
+  };
 
   const renderChangeItems = (items: readonly FileChangeItem[]) =>
     items.map((item) => {
-      const itemKey = `${view.runId}:${item.toolCallId ?? ''}:${item.action}:${item.path}`;
-      const hasBody = !isStatusOnlyPreview(item.preview);
-      const hasDiff =
-        (item.previousContent !== undefined || item.action === 'created') &&
-        (item.content !== undefined || item.action === 'deleted');
-      const deferred = needsDeferredFileDiff(item);
+      const itemKey = itemKeyFor(item);
+      const canExpand =
+        !isStatusOnlyPreview(item.preview) ||
+        ((item.previousContent !== undefined || item.action === 'created') &&
+          (item.content !== undefined || item.action === 'deleted')) ||
+        needsDeferredFileDiff(item);
       const open = expandedPaths.has(itemKey);
       const mounted = visitedPaths.has(itemKey);
       const contentId = `${disclosureId}-${encodeURIComponent(itemKey)}`;
-      const counts = countLineChanges(item);
+      const counts = countsFor(item);
       const absolutePath = resolveAbsoluteProjectPath(projectFolder, item.path);
+      const relativePath = projectRelativeFilePath(projectFolder, item.path);
+      const name = fileName(relativePath);
+      const extensionIndex = name.lastIndexOf('.');
+      const stem = extensionIndex > 0 ? name.slice(0, extensionIndex) : name;
+      const extension = extensionIndex > 0 ? name.slice(extensionIndex) : '';
+      const deleted = item.action === 'deleted';
       return (
         <li key={itemKey} className={`shell-changes-card__item ${open ? 'is-open' : ''}`}>
           <div className="shell-changes-card__row">
             <button
               type="button"
-              className="shell-changes-card__expand"
+              className="shell-changes-card__file"
               aria-expanded={open}
               aria-controls={contentId}
-              disabled={!hasBody && !hasDiff && !deferred}
+              aria-disabled={!canExpand}
               onClick={() => {
-                setVisitedPaths((previous) => new Set(previous).add(itemKey));
-                setExpandedPaths((previous) => {
-                  const next = new Set(previous);
-                  if (next.has(itemKey)) next.delete(itemKey);
-                  else next.add(itemKey);
-                  return next;
-                });
+                if (canExpand) revealFile(itemKey, true);
               }}
-              title={
-                hasBody || hasDiff || deferred
-                  ? open
-                    ? '收起 diff'
-                    : '展开 diff'
-                  : '暂无可展开内容'
-              }
-              aria-label={open ? `收起 ${item.path} diff` : `展开 ${item.path} diff`}
-            >
-              <ChevronDown
-                size={13}
-                className={`shell-changes-card__chevron ${open ? 'is-open' : ''}`}
-              />
-            </button>
-            <button
-              type="button"
-              className="shell-changes-card__file"
-              onClick={() => onOpenChange?.(item.path)}
               onMouseEnter={(event) => {
-                setPathTooltip({
-                  anchor: event.currentTarget,
-                  itemKey,
-                  path: absolutePath,
-                });
+                setPathTooltip({ anchor: event.currentTarget, itemKey, path: absolutePath });
               }}
               onMouseLeave={(event) => {
                 setPathTooltip((current) =>
@@ -614,11 +634,7 @@ export function FileChangesCard({
                 );
               }}
               onFocus={(event) => {
-                setPathTooltip({
-                  anchor: event.currentTarget,
-                  itemKey,
-                  path: absolutePath,
-                });
+                setPathTooltip({ anchor: event.currentTarget, itemKey, path: absolutePath });
               }}
               onBlur={(event) => {
                 setPathTooltip((current) =>
@@ -626,69 +642,113 @@ export function FileChangesCard({
                 );
               }}
               aria-describedby={pathTooltip?.itemKey === itemKey ? pathTooltipId : undefined}
-              aria-label={`打开文件 ${item.path}`}
+              aria-label={open ? `收起 ${item.path} diff` : `展开 ${item.path} diff`}
             >
-              <span
-                className={`shell-changes-card__badge is-${item.action}`}
-                data-action={item.action}
-              >
-                {item.action === 'created' ? 'A' : item.action === 'deleted' ? 'D' : 'M'}
+              <ChevronDown
+                size={13}
+                className={`shell-changes-card__chevron ${open ? 'is-open' : ''}`}
+                aria-hidden="true"
+              />
+              <span className="shell-changes-card__file-type" aria-hidden="true">
+                <FileCode2 size={16} />
               </span>
-              <span className="shell-changes-card__name">{fileName(item.path)}</span>
-              {fileDir(item.path) ? (
-                <span className="shell-changes-card__dir">{fileDir(item.path)}</span>
-              ) : null}
-              {counts ? (
-                <span className="shell-changes-card__file-lines">
-                  <span className="is-add">+{counts.added}</span>
-                  <span className="is-del">−{counts.removed}</span>
+              <span className="shell-changes-card__identity">
+                <span className="shell-changes-card__name">
+                  <span className="shell-changes-card__name-stem">{stem}</span>
+                  {extension ? (
+                    <span className="shell-changes-card__name-extension">{extension}</span>
+                  ) : null}
                 </span>
-              ) : null}
-              <span className="shell-changes-card__action-label">
-                <span className="shell-changes-card__action-rest">{actionLabel(item.action)}</span>
-                <span className="shell-changes-card__action-hint" aria-hidden="true">
-                  预览文件
+                <span className="shell-changes-card__dir">
+                  {fileDir(relativePath) || '项目根目录'}
                 </span>
               </span>
+              <span className="shell-changes-card__file-meta">
+                <span className="shell-changes-card__action-label" data-action={item.action}>
+                  {actionLabel(item.action)}
+                </span>
+                {counts && (counts.added > 0 || counts.removed > 0) ? (
+                  <span
+                    className="shell-changes-card__file-lines"
+                    aria-label={`新增 ${counts.added} 行，删除 ${counts.removed} 行`}
+                  >
+                    {counts.added > 0 ? <span className="is-add">+{counts.added}</span> : null}
+                    {counts.removed > 0 ? <span className="is-del">−{counts.removed}</span> : null}
+                  </span>
+                ) : null}
+              </span>
+            </button>
+            <button
+              type="button"
+              className="shell-changes-card__open-file"
+              disabled={deleted ? !canExpand : !onOpenChange}
+              onClick={() => (deleted ? revealFile(itemKey, false) : onOpenChange?.(item.path))}
+              aria-label={deleted ? `查看旧版本 ${item.path}` : `打开文件 ${item.path}`}
+              title={deleted ? '查看已删除文件的旧内容' : '在相邻窗格打开文件'}
+            >
+              <span className="shell-changes-card__open-label">
+                {deleted ? '查看旧版本' : '打开文件'}
+              </span>
+              {deleted ? (
+                <FileDiff size={13} aria-hidden="true" />
+              ) : (
+                <ArrowUpRight size={13} aria-hidden="true" />
+              )}
             </button>
           </div>
           <div id={contentId} className="shell-beui-diff-disclosure" hidden={!open}>
-            {mounted ? <FileChangeDiff item={item} conversationId={conversationId} /> : null}
+            {mounted ? (
+              <FileChangeDiff
+                item={item}
+                conversationId={conversationId}
+                onCountsChange={(nextCounts) => {
+                  setLoadedCounts((previous) => {
+                    const current = previous.get(itemKey);
+                    if (
+                      current?.item === item &&
+                      current.counts.added === nextCounts.added &&
+                      current.counts.removed === nextCounts.removed
+                    )
+                      return previous;
+                    return new Map(previous).set(itemKey, { item, counts: nextCounts });
+                  });
+                }}
+              />
+            ) : null}
           </div>
         </li>
       );
     });
 
   return (
-    <div className={`shell-changes-card shell-beui-changes ${nested ? 'is-nested' : ''}`}>
-      {/* NewMax has no standing button: the whole header becomes 查看变动 on hover. */}
+    <section
+      className={`shell-changes-card shell-beui-changes ${nested ? 'is-nested' : ''}`}
+      aria-label="文件变更"
+    >
       <div className="shell-changes-card__header">
+        <div className="shell-changes-card__summary">
+          <span className="shell-changes-card__title">文件变更</span>
+          <span className="shell-changes-card__count" aria-label={`${fileCount} 个文件`}>
+            {fileCount}
+          </span>
+          {totals.countable && !totals.unknown && (totals.added > 0 || totals.removed > 0) ? (
+            <span
+              className="shell-changes-card__lines"
+              aria-label={`总计新增 ${totals.added} 行，删除 ${totals.removed} 行`}
+            >
+              {totals.added > 0 ? <span className="is-add">+{totals.added}</span> : null}
+              {totals.removed > 0 ? <span className="is-del">−{totals.removed}</span> : null}
+            </span>
+          ) : null}
+        </div>
         <button
           type="button"
-          className="shell-changes-card__header-action"
+          className="shell-changes-card__review"
           disabled={!onOpenReview}
           onClick={() => onOpenReview?.(conversationId ? { ...view, conversationId } : view)}
-          aria-label="查看变动"
           title="审阅本轮文件修改"
         >
-          <span className="shell-changes-card__header-rest">
-            <span className="shell-changes-card__title">
-              编辑了 {view.pages?.fileChanges.total ?? view.fileChanges.length} 个文件
-            </span>
-            {totals.countable && !totals.unknown ? (
-              <span className="shell-changes-card__lines" title="新增 / 删除行数">
-                <span className="is-add">+{totals.added}</span>
-                <span className="is-del">−{totals.removed}</span>
-              </span>
-            ) : null}
-            {totals.unknown ? (
-              <span className="shell-changes-card__lines">行数按需计算</span>
-            ) : null}
-          </span>
-          <span className="shell-changes-card__header-hint" aria-hidden="true">
-            <FileDiff size={12} />
-            查看变动
-          </span>
+          查看全部变更 <ArrowUpRight size={12} aria-hidden="true" />
         </button>
       </div>
       {controls}
@@ -698,9 +758,10 @@ export function FileChangesCard({
           <div
             className={`shell-changes-card__overflow${overflowOpen ? ' is-open' : ''}`}
             data-testid="file-changes-overflow"
+            hidden={!overflowOpen}
           >
             <div className="shell-changes-card__overflow-inner">
-              <ul className="shell-changes-card__list is-overflow" aria-hidden={!overflowOpen}>
+              <ul className="shell-changes-card__list is-overflow">
                 {renderChangeItems(overflowItems)}
               </ul>
             </div>
@@ -718,7 +779,7 @@ export function FileChangesCard({
               className={`shell-changes-card__more-chevron${overflowOpen ? ' is-open' : ''}`}
               aria-hidden="true"
             />
-            <span>{overflowOpen ? '收起' : `还有 ${overflowCount} 个文件`}</span>
+            <span>{overflowOpen ? '收起其余文件' : `显示其余 ${overflowCount} 个文件`}</span>
           </button>
         </>
       ) : null}
@@ -729,7 +790,7 @@ export function FileChangesCard({
           absolutePath={pathTooltip.path}
         />
       ) : null}
-    </div>
+    </section>
   );
 }
 
@@ -989,7 +1050,7 @@ export function LineDiffView({
   return (
     <div
       className="shell-changes-card__diff-body shell-beui-diff"
-      onContextMenu={event => diffContextMenu(event, { path, patch, newText })}
+      onContextMenu={(event) => diffContextMenu(event, { path, patch, newText })}
       data-state={streaming ? 'streaming' : 'complete'}
     >
       {showToolbar ? (

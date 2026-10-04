@@ -89,12 +89,13 @@ describe('collaboration workflow contracts', () => {
       for (let i = 0; i < 20; i++) { await service.pump('w'); await new Promise(r => setTimeout(r, 5)); }
       const first = snapshot.tasks[0]; const second = snapshot.tasks[1];
       expect(snapshot.attempts.find(a => a.id === first.currentAttemptId)?.error?.code).toBe('deliverable_missing');
-      expect(snapshot.attempts.find(a => a.id === second.currentAttemptId)?.error?.code).toBe('dependency_failed');
+      expect(snapshot.attempts.find(a => a.id === second.currentAttemptId)).toMatchObject({ status: 'queued', waitReason: 'dependency_failed' });
+      expect(snapshot.tasks[1].pendingAssignment).toBeTruthy();
       succeed = true; service.retry({ action: 'retry', conversationId: 'c', taskId: first.id, clientRequestId: 'retry' });
       for (let i = 0; i < 20; i++) { await service.pump('w'); await new Promise(r => setTimeout(r, 5)); }
       const nodes = snapshot.tasks.filter(t => t.kind === 'task');
       expect(nodes.every(t => snapshot.attempts.find(a => a.id === t.currentAttemptId)?.status === 'succeeded')).toBe(true);
-      expect(snapshot.attempts.filter(a => a.taskId === second.id)).toHaveLength(2);
+      expect(snapshot.attempts.filter(a => a.taskId === second.id)).toHaveLength(1);
       expect(snapshot.attempts.find(a => a.id === first.currentAttemptId)?.status).toBe('failed'); // historical attempt is intact
     } finally { await service.stop(); }
   });

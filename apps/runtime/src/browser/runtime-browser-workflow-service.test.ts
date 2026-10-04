@@ -25,7 +25,7 @@ async function fixture() {
   };
 }
 
-function createStoppedRecording(store: SqliteBrowserStore, id: string): void {
+function createStoppedRecording(store: SqliteBrowserStore, id: string, value?: { kind: 'variable'; name: string } | { kind: 'secret' }): void {
   store.createRecording({
     id,
     profileId: 'default',
@@ -48,6 +48,7 @@ function createStoppedRecording(store: SqliteBrowserStore, id: string): void {
       locator: { strategy: 'role', role: 'button', name: 'Export' },
     },
   });
+  if (value) store.appendRecordingStep({ recordingId: id, step: { kind: 'fill', locator: { strategy: 'placeholder', value: 'Search' }, value } });
   store.beginRecordingStop(id, { stopReason: 'user' });
   store.finishRecording(id, { status: 'stopped', stopReason: 'user' });
 }
@@ -120,7 +121,9 @@ describe('RuntimeBrowserWorkflowService', () => {
         taskId: created.task.id,
         enabled: true,
         intervalMinutes: 30,
+        variables: { keyword: '衬衫' },
       });
+      expect(f.service.getWorkflow({ taskId: created.task.id }).schedule?.variables).toEqual({ keyword: '衬衫' });
       expect(scheduled.schedule).toMatchObject({
         taskId: created.task.id,
         enabled: true,
@@ -243,4 +246,23 @@ describe('RuntimeBrowserWorkflowService', () => {
       f.connection.raw.close();
     }
   });
+});
+
+async function parameterizedWorkflow(value: { kind: 'variable'; name: string } | { kind: 'secret' }) {
+  const f = await fixture(); const created = f.service.createDraft({ profileId: 'default', name: '搜索分析', instruction: '按输入查询', startUrl: 'https://example.test/reports', source: 'manual' });
+  createStoppedRecording(f.store, 'parameter-recording', value); f.store.attachWorkflowDraftRecording({ draftId: created.draft.id, recordingId: 'parameter-recording' }); f.service.submitDraft({ draftId: created.draft.id, recordingId: 'parameter-recording' }); f.service.reviewDraft({ draftId: created.draft.id, decision: 'approve' }); return { ...f, taskId: created.task.id };
+}
+it('schedules a validated variable flow and reuses changed inputs without publishing another version', async () => {
+  const f = await parameterizedWorkflow({ kind: 'variable', name: 'keyword' }); try {
+    expect(() => f.service.updateSchedule({ taskId: f.taskId, enabled: true, intervalMinutes: 30 })).toThrow('workflow-schedule-input-required');
+    const first = f.service.updateSchedule({ taskId: f.taskId, enabled: true, intervalMinutes: 30, variables: { keyword: '衬衫' } }); expect(first.schedule.variables).toEqual({ keyword: '衬衫' });
+    const second = f.service.updateSchedule({ taskId: f.taskId, enabled: true, intervalMinutes: 30, variables: { keyword: '裤子' }, expectedRevision: first.schedule.revision }); expect(second.schedule.variables).toEqual({ keyword: '裤子' }); expect(f.service.getWorkflow({ taskId: f.taskId }).version?.versionNumber).toBe(1);
+    const paused = f.service.updateSchedule({ taskId: f.taskId, enabled: false, intervalMinutes: 30 }); expect(paused.schedule.variables).toEqual({ keyword: '裤子' });
+  } finally { f.connection.raw.close(); }
+});
+it('does not persist passwords as scheduled variables or silently schedule secret steps', async () => {
+  const f = await parameterizedWorkflow({ kind: 'secret' }); try {
+    expect(() => f.service.updateSchedule({ taskId: f.taskId, enabled: true, intervalMinutes: 30, variables: { keyword: '衬衫' } })).toThrow('workflow-schedule-input-required');
+    expect(() => f.service.updateSchedule({ taskId: f.taskId, enabled: false, intervalMinutes: 30, variables: { password: 'not-a-real-secret' } })).toThrow('variables_invalid'); expect(f.service.getWorkflow({ taskId: f.taskId }).schedule).toBeUndefined();
+  } finally { f.connection.raw.close(); }
 });

@@ -1,3 +1,5 @@
+import { collaborationMessageContextText } from './collaboration-attachment-context.js';
+import { buildTaskRoomContext } from './task-room.js';
 import type { CollaborationSnapshot, CollaborationTask, CollaborationTaskDraft, CollaborationAttempt, Team } from '@sync-think/shared';
 
 /** Compile a frozen team definition into scheduler nodes, not textual @mentions. */
@@ -43,13 +45,14 @@ export function compileCollaborationWorkflow(snapshot: CollaborationSnapshot, go
 
 /** Frozen admission boundary: no later group messages leak into an already admitted run. */
 export function buildCollaborationExecutionContext(snapshot: CollaborationSnapshot, task: CollaborationTask, attempt: CollaborationAttempt, team?: Team): string {
+  if (snapshot.conversation.room) return buildTaskRoomContext(snapshot, task, attempt, team);
   const names = new Map(snapshot.members.map(m => [m.id, m.name]));
   const messages = snapshot.messages.filter(m => m.sequence <= attempt.contextSequence &&
     (m.kind === 'chat' || (m.kind === 'task_result' && snapshot.tasks.find(t => t.id === m.taskId)?.kind === 'summary')));
   let remaining = 32_000;
   const history: string[] = [];
   for (const message of [...messages].reverse()) {
-    const text = message.blocks.filter(b => b.type === 'text').map(b => b.text).join('\n');
+    const text = collaborationMessageContextText(message);
     if (!text) continue;
     const line = `${names.get(message.senderMemberId) ?? message.senderMemberId}: ${text}`;
     const admitted = line.slice(0, remaining);

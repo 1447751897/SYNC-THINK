@@ -120,6 +120,24 @@ afterEach(() => {
 });
 
 describe('ChatView reply usage details', () => {
+  it('retains the host image-input process after opening an answer-only detailed timeline', async () => {
+    runtime.getConversationRunProcess.mockResolvedValue({process:{...processView,doneCount:1,
+      steps:[{id:'host-image',label:'Image',verb:'Image',zh:'读取图片附件',toolName:'image_input',kind:'read',status:'done',path:'images/input.jpg',preview:'MIME：image/jpeg',completedAt:'2026-08-04T09:30:00.000Z'}]}});
+    runtime.listConversationRunTimeline.mockResolvedValue({segments:[{
+      id:'final-answer',sequence:1,kind:'text',phase:'final_answer',text:'cached reply',status:'completed',
+    }],totalSegments:1});
+    render(<ChatView conversation={conversation} modelName="GPT-5" models={[]} eventHistory={[]} onTitleUpdated={vi.fn()} />);
+    const toggle = await screen.findByTestId('process-panel-toggle');
+    fireEvent.click(toggle);
+    await waitFor(() => expect(runtime.listConversationRunTimeline).toHaveBeenCalled());
+    await waitFor(() => expect(screen.getByTestId('process-panel-toggle').getAttribute('aria-expanded')).toBe('true'));
+    expect(screen.getByText('1 次工具调用')).toBeTruthy();
+    const groupToggle = screen.queryByTestId('process-action-summary-toggle');
+    if (groupToggle?.getAttribute('aria-expanded') === 'false') fireEvent.click(groupToggle);
+    fireEvent.click(await screen.findByRole('button', { name: /Image Input/ }));
+    expect(await screen.findByTestId('tool-image-output')).toBeTruthy();
+  });
+
   it('hydrates the task panel from durable conversation state with an empty activity stream', async () => {
     runtime.listConversationMessages.mockResolvedValue({
       messages: [assistantMessage], hasMore: false,
@@ -471,6 +489,7 @@ describe('ChatView reply usage details', () => {
     expect(within(tooltip).getByTestId('context-used-value').textContent).toContain('183k');
     expect(within(tooltip).getByText('当前对话上下文构成')).toBeTruthy();
     expect(within(tooltip).getByTestId('context-section-summary').textContent).toContain('12k');
+    fireEvent.click(within(tooltip).getByRole('button', { name: '窗口与压缩详情' }));
     expect(within(tooltip).getByTestId('context-compact-distance').textContent).toBe('97k');
   });
 
@@ -518,10 +537,11 @@ describe('ChatView reply usage details', () => {
     });
 
     const tooltip = screen.getByTestId('context-ring-tooltip');
+    fireEvent.click(within(tooltip).getByRole('button', { name: '窗口与压缩详情' }));
     expect(within(tooltip).getByTestId('context-model-default').textContent).toBe('372k');
     expect(within(tooltip).getByRole('progressbar').getAttribute('aria-valuemax')).toBe('372000');
     expect(within(tooltip).queryByTestId('context-limit-estimated')).toBeNull();
-    expect(within(tooltip).getByTestId('context-used-value').textContent).toContain('30%');
+    expect(within(tooltip).getByText('(30%)')).toBeTruthy();
   });
 
   it('uses an external kernel watermark for the ring ratio and near-limit notice', async () => {
@@ -666,6 +686,7 @@ describe('ChatView reply usage details', () => {
     expect(ring.getAttribute('aria-label')).toContain('57.2k / 200k');
     fireEvent.mouseEnter(ring);
     const tooltip = await screen.findByTestId('context-ring-tooltip');
+    fireEvent.click(within(tooltip).getByRole('button', { name: /窗口与压缩详情/ }));
     expect(within(tooltip).getByTestId('context-limit-kernel-reported').textContent).toContain(
       '内核窗口',
     );
@@ -691,7 +712,7 @@ describe('ChatView reply usage details', () => {
 
     const tooltip = await screen.findByTestId('reply-usage-tooltip');
     expect(within(tooltip).getByText('1s')).toBeTruthy();
-    expect(within(tooltip).getByText('↑ 1.2k · ↓ 488 · 缓存读 12.8k')).toBeTruthy();
+    expect(within(tooltip).getByText('未缓存 ↑ 1.2k · ↓ 488 · 缓存读 12.8k')).toBeTruthy();
     expect(within(tooltip).queryByText('本次回复累计')).toBeNull();
     expect(within(tooltip).queryByText('输入上下文')).toBeNull();
   });
@@ -727,7 +748,7 @@ describe('ChatView reply usage details', () => {
     const tooltip = await screen.findByTestId('reply-usage-tooltip');
     expect(tooltip.textContent).not.toContain('缓存读');
     expect(tooltip.textContent).not.toContain('缓存写');
-    expect(tooltip.textContent).toContain('↑ 14k · ↓ 488');
+    expect(tooltip.textContent).toContain('未缓存 ↑ 14k · ↓ 488');
   });
 
   it('shows provider-scoped today and 30-day usage below the reply detail', async () => {
@@ -1111,9 +1132,32 @@ describe('ChatView reply usage details', () => {
     );
 
     const answer = await screen.findByText('两个文件已完整对比完。');
-    const card = await screen.findByText(/编辑了 1 个文件/);
+    const card = await screen.findByRole('region', { name: '文件变更' });
     expect(answer.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING).toBe(
       Node.DOCUMENT_POSITION_FOLLOWING,
     );
   });
+});
+
+it.each([['native','Sync-Think'],['codex','GPT'],['claude-code','ClaudeCode']])('shows the actual %s kernel logo in the reply footer', async (kernelId,label) => {
+ runtime.listConversationMessages.mockResolvedValueOnce({messages:[{...assistantMessage,kernelId}],hasMore:false});
+ render(<ChatView conversation={conversation} modelName="GPT-5" models={[{modelId:'model-usage',displayName:'GPT-5',providerName:'Provider'}]} eventHistory={[]} onTitleUpdated={vi.fn()}/>);
+ const badge = await screen.findByTestId('msg-kernel-'+kernelId);
+ expect(badge.getAttribute('aria-label')).toBe('内核：'+label);
+ expect(badge.querySelector('[role="img"],img,svg')).toBeTruthy();
+});
+it('does not guess a native logo for historical replies with unknown kernel identity', async () => {
+ const {container}=render(<ChatView conversation={conversation} modelName="GPT-5" models={[{modelId:'model-usage',displayName:'GPT-5',providerName:'Provider'}]} eventHistory={[]} onTitleUpdated={vi.fn()}/>);
+ await screen.findByText('cached reply');
+ expect(container.querySelector('[data-testid="msg-kernel-native"]')).toBeNull();
+});
+it.each([[30_600,23_600,'77.1%','1s · 36.2k'],[402_000,341_000,'84.8%','1s · 407.6k'],[14000,0,'0.0%','1s · 19.6k']])('uses total input as the cache-read-rate denominator (%s input)',async (tokensIn,cachedTokensHit,rate,label)=>{
+ runtime.getConversationRunProcess.mockResolvedValueOnce({process:{...processView,tokensIn,tokensOut:5600,cachedTokensHit,cachedTokensCreated:0}});
+ render(<ChatView conversation={conversation} modelName="GPT-5" models={[{modelId:'model-usage',displayName:'GPT-5',providerName:'Provider'}]} eventHistory={[]} onTitleUpdated={vi.fn()}/>);
+ await screen.findByText('cached reply'); await waitFor(()=>expect(runtime.getConversationRunProcess).toHaveBeenCalled());
+ fireEvent.focus(await screen.findByText(label));
+ const tip=await screen.findByTestId('reply-usage-tooltip');
+ expect(within(tip).getByText(rate)).toBeTruthy();
+ expect(within(tip).getByText('输入合计（含缓存）')).toBeTruthy();
+ expect(tip.textContent).toContain('本轮模型请求累计，非当前上下文占用');
 });

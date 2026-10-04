@@ -146,7 +146,7 @@ export function useNewMaxPopoverPresence(open: boolean): NewMaxPopoverPresence {
 export interface NewMaxComposerFrameProps extends Omit<HTMLAttributes<HTMLDivElement>, 'children'> {
   variant: 'empty' | 'conversation';
   /** Compact desktop chat: attach + editor + model/actions, with context below. */
-  presentation?: 'default' | 'pill';
+  presentation?: 'default' | 'pill' | 'attachments';
   leadingAction?: ReactNode;
   statusBar?: ReactNode;
   /** Repository/workspace context outside the rounded input surface. */
@@ -286,6 +286,7 @@ export function NewMaxComposerFrame({
           {displayedModeBanner.node}
         </div>
       ) : null}
+      {presentation === 'attachments' ? contextBar : null}
       <div
         ref={innerRef}
         {...frameProps}

@@ -341,7 +341,10 @@ function chatAbortEvent(control: ProviderCallControl): Extract<AdapterEvent, { t
 
 export interface StreamOpenAIChatOptions {
   fetchImpl?: typeof fetch;
-  timeoutMs?: number;
+  /** Optional total deadline; omitted/null means no total limit. */
+  timeoutMs?: number | null;
+  /** Per-read idle budget; defaults to five minutes. null disables it. */
+  streamIdleTimeoutMs?: number | null;
 }
 
 /**
@@ -381,8 +384,7 @@ export async function* streamOpenAIChatCompletions(
   }
 
   const url = joinChatCompletionsUrl(request.baseUrl);
-  const timeoutMs = options.timeoutMs ?? 120_000;
-  const control = createProviderCallControl(request.signal, timeoutMs);
+  const control = createProviderCallControl(request.signal, options.timeoutMs, options.streamIdleTimeoutMs);
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
 
   // Reasoning-model compatibility (o-series / gpt-5 / DeepSeek-R1 / Qwen):
@@ -430,7 +432,7 @@ export async function* streamOpenAIChatCompletions(
     };
 
     async function attemptProviderFetch(payload: Record<string, unknown>): Promise<Response> {
-      return fetchImpl(url, {
+      return control.waitFor(() => fetchImpl(url, {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${apiKey}`,
@@ -440,7 +442,7 @@ export async function* streamOpenAIChatCompletions(
         },
         body: JSON.stringify(payload),
         signal: control.signal,
-      });
+      }));
     }
 
     let response: Response;
@@ -462,7 +464,10 @@ export async function* streamOpenAIChatCompletions(
     }
 
     if (!response.ok) {
-      const text = await response.text().catch(() => '');
+      const text = await control.waitFor(() => response.text()).catch((error) => {
+        if (control.signal.aborted) throw error;
+        return '';
+      });
       const snippetRaw = scrubSecrets(text.slice(0, 240), [apiKey]);
       // Some relays reject optional compatibility params with a 400
       // "Unsupported parameter(s)". Degrade once: drop only the rejected
@@ -498,7 +503,10 @@ export async function* streamOpenAIChatCompletions(
     }
 
     if (!response.ok) {
-      const text = await response.text().catch(() => '');
+      const text = await control.waitFor(() => response.text()).catch((error) => {
+        if (control.signal.aborted) throw error;
+        return '';
+      });
       const snippetRaw = scrubSecrets(text.slice(0, 240), [apiKey]);
       const snippet = snippetRaw.length > 0 ? ` ? ${snippetRaw}` : '';
       const err = classifyHttpFailure(response.status, snippet);
@@ -513,14 +521,14 @@ export async function* streamOpenAIChatCompletions(
     // Non-stream JSON fallback (some gateways ignore stream:true).
     const contentType = response.headers?.get?.('content-type') ?? '';
     if (contentType.includes('application/json') && !contentType.includes('text/event-stream')) {
-      const text = await response.text();
+      const text = await control.waitFor(() => response.text());
       yield* emitFromJsonCompletion(text, apiKey);
       return;
     }
 
     if (!response.body) {
       // Node fetch may expose body as ReadableStream; if missing, try text parse.
-      const text = await response.text();
+      const text = await control.waitFor(() => response.text());
       if (text.includes('data:')) {
         yield* emitFromSseText(text, apiKey);
       } else {
@@ -542,7 +550,7 @@ export async function* streamOpenAIChatCompletions(
       let done: boolean;
       let value: Uint8Array | undefined;
       try {
-        ({ done, value } = await reader.read());
+        ({ done, value } = await control.waitFor(() => reader!.read()));
       } catch (error) {
         if (error instanceof Error && error.name === 'AbortError') {
           yield chatAbortEvent(control);
@@ -574,6 +582,12 @@ export async function* streamOpenAIChatCompletions(
         }
       }
     }
+  } catch (error) {
+    if (control.signal.aborted) {
+      yield chatAbortEvent(control);
+      return;
+    }
+    throw error;
   } finally {
     control.cleanup();
     await closeResponseReader(reader);

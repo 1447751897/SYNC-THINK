@@ -154,3 +154,16 @@ describe('ActiveToolApprovalLifecycle', () => {
     expect(lifecycle.get(pending.approvalId)).toBe(pending);
   });
 });
+
+it('leaves proposal arguments untouched when persistence fails, and applies edits only after commit', () => {
+  const lifecycle = new ActiveToolApprovalLifecycle();
+  const apply = vi.fn(); const pending = approval({ toolCall: { id: 'skill', name: 'update_skill', argumentsJson: '{"skillMd":"original"}' }, applyApprovedArguments: apply });
+  lifecycle.register(pending);
+  const approvedArguments = { skillMd: 'narrowed' };
+  expect(() => decideActiveToolApproval({ lifecycle, approvalId: pending.approvalId, decision: 'approve', scope: 'once', approvedArguments, commit: () => { throw Error('disk failed'); }, record: vi.fn(), publish: vi.fn() })).toThrow('disk failed');
+  expect(pending.toolCall.argumentsJson).toContain('original'); expect(apply).not.toHaveBeenCalled(); expect(lifecycle.size).toBe(1);
+  decideActiveToolApproval({ lifecycle, approvalId: pending.approvalId, decision: 'approve', scope: 'once', approvedArguments, commit: () => event(), record: vi.fn(), publish: vi.fn() });
+  expect(apply).toHaveBeenCalledWith(approvedArguments);
+  expect(pending.toolCall.argumentsJson).toBe(JSON.stringify(approvedArguments));
+  expect(lifecycle.size).toBe(0);
+});

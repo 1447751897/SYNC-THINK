@@ -14,7 +14,7 @@ import {
   mkdirSync,
   renameSync,
 } from 'node:fs';
-import { delimiter, dirname, join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 import { connect } from 'node:net';
@@ -170,27 +170,37 @@ function killProcessTree(pid: number): void {
   }
 }
 
-export function probeRuntimePipe(installId: string, timeoutMs = 800): Promise<boolean> {
-  return new Promise((resolve) => {
-    const socket = connect(pipePathPortable(installId));
+function probePipe(path: string, timeoutMs: number): Promise<boolean> {
+  return new Promise((resolve, reject) => {
+    const socket = connect(path);
     let settled = false;
-    const done = (ok: boolean) => {
+    const done = (ok: boolean, error?: NodeJS.ErrnoException): void => {
       if (settled) return;
       settled = true;
+      clearTimeout(timer);
       socket.removeAllListeners();
       if (!socket.destroyed) socket.destroy();
-      resolve(ok);
+      // A denied connection is not an absent service. Preserve the failure so
+      // startup never launches a second owner or waits through a cold start.
+      if (error?.code === 'EPERM' || error?.code === 'EACCES') {
+        reject(Object.assign(
+          new Error(
+            '后台通信管道访问被系统权限阻止（' + error.code + '），请以正常用户权限启动桌面。',
+          ),
+          { code: error.code, cause: error },
+        ));
+      } else {
+        resolve(ok);
+      }
     };
     const timer = setTimeout(() => done(false), timeoutMs);
-    socket.once('connect', () => {
-      clearTimeout(timer);
-      done(true);
-    });
-    socket.once('error', () => {
-      clearTimeout(timer);
-      done(false);
-    });
+    socket.once('connect', () => done(true));
+    socket.once('error', (error: NodeJS.ErrnoException) => done(false, error));
   });
+}
+
+export function probeRuntimePipe(installId: string, timeoutMs = 800): Promise<boolean> {
+  return probePipe(pipePathPortable(installId), timeoutMs);
 }
 
 export const RUNTIME_COLD_START_TIMEOUT_MS = 120_000;
@@ -296,26 +306,35 @@ function nodeMajor(binary: string): number | null {
   }
 }
 
-export function resolveNodeBinary(): string | null {
-  // Runtime native dependencies are built for the workspace's required Node 20.
-  // `node.exe` on PATH is frequently a different major (Node 24 on the current
-  // development machine), which exits before opening the pipe with an ABI error.
-  const resourcesPath = electronResourcesPath();
+/** Candidate construction is independent from the application's data directory. */
+export function buildNodeBinaryCandidates(
+  environment: Readonly<NodeJS.ProcessEnv> = process.env,
+  resourcesPath?: string,
+  platform: NodeJS.Platform = process.platform,
+  userHome: string = homedir(),
+): string[] {
+  const nodeName = platform === 'win32' ? 'node.exe' : 'node';
+  const pnpmNode = (...root: string[]) => join(...root, 'nodejs', '20.20.2', nodeName);
   const candidates = [
-    process.env.SYNC_THINK_NODE_BIN,
-    resourcesPath
-      ? join(resourcesPath, 'node', process.platform === 'win32' ? 'node.exe' : 'node')
+    environment.SYNC_THINK_NODE_BIN,
+    resourcesPath ? join(resourcesPath, 'node', nodeName) : undefined,
+    environment.LOCALAPPDATA ? pnpmNode(environment.LOCALAPPDATA, 'pnpm') : undefined,
+    environment.PNPM_HOME ? pnpmNode(environment.PNPM_HOME) : undefined,
+    // LOCALAPPDATA is sometimes redirected for isolated app data. The installed
+    // pnpm Node still lives under the Windows user profile in that case.
+    platform === 'win32'
+      ? pnpmNode(environment.USERPROFILE ?? userHome, 'AppData', 'Local', 'pnpm')
       : undefined,
-    process.env.LOCALAPPDATA
-      ? join(process.env.LOCALAPPDATA, 'pnpm', 'nodejs', '20.20.2', 'node.exe')
-      : undefined,
-    process.platform === 'win32' ? 'node.exe' : 'node',
+    nodeName,
+    ...(environment.PATH ?? '').split(platform === 'win32' ? ';' : ':')
+      .filter(Boolean).map(entry => join(entry, nodeName)),
   ].filter((value): value is string => Boolean(value));
+  return [...new Set(candidates)];
+}
 
-  const pathEntries = (process.env.PATH ?? '').split(delimiter).filter(Boolean);
-  for (const entry of pathEntries) {
-    candidates.push(join(entry, process.platform === 'win32' ? 'node.exe' : 'node'));
-  }
+export function resolveNodeBinary(): string | null {
+  // Native dependencies require Node 20; a different PATH major must not win.
+  const candidates = buildNodeBinaryCandidates(process.env, electronResourcesPath());
 
   const seen = new Set<string>();
   for (const candidate of candidates) {
@@ -702,26 +721,7 @@ export function daemonPipePath(installId: string): string {
 
 /** 探测守护进程管道是否存活（800ms 超时）。 */
 export function probeDaemonPipe(installId: string, timeoutMs = 800): Promise<boolean> {
-  return new Promise((resolve) => {
-    const socket = connect(daemonPipePath(installId));
-    let settled = false;
-    const done = (ok: boolean): void => {
-      if (settled) return;
-      settled = true;
-      socket.removeAllListeners();
-      if (!socket.destroyed) socket.destroy();
-      resolve(ok);
-    };
-    const timer = setTimeout(() => done(false), timeoutMs);
-    socket.once('connect', () => {
-      clearTimeout(timer);
-      done(true);
-    });
-    socket.once('error', () => {
-      clearTimeout(timer);
-      done(false);
-    });
-  });
+  return probePipe(daemonPipePath(installId), timeoutMs);
 }
 
 /** 守护进程入口探测（多路径候选，与 resolveRuntimeEntry 同思路）。 */

@@ -183,6 +183,7 @@ export class SqliteEventCheckpointStore {
       ELSE json_remove(payload_json, '$.run', '$.runStateDelta') END AS payloadJson
       FROM event WHERE run_id = ? AND (
         type IN ('run.started', 'run.completed', 'run.failed', 'run.cancelled', 'run.paused',
+          'context.image.prepared',
           'provider.usage', 'kernel.context_occupancy', 'tool.requested', 'tool.completed', 'tool.failed',
           'execution.tool.requested', 'execution.tool.completed', 'execution.tool.failed',
           'tool.approval_requested', 'tool.approval_decided')

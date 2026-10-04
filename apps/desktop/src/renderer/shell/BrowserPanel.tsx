@@ -4,12 +4,16 @@ import {
   ArrowLeft,
   ArrowRight,
   Camera,
+  Cookie,
   ChevronDown,
   ChevronUp,
   ExternalLink,
+  FolderDown,
   Globe,
   Globe2,
+  History,
   Home,
+  KeyRound,
   Loader2,
   Maximize2,
   Minus,
@@ -19,11 +23,17 @@ import {
   Printer,
   RotateCw,
   Search,
+  Settings2,
   Smartphone,
   Tablet,
+  Trash2,
+  UserRound,
+  Download,
   X,
 } from 'lucide-react';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
+import { canonicalizeLocalWebPageUrl, isLocalWebPageUrl } from '../../local-web-page-contract.js';
 import {
   activateBrowserWebview,
   registerBrowserWebview,
@@ -31,6 +41,24 @@ import {
   type BrowserWebviewElement,
 } from './browser-commands.js';
 import { siteFaviconUrl } from './ExternalSourceIcon.js';
+import { DEFAULT_EMBEDDED_BROWSER_PARTITION, type EmbeddedBrowserSessionInfo } from '../../browser-session-info.js';
+import {
+  contentBlockingConfig,
+  isContentBlockingEnabledForUrl,
+  loadEmbeddedBrowserSettings,
+  onEmbeddedBrowserSettingsChange,
+  saveEmbeddedBrowserSettings,
+  setContentBlockingForUrl,
+  type EmbeddedBrowserSettings,
+} from './embedded-browser-settings.js';
+import { embeddedBrowserProfileName, readDefaultEmbeddedBrowserProfile } from './embedded-browser-profile.js';
+import { lazyPanel } from './lazy-panel.js';
+import { ToggleControl } from './ToggleControl.js';
+import { useDialog } from './Dialog.js';
+import type { BrowserDataManagerProps, BrowserDataManagerView } from './BrowserDataManager.js';
+import './browser-profile-info.css';
+
+const BrowserDataManager = lazyPanel<BrowserDataManagerProps>(() => import('./BrowserDataManager.js').then(module => ({ default: module.BrowserDataManager })), '浏览器设置', 'BrowserDataManager');
 
 // NewMax opens a fresh embedded tab as an empty page. Search is still routed
 // to Bing for non-URL address input, but the home/new-tab target stays blank.
@@ -38,7 +66,6 @@ const HOME_URL = 'about:blank';
 const ZOOM_LEVELS = [0.25, 0.33, 0.5, 0.67, 0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2];
 const MIN_AUTO_ZOOM = 0.5;
 const MAX_AUTO_ZOOM = 1;
-const BROWSER_SETTINGS_KEY = 'sync-think:embedded-browser-settings:v1';
 const GUEST_ZOOM_PREFIX = '__SYNC_THINK_BROWSER_ZOOM__:';
 
 export function browserZoomStepFromWheel(deltaY: number): -1 | 1 {
@@ -62,33 +89,6 @@ export function guestBrowserZoomBridgeScript(): string {
     }, { passive: false, capture: true });
     return true;
   })()`;
-}
-
-interface BrowserPanelSettings {
-  autoFit: boolean;
-}
-
-function loadBrowserPanelSettings(): BrowserPanelSettings {
-  const defaults: BrowserPanelSettings = { autoFit: true };
-  if (typeof window === 'undefined') return defaults;
-  try {
-    const value = JSON.parse(window.localStorage.getItem(BROWSER_SETTINGS_KEY) ?? '{}') as {
-      autoFit?: unknown;
-    };
-    return { autoFit: typeof value.autoFit === 'boolean' ? value.autoFit : defaults.autoFit };
-  } catch {
-    return defaults;
-  }
-}
-
-function saveBrowserPanelSettings(changes: Partial<BrowserPanelSettings>): BrowserPanelSettings {
-  const next = { ...loadBrowserPanelSettings(), ...changes };
-  try {
-    window.localStorage.setItem(BROWSER_SETTINGS_KEY, JSON.stringify(next));
-  } catch {
-    // A restricted renderer (or private browsing context) may reject storage.
-  }
-  return next;
 }
 
 function isEmptyBrowserUrl(value: string): boolean {
@@ -115,7 +115,8 @@ function advanceBrowserLoadProgress(progress: number, elapsedMs: number): number
 export function normalizeBrowserInput(raw: string): string {
   const text = raw.trim();
   if (!text) return HOME_URL;
-  if (/^(?:about:blank|data:text\/html(?:;|,)|newmax-local-web:\/\/)/i.test(text)) return text;
+  if (isLocalWebPageUrl(text)) return canonicalizeLocalWebPageUrl(text);
+  if (/^(?:about:blank|data:text\/html(?:;|,))/i.test(text)) return text;
   if (/^https?:\/\//i.test(text)) return text;
   // 明显是域名（无空格且含点）→ 补 https；否则丢给搜索引擎。
   if (!/\s/.test(text) && text.includes('.')) return `https://${text}`;
@@ -185,7 +186,7 @@ function nextZoom(value: number, direction: -1 | 1): number {
   return ZOOM_LEVELS[Math.min(ZOOM_LEVELS.length - 1, Math.max(0, index + direction))] ?? 1;
 }
 
-export function BrowserPanel(props: {
+interface BrowserPanelProps {
   /** 初始打开的 URL（例如从消息里的链接唤起）。 */
   initialUrl?: string;
   /** 外部（AI browser_open 工具）下发的导航 URL。 */
@@ -199,23 +200,31 @@ export function BrowserPanel(props: {
   /** webview 新窗口请求交给宿主创建一个新的浏览器 Tab。 */
   onNewTab?: (url?: string) => void;
   /**
-   * webview 的 session partition（Cookie / 登录态隔离域）。默认与右栏共用
-   * 'persist:browser-panel'。注意：Electron webview 的 partition 挂载后不可再改，
-   * 宿主如需切换 partition 必须换 key 强制重建本组件。
+   * 显式隔离域用于本地 HTML 预览；普通网页读取已设置的默认资料。
    */
   partition?: string;
   /** 是否把本实例的 webview 注册到 browser-commands 的 activeWebview 单例。 */
   registerForAutomation?: boolean;
   /** 宿主认定的当前聚焦窗格，优先接收 AI 浏览器命令。 */
   automationActive?: boolean;
+  automationOwnerId?: string;
   /** Live page chrome for the pane tab (favicon + title). */
   onPageMeta?(meta: { title?: string; favicon?: string; url: string }): void;
   onClose(): void;
-}) {
+}
+
+export function BrowserPanel(props: BrowserPanelProps) {
+  // Do not mutate a mounted guest's storage identity or erase an older profile.
+  const [partition] = useState(() => props.partition ?? readDefaultEmbeddedBrowserProfile());
+  return <BrowserPanelSession {...props} partition={partition} />;
+}
+
+function BrowserPanelSession(props: BrowserPanelProps) {
   const webviewRef = useRef<WebviewElement | null>(null);
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const addressInputRef = useRef<HTMLInputElement | null>(null);
-  const initialUrl = props.initialUrl ?? HOME_URL;
+  const dialog = useDialog();
+  const initialUrl = canonicalizeLocalWebPageUrl(props.initialUrl ?? HOME_URL);
   const [address, setAddress] = useState(isEmptyBrowserUrl(initialUrl) ? '' : initialUrl);
   const [currentUrl, setCurrentUrl] = useState(initialUrl);
   const [sourceUrl, setSourceUrl] = useState(isEmptyBrowserUrl(initialUrl) ? 'about:blank' : initialUrl);
@@ -235,7 +244,10 @@ export function BrowserPanel(props: {
     isEmptyBrowserUrl(initialUrl) ? null : 0.12,
   );
   const [zoomFactor, setZoomFactor] = useState(1);
-  const [autoFit, setAutoFit] = useState(() => loadBrowserPanelSettings().autoFit);
+  const [browserSettings, setBrowserSettings] = useState<EmbeddedBrowserSettings>(
+    () => loadEmbeddedBrowserSettings(),
+  );
+  const [autoFit, setAutoFit] = useState(() => loadEmbeddedBrowserSettings().autoFit);
   const [guestBox, setGuestBox] = useState<{ width: number; height: number } | null>(null);
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const zoomFactorRef = useRef(1);
@@ -245,6 +257,53 @@ export function BrowserPanel(props: {
   const [findQuery, setFindQuery] = useState('');
   const [findResult, setFindResult] = useState<BrowserFindResult>({ activeMatch: 0, matches: 0 });
   const [moreOpen, setMoreOpen] = useState(false);
+  const [clearDataOpen, setClearDataOpen] = useState(false);
+  const [profileOpen, setProfileOpen] = useState(false);
+  const [dataManager, setDataManager] = useState<{ webContentsId: number; initialView: BrowserDataManagerView }>();
+  const partition = props.partition ?? DEFAULT_EMBEDDED_BROWSER_PARTITION;
+  const [sessionInfo, setSessionInfo] = useState<EmbeddedBrowserSessionInfo>();
+  const persistentProfile = sessionInfo?.persistent ?? (partition === '' || partition.startsWith('persist:'));
+  const [sessionError, setSessionError] = useState('');
+  const openDataManager = (initialView: BrowserDataManagerView) => {
+    try {
+      const webContentsId = webviewRef.current?.getWebContentsId();
+      if (!webContentsId) throw new Error('not ready');
+      setMoreOpen(false); setProfileOpen(false); setDataManager({ webContentsId, initialView });
+    } catch { setSessionError('页面尚未就绪，请等待加载后重试'); }
+  };
+  const profileRef = useRef<HTMLDivElement>(null);
+  const profileCardRef = useRef<HTMLElement>(null);
+  const [profilePosition, setProfilePosition] = useState({ top: 0, right: 12 });
+  useLayoutEffect(() => {
+    if (!profileOpen) return;
+    const position = () => {
+      const rect = profileRef.current?.getBoundingClientRect();
+      if (rect) setProfilePosition({ top: rect.bottom + 9, right: Math.max(12, Math.min(window.innerWidth - rect.right, window.innerWidth - Math.min(360, window.innerWidth - 28) - 12)) });
+    };
+    position();
+    window.addEventListener('resize', position);
+    window.addEventListener('scroll', position, true);
+    return () => { window.removeEventListener('resize', position); window.removeEventListener('scroll', position, true); };
+  }, [profileOpen]);
+  useEffect(() => {
+    if (!profileOpen) return;
+    let cancelled = false;
+    setSessionError('');
+    const api = window.syncThink?.runtime?.getEmbeddedBrowserSessionInfo;
+    if (!api) setSessionError('当前环境尚未接入资料目录查询；桌面端更新并重启后可查看。');
+    else {
+      try {
+        const id = webviewRef.current?.getWebContentsId();
+        if (!id) throw new Error('页面尚未就绪，请等待加载后重试');
+        void api({webContentsId:id}).then(info => { if (!cancelled) setSessionInfo(info); }).catch(() => { if (!cancelled) setSessionError('读取资料目录失败，请等待页面就绪后重试'); });
+      } catch { setSessionError('页面尚未就绪，请等待加载后重试'); }
+    }
+    const close = (event: PointerEvent) => { if (!profileRef.current?.contains(event.target as Node) && !profileCardRef.current?.contains(event.target as Node)) setProfileOpen(false); };
+    const escape = (event: KeyboardEvent) => { if (event.key === 'Escape') setProfileOpen(false); };
+    document.addEventListener('pointerdown', close);
+    document.addEventListener('keydown', escape);
+    return () => { cancelled = true; document.removeEventListener('pointerdown',close); document.removeEventListener('keydown',escape); };
+  }, [profileOpen, pageReady]);
   const [notice, setNotice] = useState<string>();
   const autoFitRef = useRef(autoFit);
   const currentUrlRef = useRef(currentUrl);
@@ -263,6 +322,40 @@ export function BrowserPanel(props: {
     currentUrlRef.current = currentUrl;
   }, [currentUrl]);
 
+  // Content blocking config lives in the Renderer; push it to the main process
+  // whenever it changes, and once when the guest attaches.
+  const pushContentBlocking = useCallback((settings: EmbeddedBrowserSettings) => {
+    const api = window.syncThink?.runtime?.configureEmbeddedBrowserContentBlocking;
+    if (!api) return;
+    try {
+      const webContentsId = webviewRef.current?.getWebContentsId();
+      if (!webContentsId) return;
+      void api({ webContentsId, ...contentBlockingConfig(settings) }).catch(() => undefined);
+    } catch {
+      // The guest is not attached yet; the did-attach listener retries.
+    }
+  }, []);
+
+  // Every embedded tab follows the same broadcast, exactly like NewMax: one tab
+  // toggling a switch updates the settings of all mounted browser panels.
+  useEffect(() => {
+    const apply = (settings: EmbeddedBrowserSettings) => {
+      setBrowserSettings(settings);
+      setAutoFit(settings.autoFit);
+      autoFitRef.current = settings.autoFit;
+      pushContentBlocking(settings);
+    };
+    return onEmbeddedBrowserSettingsChange(apply);
+  }, [pushContentBlocking]);
+
+  useEffect(() => {
+    const view = webviewRef.current;
+    if (!view) return;
+    const attach = () => pushContentBlocking(loadEmbeddedBrowserSettings());
+    view.addEventListener('did-attach', attach);
+    return () => view.removeEventListener('did-attach', attach);
+  }, [pushContentBlocking]);
+
   const activateForAutomation = useCallback(() => {
     if (!registerForAutomation) return;
     activateBrowserWebview(webviewRef.current as unknown as BrowserWebviewElement | null);
@@ -274,7 +367,7 @@ export function BrowserPanel(props: {
     if (!registerForAutomation) return;
     const register = () => {
       const current = webviewRef.current as unknown as BrowserWebviewElement | null;
-      registerBrowserWebview(current, false, props.navigateUrl || initialUrl);
+      if (current) registerBrowserWebview(current, false, canonicalizeLocalWebPageUrl(props.navigateUrl || initialUrl), props.automationOwnerId);
     };
     register();
     const view = webviewRef.current;
@@ -287,7 +380,7 @@ export function BrowserPanel(props: {
       view?.removeEventListener('pointerdown', activateForAutomation);
       unregisterBrowserWebview(view as unknown as BrowserWebviewElement | null);
     };
-  }, [activateForAutomation, initialUrl, props.navigateUrl, registerForAutomation]);
+  }, [activateForAutomation, initialUrl, props.navigateUrl, props.automationOwnerId, registerForAutomation]);
 
   useEffect(() => {
     if (automationActive) activateForAutomation();
@@ -309,7 +402,7 @@ export function BrowserPanel(props: {
     try {
       setCanBack(view.canGoBack());
       setCanForward(view.canGoForward());
-      const url = view.getURL();
+      const url = canonicalizeLocalWebPageUrl(view.getURL());
       if (url) {
         setCurrentUrl(url);
         setAddress(isEmptyBrowserUrl(url) ? '' : url);
@@ -411,9 +504,10 @@ export function BrowserPanel(props: {
       if (detail.isMainFrame === false) return;
       syncNavigationState();
       if (detail.url) {
-        setCurrentUrl(detail.url);
-        setAddress(isEmptyBrowserUrl(detail.url) ? '' : detail.url);
-        currentUrlRef.current = detail.url;
+        const url = canonicalizeLocalWebPageUrl(detail.url);
+        setCurrentUrl(url);
+        setAddress(isEmptyBrowserUrl(url) ? '' : url);
+        currentUrlRef.current = url;
       }
     };
     const onTitle = (event: Event) => {
@@ -625,14 +719,69 @@ export function BrowserPanel(props: {
   }, [findQuery, pageReady]);
 
   const toggleAutoFit = useCallback(() => {
-    setAutoFit((value) => {
-      const next = !value;
-      saveBrowserPanelSettings({ autoFit: next });
-      autoFitRef.current = next;
-      if (next) window.requestAnimationFrame(() => void calculateAutoFit());
-      return next;
-    });
+    const next = !autoFitRef.current;
+    saveEmbeddedBrowserSettings({ autoFit: next });
+    autoFitRef.current = next;
+    setAutoFit(next);
+    if (next) window.requestAnimationFrame(() => void calculateAutoFit());
   }, [calculateAutoFit]);
+
+  const canToggleSiteContentBlocking = !isEmptyBrowserUrl(currentUrl) && browserSettings.contentBlocking;
+  const siteContentBlockingEnabled = isContentBlockingEnabledForUrl(browserSettings, currentUrl);
+
+  const toggleSiteContentBlocking = useCallback((enabled: boolean) => {
+    const next = saveEmbeddedBrowserSettings(
+      setContentBlockingForUrl(loadEmbeddedBrowserSettings(), currentUrlRef.current, enabled),
+    );
+    setBrowserSettings(next);
+    pushContentBlocking(next);
+    webviewRef.current?.reload();
+  }, [pushContentBlocking]);
+
+  const openDownloads = useCallback(async () => {
+    try {
+      const result = await window.syncThink?.runtime?.openBrowserDownloads?.();
+      if (result && !result.ok) setNotice(result.error || '无法打开下载目录');
+    } catch {
+      setNotice('无法打开下载目录');
+    }
+  }, []);
+
+  const clearCookiesAndSiteData = useCallback(async () => {
+    const view = webviewRef.current;
+    if (!view?.getWebContentsId || !window.syncThink?.runtime?.manageEmbeddedBrowserData) return;
+    const ok = await dialog.confirm({
+      title: '清除浏览数据',
+      message: '将清除所有内嵌网页标签共用的 Cookie、缓存和网站登录状态，不影响应用登录态或自动化浏览器 Profile。此操作无法撤销。',
+      confirmText: '清除',
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      const result = await window.syncThink.runtime.manageEmbeddedBrowserData({
+        action: 'clear-session',
+        webContentsId: view.getWebContentsId(),
+      });
+      setNotice(result.ok ? result.message || '浏览数据已清除' : result.error);
+      if (result.ok) view.reload();
+    } catch {
+      setNotice('清除浏览数据失败');
+    }
+  }, [dialog]);
+
+  const clearBrowsingHistory = useCallback(async () => {
+    const view = webviewRef.current;
+    if (!view?.clearHistory) return;
+    const ok = await dialog.confirm({
+      title: '清除浏览数据',
+      message: '将清除当前网页标签的后退和前进历史记录。此操作无法撤销。',
+      confirmText: '清除',
+      danger: true,
+    });
+    if (!ok) return;
+    view.clearHistory();
+    setNotice('浏览数据已清除');
+  }, [dialog]);
 
   const openExternal = useCallback((value: string) => {
     const target = externalBrowserUrl(value);
@@ -661,6 +810,23 @@ export function BrowserPanel(props: {
     }
     window.setTimeout(() => setNotice(undefined), 2_600);
   }, [props.projectFolder]);
+
+  // NewMax fills a matching saved login 200ms after a page settles. A page with
+  // no saved entry is a silent no-op, and the main process re-checks the origin.
+  useEffect(() => {
+    if (!browserSettings.autofill || loading || !pageReady || isEmptyBrowserUrl(currentUrl)) return;
+    const timer = window.setTimeout(() => {
+      const view = webviewRef.current;
+      const api = window.syncThink?.runtime?.manageEmbeddedBrowserData;
+      if (!view?.getWebContentsId || !api) return;
+      try {
+        void api({ action: 'autofill', webContentsId: view.getWebContentsId() }).catch(() => undefined);
+      } catch {
+        // The guest detached before the timer fired.
+      }
+    }, 200);
+    return () => window.clearTimeout(timer);
+  }, [browserSettings.autofill, currentUrl, loading, pageReady]);
 
   const isEmptyPage = isEmptyBrowserUrl(currentUrl);
   const externalUrl = externalBrowserUrl(currentUrl);
@@ -838,6 +1004,27 @@ export function BrowserPanel(props: {
             </button>
           ) : null}
         </div>
+        <div ref={profileRef} className="shell-browser-profile">
+          <button type="button" className="shell-browser-profile__trigger" aria-label="浏览器资料与登录保存位置" aria-expanded={profileOpen} onClick={() => { setMoreOpen(false); setProfileOpen(value=>!value); }}>
+            <UserRound size={14} /><span>{embeddedBrowserProfileName(partition)}</span>
+          </button>
+          {profileOpen && createPortal(<section ref={profileCardRef} className="shell-browser-profile__card" style={{ ...profilePosition, maxHeight: `calc(100vh - ${profilePosition.top + 12}px)` }} aria-label="当前浏览器资料">
+            <strong>内置浏览器 · {embeddedBrowserProfileName(partition)}</strong>
+            <p>{sessionInfo ? persistentProfile ? '登录状态保存在本机；同一资料的新标签与重启后继续使用。' : '当前是临时会话，退出后不会保留登录状态。' : sessionError || '正在检查当前页面的实际存储会话…'}</p>
+            <span className="shell-browser-profile__label">资料目录</span>
+            <code>{sessionInfo?.storagePath ?? (sessionInfo && !sessionInfo.persistent ? '内存会话，无持久化目录' : sessionError || '读取中…')}</code>
+            <button type="button" disabled={!pageReady} onClick={() => openDataManager('passwords')}>密码和 Cookie 设置</button>
+            <small>内置浏览器默认沿用同一份资料，不自动共享 Chrome / Edge 的个人登录状态。网站登录过期仍需重新登录。</small>
+            {sessionInfo?.storagePath && <button type="button" onClick={async () => {
+              try {
+                if (window.syncThink?.editing) await window.syncThink.editing.writeText(sessionInfo.storagePath!);
+                else await navigator.clipboard.writeText(sessionInfo.storagePath!);
+                setSessionError('目录已复制');
+              } catch { setSessionError('复制失败，请手动选择目录文本'); }
+            }}>复制目录</button>}
+            {sessionError && <p role="status">{sessionError}</p>}
+          </section>, document.body)}
+        </div>
         <button
           type="button"
           className={`shell-browser__icon-button${moreOpen ? ' is-active' : ''}`}
@@ -882,6 +1069,18 @@ export function BrowserPanel(props: {
             </div>
           </div>
           <div className="shell-browser__menu-divider" />
+          <div className="shell-browser__switch-row" role="group" aria-label="拦截此网站的广告">
+            <span>拦截此网站的广告</span>
+            <ToggleControl
+              checked={siteContentBlockingEnabled}
+              disabled={!canToggleSiteContentBlocking}
+              label="拦截此网站的广告"
+              onChange={toggleSiteContentBlocking}
+              className="shell-browser__switch"
+              thumbClassName="shell-browser__switch-thumb"
+            />
+          </div>
+          <div className="shell-browser__menu-divider" />
           <button type="button" role="menuitem" disabled={!pageReady} onClick={() => { setMoreOpen(false); setIsDeviceToolbarOpen(true); }}>
             <Smartphone size={14} />
             <span>设备预览</span>
@@ -891,9 +1090,29 @@ export function BrowserPanel(props: {
             <Camera size={14} />
             <span>保存截图</span>
           </button>
+          <div className="shell-browser__menu-divider" />
+          <button type="button" role="menuitem" disabled={!pageReady} onClick={() => openDataManager('import')}><Download size={14} /><span>导入 Cookie 和密码…</span></button>
+          <button type="button" role="menuitem" disabled={!pageReady} onClick={() => openDataManager('passwords')}><KeyRound size={14} /><span>密码和自动填充</span></button>
+          <button type="button" role="menuitem" disabled={!pageReady} onClick={() => { setMoreOpen(false); void openDownloads(); }}><FolderDown size={14} /><span>下载内容</span></button>
+          <div className="shell-browser__submenu-row">
+            <button type="button" role="menuitem" aria-haspopup="menu" aria-expanded={clearDataOpen} disabled={!pageReady} onClick={() => setClearDataOpen((value) => !value)}>
+              <Trash2 size={14} />
+              <span>清除浏览数据</span>
+              <ChevronDown size={13} />
+            </button>
+            {clearDataOpen ? (
+              <div className="shell-browser__submenu" role="menu" aria-label="清除浏览数据">
+                <button type="button" role="menuitem" onClick={() => { setClearDataOpen(false); void clearCookiesAndSiteData(); }}><Cookie size={14} /><span>Cookie 和网站数据</span></button>
+                <button type="button" role="menuitem" onClick={() => { setClearDataOpen(false); void clearBrowsingHistory(); }}><History size={14} /><span>浏览历史记录</span></button>
+              </div>
+            ) : null}
+          </div>
+          <div className="shell-browser__menu-divider" />
+          <button type="button" role="menuitem" onClick={() => openDataManager('settings')}><Settings2 size={14} /><span>浏览器设置</span></button>
         </div>
       ) : null}
       {notice ? <div className="shell-browser__notice" role="status">{notice}</div> : null}
+      {dataManager && <BrowserDataManager {...dataManager} currentUrl={currentUrl} onClose={() => setDataManager(undefined)} />}
       {isDeviceToolbarOpen ? (
         <div className="shell-browser__device-toolbar" data-testid="browser-device-toolbar">
           <button type="button" className={devicePreset === 'responsive' ? 'is-active' : ''} onClick={() => setDevicePreset('responsive')}><Monitor size={14} /> 自适应</button>
@@ -951,7 +1170,7 @@ export function BrowserPanel(props: {
           <webview
             ref={webviewRef as never}
             src={sourceUrl}
-            partition={props.partition ?? 'persist:browser-panel'}
+            partition={partition}
             // @ts-expect-error 自定义元素属性
             allowpopups="true"
             className="shell-browser__webview"

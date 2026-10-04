@@ -1,3 +1,4 @@
+
 import type {
   ConversationListFileChangesPayload,
   ConversationFileChangesPage,
@@ -307,6 +308,7 @@ import type { PlatformContext } from '@sync-think/shared';
 declare global {
   interface Window {
     syncThink?: {
+
       editing?: import('../context-menu-contract.js').DesktopEditingBridge;
       kernelUpdates: import('../kernel-update-contract.js').ManagedKernelUpdateBridge;
       runtime: {
@@ -666,6 +668,12 @@ declare global {
           x: number;
           y: number;
         }): Promise<{ ok: boolean; error?: string }>;
+        getEmbeddedBrowserSessionInfo?(payload: { webContentsId: number }): Promise<import('../browser-session-info.js').EmbeddedBrowserSessionInfo>;
+        manageEmbeddedBrowserData?(payload: import('../browser-data.js').BrowserDataRequest): Promise<import('../browser-data.js').BrowserDataResult>;
+        configureEmbeddedBrowserContentBlocking?(
+          payload: import('../browser-content-blocking.js').EmbeddedBrowserContentBlockingRequest,
+        ): Promise<import('../browser-content-blocking.js').EmbeddedBrowserContentBlockingResult>;
+        openBrowserDownloads?(): Promise<{ ok: boolean; path?: string; error?: string }>;
         createLocalPageUrl(payload: { filePath: string; partition?: string }): Promise<{
           ok: boolean;
           url: string | null;
@@ -700,6 +708,7 @@ declare global {
           payload: import('@sync-think/protocol').GetSkillPayload,
         ): Promise<import('@sync-think/protocol').GetSkillResponse>;
         fetchSkillMd(payload: { url: string }): Promise<{ url: string; skillMd: string }>;
+
         registerMcpServer(payload: RegisterMcpServerPayload): Promise<RegisterMcpServerResponse>;
         registerRemoteMcpServer(
           payload: RegisterRemoteMcpPayload,
@@ -881,6 +890,7 @@ declare global {
           payload: CancelProjectTerminalPayload,
         ): Promise<CancelProjectTerminalResult>;
         subscribeProjectTerminal(listener: (event: ProjectTerminalEvent) => void): () => void;
+        readProjectImage(payload: { root: string; path: string }): Promise<{ dataUrl?: string; error?: string }>;
         readProjectFile(payload: { root: string; path: string }): Promise<{
           directoryEntries?: Array<{ name: string; path: string; kind: 'file' | 'dir' }>;
           directoryTruncated?: boolean;
@@ -1085,6 +1095,8 @@ declare global {
         onBrowserNewTab?(
           listener: (payload: { openerWebContentsId: number; url: string }) => void,
         ): () => void;
+        onConversationNotice?(listener: (notice: import('../conversation-notification-contract.js').ConversationNotice) => void): () => void;
+        setConversationNotificationPreferences?(preferences: import('../conversation-notification-contract.js').ConversationNotificationPreferences): Promise<void>;
         notifyRendererReady(): void;
         openHtmlInBrowser(html: string): Promise<{
           ok: boolean;

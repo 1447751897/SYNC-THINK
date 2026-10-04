@@ -43,13 +43,13 @@ import { createRuntimeSecureStore, resolveRuntimeDatabasePath } from '../persist
 import {
   TimerRegistry,
   type TimerFireContext,
-  createDaemonStatus,
+  restoreDaemonStatus,
   updateDaemonStatus,
   rollDaemonStatusDay,
   type DaemonStatus,
 } from './core.js';
 import { decideDue, type SchedulerDecision } from '../scheduler-core.js';
-import { chooseDispatchPath, composeTaskCommand } from './dispatch.js';
+import { executeScheduledTaskDispatch } from './dispatch.js';
 import { buildWorkerCommand, runWorkerProcess } from './worker.js';
 import { dispatchTaskToDesktop } from './dispatch-client.js';
 import { dispatchExternalEventToRuntime } from './external-event-client.js';
@@ -588,7 +588,7 @@ export async function runDaemon(options: DaemonOptions = {}): Promise<void> {
   const readPersistedStatus = options.statusStore
     ? await options.statusStore.read()
     : readStatus(dbPath);
-  let status = rollDaemonStatusDay(readPersistedStatus ?? createDaemonStatus(now()), now());
+  let status = restoreDaemonStatus(readPersistedStatus, now());
   const persistStatus = (next: DaemonStatus): void => {
     if (options.statusStore) {
       void options.statusStore
@@ -600,10 +600,10 @@ export async function runDaemon(options: DaemonOptions = {}): Promise<void> {
   };
   // 投递任务跟踪（T8：崩溃检测 + abort 处理）。
   const dispatched = new DispatchedTracker();
-  const recordInterruptionHistory = (
+  const recordTaskFailureHistory = (
     taskId: string,
     firedAt: string,
-    reason: 'app-closed' | 'runtime-crash',
+    reason: string,
   ): void => {
     const task = taskStore.get(taskId);
     if (!task) return;
@@ -717,85 +717,81 @@ export async function runDaemon(options: DaemonOptions = {}): Promise<void> {
         // 空出槽位 → 自动接上队首任务（同时清理重启后失效的行）。
         drainQueue();
       };
-      // 执行路径（T7）：探测桌面活着 → 投递；否则自拉 worker。
+      // Runtime pipe is independent of the Desktop window. All targets first
+      // ensure the supervised owner; Team/automation/group bindings never fall
+      // back to a Host-less transient worker.
+      const firedAt = now().toISOString();
       void (async () => {
-        let releaseInFinally = true;
         try {
           const task = taskStore.get(taskId);
           if (!task) {
             console.warn(`[daemon] queued task ${taskId} no longer exists`);
             return;
           }
-          const desktopAlive = await probeDesktopPipe(installId);
-          const path = chooseDispatchPath(desktopAlive);
-          if (path.kind === 'dispatched') {
-            // Register before waiting for the ack. A fast Runtime can finish and
-            // send task.dispatch.complete in the same event-loop turn as ack;
-            // registering only after dispatchTaskToDesktop resolves would lose
-            // that completion frame and leave a stale crash-retry entry.
-            dispatched.add(taskId, now());
-            const result = await dispatchTaskToDesktop(
-              {
-                installId,
-                helloSecret,
-                appVersion: 'sync-think-daemon',
-                timeoutMs: 30_000,
-              },
-              composeTaskCommand(task),
-            );
-            console.log(
-              `[daemon] dispatched ${taskId} → ok=${result.ok} acked=${result.acked}` +
-                (result.ok && !result.acked ? ' (no ack; taking over)' : ''),
-            );
-            if (result.outcome === 'accepted') {
-              // Ack means accepted, not completed. Keep the daemon slot and
-              // crash tracker until Runtime reports task.dispatch.complete.
-              dispatchedReleases.set(taskId, completeTask);
-              releaseInFinally = false;
-              return;
-            }
-            dispatched.markCompleted(taskId);
-            if (result.outcome === 'timeout') {
-              // 桌面假死（30s 无 ack）→ desktop-hung → 接管自拉（T8）。
-              console.warn(`[daemon] ${taskId} hung (no ack); taking over`);
-            }
-            if (result.outcome === 'rejected') {
-              console.warn(
-                `[daemon] desktop rejected ${taskId}; no worker takeover` +
-                  (result.reason ? ` reason=${result.reason}` : ''),
-              );
-              return;
-            }
-            // 投递失败（桌面刚关/握手失败）→ 降级自拉。
-            if (!result.ok)
-              console.warn(`[daemon] dispatch ${taskId} failed; falling back to worker`);
-          }
-          const entry = resolveRuntimeEntry();
-          if (!entry) {
-            console.error('[daemon] runtime entry not found; cannot spawn worker');
-            return;
-          }
-          const workerOptions = {
-            runtimeEntry: entry,
-            taskId,
-            dbPath,
-            installId,
-            baseEnv: process.env,
-          };
-          const command = buildWorkerCommand(resolveNodeBin(), workerOptions);
-          console.log(
-            `[daemon] spawning worker for ${taskId}: ${command.command} ${command.args.join(' ')}`,
+          // Binding is durable metadata, not an inference from instruction text.
+          const groupBound = Boolean(
+            task.conversationId &&
+            connection.raw
+              .prepare(`SELECT 1 FROM collaboration_conversation WHERE id = ? AND kind = 'group'
+                UNION ALL SELECT 1 FROM conversation WHERE id = ? AND collaboration_kind = 'group' LIMIT 1`)
+              .get(task.conversationId, task.conversationId),
           );
-          const result = await runWorkerProcess(resolveNodeBin(), workerOptions);
+          const result = await executeScheduledTaskDispatch(task, {
+            groupBound,
+            ensureRuntime,
+            dispatch: (command) =>
+              dispatchTaskToDesktop(
+                { installId, helloSecret, appVersion: 'sync-think-daemon', timeoutMs: 30_000 },
+                command,
+              ),
+            registerDispatch: (release) => {
+              // Both tracker and slot callback precede the ack wait. Fast
+              // completion must release once instead of leaving a stale slot.
+              dispatched.add(taskId, new Date(firedAt));
+              dispatchedReleases.set(taskId, release);
+            },
+            clearDispatch: () => {
+              dispatched.markCompleted(taskId);
+              dispatchedReleases.delete(taskId);
+            },
+            recordFailure: (reason) => recordTaskFailureHistory(taskId, firedAt, reason),
+            releaseSlot: completeTask,
+            spawnWorker: async () => {
+              const entry = resolveRuntimeEntry();
+              if (!entry) throw new Error('runtime-entry-not-found');
+              const workerOptions = {
+                runtimeEntry: entry, taskId, dbPath, installId, baseEnv: process.env,
+              };
+              const command = buildWorkerCommand(resolveNodeBin(), workerOptions);
+              console.log(
+                `[daemon] legacy worker for ${taskId}: ${command.command} ${command.args.join(' ')}`,
+              );
+              const workerResult = await runWorkerProcess(resolveNodeBin(), workerOptions);
+              console.log(
+                `[worker] task ${taskId} exited code=${workerResult.code}` +
+                  (workerResult.signal ? ` signal=${workerResult.signal}` : ''),
+              );
+            },
+          });
           console.log(
-            `[worker] task ${taskId} exited code=${result.code}${result.signal ? ` signal=${result.signal}` : ''}`,
+            `[daemon] task ${taskId} execution path=${result.kind}` +
+              (result.kind === 'failed' ? ` reason=${result.reason}` : ''),
           );
         } catch (error) {
           console.error(`[daemon] task ${taskId} execution failed`, error);
+          try {
+            recordTaskFailureHistory(
+              taskId, firedAt,
+              'scheduled-task-execution-failed: ' +
+                (error instanceof Error ? error.message : String(error)).slice(0, 500),
+            );
+          } catch (historyError) {
+            console.warn('[daemon] task failure history write failed', historyError);
+          }
         } finally {
-          // Every acquired slot is released exactly once, including lookup,
-          // probe, spawn and worker failures.
-          if (releaseInFinally) completeTask();
+          // Accepted dispatch owns the slot until complete/abort/crash; every
+          // startup, validation, transport or worker failure releases immediately.
+          if (!dispatchedReleases.has(taskId)) completeTask();
         }
       })();
     });
@@ -893,10 +889,10 @@ export async function runDaemon(options: DaemonOptions = {}): Promise<void> {
           dispatched.markRetried(taskId);
           dispatchedReleases.get(taskId)?.();
           dispatchedReleases.delete(taskId);
-          fireTask(taskId, true); // 重试一次（自拉 worker），忽略已推进的周期时间
+          fireTask(taskId, true); // 重试一次：仍优先长期 Runtime，忽略已推进的周期时间
         } else if (c.status === 'runtime-crash') {
           console.warn(`[daemon] ${taskId} runtime-crash; already retried, terminal`);
-          recordInterruptionHistory(taskId, entry.dispatchedAt, 'runtime-crash');
+          recordTaskFailureHistory(taskId, entry.dispatchedAt, 'runtime-crash');
           dispatched.markCompleted(taskId);
           dispatchedReleases.get(taskId)?.();
           dispatchedReleases.delete(taskId);
@@ -1064,7 +1060,7 @@ export async function runDaemon(options: DaemonOptions = {}): Promise<void> {
         const entry = dispatched.get(taskId);
         const classification = applyAbort(dispatched, taskId);
         if (classification?.status === 'app-closed' && entry) {
-          recordInterruptionHistory(taskId, entry.dispatchedAt, 'app-closed');
+          recordTaskFailureHistory(taskId, entry.dispatchedAt, 'app-closed');
         }
         dispatchedReleases.get(taskId)?.();
         dispatchedReleases.delete(taskId);

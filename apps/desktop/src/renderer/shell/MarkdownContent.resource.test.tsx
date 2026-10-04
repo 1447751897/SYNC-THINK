@@ -37,9 +37,15 @@ describe('MarkdownContent resources', () => {
       'apps/desktop/src/renderer/shell/PreferencesSettings.tsx',
       { line: 73, column: 1 },
     );
-    const icon = container.querySelector('[data-resource-kind="code"] [data-file-type="typescript"]');
-    expect(icon?.textContent).toBe('TS');
-    expect(icon?.querySelector('svg')).toBeNull();
+    const icon = container.querySelector('[data-resource-kind="code"] [data-file-type="react-typescript"]');
+    expect(icon).not.toBeNull();
+    expect(icon?.querySelector('svg')).not.toBeNull();
+  });
+
+  it('keeps the TS text badge for plain TypeScript resources', () => {
+    const { container } = render(<MarkdownContent text="[types.ts](D:/projects/MYSELF/SYNC-THINK/types.ts)" projectFolder="D:/projects/MYSELF/SYNC-THINK" onOpenFile={vi.fn()} />);
+    const icon = container.querySelector('[data-file-type="typescript"]');
+    expect(icon?.textContent).toBe('TS'); expect(icon?.querySelector('svg')).toBeNull();
   });
 
   it('renders a CSS badge for stylesheet workspace files', () => {

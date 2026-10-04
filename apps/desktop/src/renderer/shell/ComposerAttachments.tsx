@@ -1,5 +1,5 @@
 import { useCallback, useLayoutEffect, useRef, useState, type CSSProperties } from 'react';
-import { Code2, FileText, Folder, Image, Play, Presentation, Table2, X } from 'lucide-react';
+import { Code2, FileText, Folder, Image, Mic, Play, Presentation, Table2, X } from 'lucide-react';
 import type { ComposeAttachment } from './compose-mention.js';
 
 export const ATTACHMENT_EXIT_MS = 220;
@@ -25,6 +25,7 @@ export function attachmentTileKind(attachment: ComposeAttachment) {
   if (/^(tsx?|jsx?|json|py|rs|go|java|html|css|sh|sql|ya?ml|toml|vue|svelte)$/.test(extension))
     return 'code';
   if (/^(mp4|mov|webm|avi|mkv)$/.test(extension)) return 'video';
+  if (/^(mp3|wav|flac|m4a|aac|ogg|opus|aiff)$/.test(extension)) return 'audio';
   return 'document';
 }
 
@@ -56,6 +57,7 @@ function AttachmentTile({
     presentation: Presentation,
     code: Code2,
     video: Play,
+    audio: Mic,
   }[kind];
   useLayoutEffect(() => {
     if (!exiting) return;
@@ -134,11 +136,12 @@ function AttachmentTile({
             type="button"
             className="shell-attachment-tile__remove"
             aria-label={`${pending ? '取消处理附件' : '移除附件'} ${attachment.name}`}
+            title={pending ? '取消处理附件' : '移除附件'}
             disabled={disabled || exiting}
             tabIndex={exiting ? -1 : undefined}
             onClick={() => onRemove(attachment.path)}
           >
-            <X size={9} strokeWidth={2.4} aria-hidden="true" />
+            <X size={10} strokeWidth={2} aria-hidden="true" />
           </button>
         ) : null}
       </div>

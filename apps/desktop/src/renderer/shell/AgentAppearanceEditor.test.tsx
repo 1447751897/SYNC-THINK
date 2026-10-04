@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { useState } from 'react';
 import type { GlobalAgent, CollaborationMember } from '@sync-think/shared';
 import { AgentAppearanceEditor } from './AgentAppearanceEditor.js';
@@ -32,6 +32,17 @@ describe('persisted appearance', () => {
     expect(saved()).toMatchObject({ expression: 'happy', shape: 'triangle' });
     fireEvent.wheel(expression, { deltaY: -60 });
     expect(saved()?.expression).toBe('idle');
+  });
+  it('keeps every wheel step and both selections when events arrive in one frame', () => {
+    render(<Editor />);
+    const expression = screen.getByRole('group', { name: '头像表情，悬停滚轮切换' });
+    const shape = screen.getByRole('group', { name: '头像形状，悬停滚轮切换' });
+    act(() => {
+      expression.dispatchEvent(new WheelEvent('wheel', { deltaY: 60, bubbles: true }));
+      expression.dispatchEvent(new WheelEvent('wheel', { deltaY: 60, bubbles: true }));
+      shape.dispatchEvent(new WheelEvent('wheel', { deltaY: 60, bubbles: true }));
+    });
+    expect(saved()).toMatchObject({ expression: 'error', shape: 'circle' });
   });
   it('captures selector scroll only, ignores pinch zoom, supports keyboard and custom colors', () => {
     render(<Editor />);

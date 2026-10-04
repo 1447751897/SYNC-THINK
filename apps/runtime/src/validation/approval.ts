@@ -20,13 +20,14 @@ export function parseConversationDecideToolApprovalPayload(
 ): ConversationDecideToolApprovalPayload | undefined {
   if (
     !isRecord(value) ||
-    !hasOnlyKeys(value, ['approvalId', 'decision', 'scope']) ||
+    !hasOnlyKeys(value, ['approvalId', 'decision', 'scope', 'excludedSkillTools']) ||
     !boundedAgentText(value.approvalId, 128) ||
     (value.decision !== 'approve' && value.decision !== 'deny') ||
     (value.scope !== undefined &&
       value.scope !== 'once' &&
       value.scope !== 'session' &&
       value.scope !== 'always-app') ||
+    (value.excludedSkillTools !== undefined && (value.decision !== 'approve' || (value.scope !== undefined && value.scope !== 'once') || !Array.isArray(value.excludedSkillTools) || value.excludedSkillTools.length > 128 || !value.excludedSkillTools.every(name => boundedAgentText(name, 256)) || new Set(value.excludedSkillTools).size !== value.excludedSkillTools.length)) ||
     (value.decision === 'deny' && value.scope !== undefined && value.scope !== 'once')
   ) {
     return undefined;
@@ -35,6 +36,7 @@ export function parseConversationDecideToolApprovalPayload(
     approvalId: value.approvalId,
     decision: value.decision,
     scope: value.scope ?? 'once',
+    ...(Array.isArray(value.excludedSkillTools) ? { excludedSkillTools: value.excludedSkillTools as string[] } : {}),
   };
 }
 

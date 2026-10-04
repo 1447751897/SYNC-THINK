@@ -1,3 +1,5 @@
+import { canonicalizeLocalWebPageUrl, isLocalWebPageUrl } from '../local-web-page-contract.js';
+
 export interface BrowserPopupDetails {
   url: string;
 }
@@ -46,11 +48,11 @@ export function normalizeBrowserPopupUrl(value: string): string | null {
     const url = new URL(candidate);
     if (url.protocol === 'http:' || url.protocol === 'https:') return url.href;
     if (
-      url.protocol === 'newmax-local-web:' &&
+      isLocalWebPageUrl(url.href) &&
       /^[A-Za-z0-9_-]{16,160}$/.test(url.hostname) &&
       url.pathname.startsWith('/')
     ) {
-      return url.href;
+      return canonicalizeLocalWebPageUrl(url.href);
     }
   } catch {
     // Malformed and privileged targets stay denied without reaching Renderer.

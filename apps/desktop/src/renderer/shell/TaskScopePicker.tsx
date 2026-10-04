@@ -1,4 +1,5 @@
 import { OverlayScrollArea } from './OverlayScrollArea.js';
+import { useTaskSheetPortalContainer } from './TaskSheet.js';
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import { Check, ChevronDown, Folder, Globe, Layers } from 'lucide-react';
 import type { ScheduledTask } from '@sync-think/shared';
@@ -25,6 +26,7 @@ export function TaskScopePicker({
   selectedScopes?: readonly string[];
   onSelectedScopesChange?: (values: string[]) => void;
 }) {
+  const portalContainer = useTaskSheetPortalContainer();
   const counts = new Map<string, number>();
   for (const task of tasks) {
     const key = task.workspaceId ?? 'global';
@@ -51,7 +53,7 @@ export function TaskScopePicker({
           <ChevronDown size={13} />
         </button>
       </DropdownMenu.Trigger>
-      <DropdownMenu.Portal>
+      <DropdownMenu.Portal container={portalContainer}>
         <DropdownMenu.Content
           className="task-cal__scope-menu"
           align="start"
@@ -149,7 +151,7 @@ export function TaskScopePicker({
             <ChevronDown size={13} />
           </button>
         </DropdownMenu.Trigger>
-        <DropdownMenu.Portal>
+        <DropdownMenu.Portal container={portalContainer}>
           <DropdownMenu.Content
             className="task-cal__scope-menu"
             align="start"

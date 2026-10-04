@@ -53,9 +53,16 @@ describe('browser WebView popup bridge', () => {
     expect(normalizeBrowserPopupUrl('https://example.test/a')).toBe('https://example.test/a');
     expect(
       normalizeBrowserPopupUrl(
-        'newmax-local-web://12345678-1234-1234-1234-123456789012/index.html',
+        'sync-think-local-web://12345678-1234-1234-1234-123456789012/index.html',
       ),
-    ).toBe('newmax-local-web://12345678-1234-1234-1234-123456789012/index.html');
+    ).toBe('sync-think-local-web://12345678-1234-1234-1234-123456789012/index.html');
+    expect(
+      normalizeBrowserPopupUrl(
+        'newmax-local-web://12345678-1234-1234-1234-123456789012/index.html?view=1#page',
+      ),
+    ).toBe('sync-think-local-web://12345678-1234-1234-1234-123456789012/index.html?view=1#page');
+    expect(normalizeBrowserPopupUrl('sync-think-local-web://short/index.html')).toBeNull();
+    expect(normalizeBrowserPopupUrl('newmax-local-web://short/index.html')).toBeNull();
     expect(normalizeBrowserPopupUrl('data:text/html,test')).toBeNull();
   });
 });

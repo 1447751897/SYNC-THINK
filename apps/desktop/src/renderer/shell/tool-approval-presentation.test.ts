@@ -57,3 +57,11 @@ describe('readable tool approval projection', () => {
     expect(view.hasDetails).toBe(false);
   });
 });
+
+it('shows all scheduled execution choices and patch values in the approval details', () => {
+  const preview = approvalPresentation({ ...base, toolName: 'task_schedule', title: '修改定时任务', arguments: { action: 'update', taskId: 'task-1', patch: { target: { kind: 'model', modelId: 'review-model' }, instruction: '只汇总昨日工作', workspaceId: 'workspace-1', timeZone: 'Asia/Shanghai', enabled: false, rule: { kind: 'cron', expression: '0 9 * * *' }, automation: { conversation: { mode: 'new' } } } } });
+  expect(preview.parameters).toEqual(expect.arrayContaining([
+    { label: '执行模型', value: 'review-model' }, { label: '运行工作区', value: 'workspace-1' }, { label: '运行会话', value: '每次运行时新建会话' }, { label: '执行内容', value: '只汇总昨日工作' }, { label: '时区', value: 'Asia/Shanghai' }, { label: '任务状态', value: '保存草稿' },
+  ]));
+  expect(preview.hasDetails).toBe(true);
+});

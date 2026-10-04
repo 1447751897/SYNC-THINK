@@ -274,6 +274,43 @@ describe('streamOpenAIChatCompletions', () => {
     ]);
   });
 
+  it.each(['high', 'xhigh', 'max'])(
+    'sends explicitly selected %s effort in Chat request bodies',
+    async (effort) => {
+      fetchMock.mockResolvedValue(new Response(sseStream([
+        'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n',
+        'data: [DONE]\n\n',
+      ]), { headers: { 'Content-Type': 'text/event-stream' } }));
+
+      const events = await collect(streamOpenAIChatCompletions(
+        req({ modelId: 'gpt-6.1-sol', reasoningEffort: effort }),
+        { fetchImpl: fetchMock as unknown as typeof fetch },
+      ));
+      const body = JSON.parse((fetchMock.mock.calls[0]![1] as { body: string }).body);
+      expect(body.reasoning_effort).toBe(effort);
+      expect(body).not.toHaveProperty('enable_thinking');
+      expect(textFromEvents(events)).toBe('ok');
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each(['xhigh', 'max'])(
+    'reports gateway rejection of %s without retrying at a lower Chat effort',
+    async (effort) => {
+      fetchMock.mockResolvedValueOnce(new Response(
+        'Unsupported parameter(s): `reasoning_effort`', { status: 400 },
+      ));
+      const events = await collect(streamOpenAIChatCompletions(
+        req({ modelId: 'gpt-6.1-sol', reasoningEffort: effort }),
+        { fetchImpl: fetchMock as unknown as typeof fetch },
+      ));
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(events).toContainEqual(expect.objectContaining({ type: 'error' }));
+      const body = JSON.parse((fetchMock.mock.calls[0]![1] as { body: string }).body);
+      expect(body.reasoning_effort).toBe(effort);
+    },
+  );
+
   it('forwards reasoning_effort and streams reasoning-delta separately', async () => {
     const body = sseStream([
       'data: {"choices":[{"delta":{"reasoning_content":"先想一步"}}]}\n\n',

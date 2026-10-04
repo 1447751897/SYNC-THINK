@@ -157,7 +157,7 @@ it('stores a namespaced team, preserves its leader and freezes the internal chai
     await f.close();
   }
 });
-it('runs internal stages before the leader handoff and routes exactly one team result to the group coordinator', async () => {
+it('starts only the team leader and does not automatically expand the old stage graph', async () => {
   const f = await fixture();
   try {
     const s = f.create();
@@ -180,13 +180,10 @@ it('runs internal stages before the leader handoff and routes exactly one team r
     const done = f.repository.read(s.conversation.id)!;
     expect(
       f.executions.filter((e) => e.task.kind === 'task').map((e) => e.task.assigneeMemberId),
-    ).toEqual([
-      head.id + ':agent:' + f.roster[1].id,
-      head.id + ':agent:' + f.roster[2].id,
-      head.id,
-    ]);
+    ).toEqual([head.id]);
+    expect(done.tasks[0].purpose).toBe('coordination');
     const results = done.messages.filter((m) => m.kind === 'task_result');
-    expect(results.filter((m) => m.recipientMemberIds.includes(head.id))).toHaveLength(2);
+    expect(results.filter((m) => m.recipientMemberIds.includes(head.id))).toHaveLength(0);
     expect(
       results.filter(
         (m) =>
@@ -194,7 +191,10 @@ it('runs internal stages before the leader handoff and routes exactly one team r
           m.recipientMemberIds.includes(s.conversation.coordinatorMemberId),
       ),
     ).toHaveLength(1);
-    expect(done.attempts.every((a) => a.status === 'succeeded')).toBe(true);
+    // The fixture returns prose without dispatch or delivery: transport completion is not goal completion.
+    const coordinator = done.tasks.find(t => t.purpose === 'coordination')!;
+    expect(done.attempts.find(a => a.id === coordinator.currentAttemptId)).toMatchObject({ status: 'failed', error: { code: 'coordination_no_progress' } });
+    expect(done.conversation.room!.state).toBe('blocked');
   } finally {
     await f.close();
   }
@@ -280,7 +280,7 @@ it('adds a team to an existing group and synchronizes renamed titles transaction
   }
 });
 
-it('admits multiple teams without counting frozen DAG nodes as runaway peer chatter', async () => {
+it('keeps multiple teams available while discussion never launches the old frozen graph', async () => {
   const f = await fixture();
   try {
     const extra = Array.from({ length: 9 }, (_, i) =>
@@ -313,7 +313,7 @@ it('admits multiple teams without counting frozen DAG nodes as runaway peer chat
       clientRequestId: 'goal',
       text: '执行完整工作流',
     }).snapshot!;
-    const admitted = f.host.command(
+    expect(() => f.host.command(
       {
         action: 'start-workflow',
         conversationId: s.conversation.id,
@@ -323,8 +323,9 @@ it('admits multiple teams without counting frozen DAG nodes as runaway peer chat
         goal: '交付完整文档',
       },
       s.conversation.coordinatorMemberId,
-    ).snapshot!;
-    expect(admitted.tasks.filter((t) => t.kind === 'task')).toHaveLength(14);
+    )).toThrow('explicit_user_start_required');
+    const admitted = f.host.command({ action: 'start-workflow', conversationId: s.conversation.id, clientRequestId: 'user-start', goal: '交付完整文档' }).snapshot!;
+    expect(admitted.tasks.filter(t => t.kind === 'task')).toHaveLength(1);
     await f.host.service.pump(f.workspace.id);
     await expect
       .poll(
@@ -336,8 +337,12 @@ it('admits multiple teams without counting frozen DAG nodes as runaway peer chat
       )
       .toBe(false);
     const done = f.repository.read(s.conversation.id)!;
-    expect(done.tasks.some((t) => t.kind === 'summary')).toBe(true);
-    expect(done.attempts.every((a) => a.status === 'succeeded')).toBe(true);
+    expect(done.tasks.some((t) => t.kind === 'summary')).toBe(false);
+    expect(done.tasks.filter(t => t.purpose === 'coordination')).toHaveLength(1);
+    // The fixture returns prose without dispatch or delivery: transport completion is not goal completion.
+    const coordinator = done.tasks.find(t => t.purpose === 'coordination')!;
+    expect(done.attempts.find(a => a.id === coordinator.currentAttemptId)).toMatchObject({ status: 'failed', error: { code: 'coordination_no_progress' } });
+    expect(done.conversation.room!.state).toBe('blocked');
   } finally {
     await f.close();
   }

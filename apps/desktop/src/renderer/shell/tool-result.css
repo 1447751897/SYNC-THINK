@@ -22,6 +22,33 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 */
+/* The disclosure owns the only card. Keep deferred/legacy result wrappers flat too,
+   rather than relying on one particular ancestor or an old renderer's CSS order. */
+.shell-inline-process__tool-body .shell-tool-result,
+.shell-inline-process__tool-body .shell-tool-result.shell-beui-result,
+.shell-inline-process__tool-body .shell-tool-result .shell-agent-code.shell-beui-code,
+.shell-inline-process__tool-body .shell-beui-result .shell-agent-code.shell-beui-code {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  overflow: visible;
+}
+.shell-inline-process__tool-body .shell-beui-result .shell-md-code__bar {
+  min-height: 32px;
+  padding: 0 0 6px;
+  border-bottom: 0;
+}
+.shell-inline-process__tool-body .shell-beui-result .shell-agent-code__source {
+  padding: 0;
+}
+/* One shared 16px inset for status, code and controls. The JSON braces must not
+   touch the outside card's rounded edge or acquire another bordered enclosure. */
+.shell-harness-trace .shell-inline-process__tool-body .shell-inline-process__detail-block:has(> .shell-beui-result) {
+  padding: 14px 16px 16px;
+}
 /* Result controls share the expanded tool's frosted surface, without another card. */
 .shell-harness-trace .shell-inline-process__tool-body .shell-beui-result .shell-beui-code {
   margin: 0;
@@ -32,6 +59,8 @@ SOFTWARE.
 }
 .shell-beui-result__identity {
   display: flex;
+  flex: 1 1 auto;
+  line-height: 20px;
   align-items: center;
   gap: 10px;
   min-width: 0;
@@ -93,4 +122,23 @@ SOFTWARE.
   .shell-beui-result__spinner {
     animation: none;
   }
+}
+
+.shell-beui-result__mode {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--process-glass-muted, var(--color-text-secondary));
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.shell-beui-result__mode:hover {
+  color: var(--color-text);
+}
+.shell-beui-result__mode:focus-visible {
+  outline: 2px solid var(--color-accent-strong);
+  outline-offset: 3px;
+  border-radius: 2px;
 }

@@ -29,6 +29,11 @@ Object.defineProperty(window, 'syncThink', { configurable: true, value: {
   runtime: new Proxy(runtime, { get(target, key) {
     if (workspaceNavigationPreview && key === 'listConversations') return async () => ({ conversations: previewConversations });
     if (taskEditorPreview && (key === 'listGlobalAgents' || key === 'listAgents')) return async () => ({ agents: previewAgents });
+    // Opt-in latency exposes refresh flicker without touching any product data.
+    if (calendarPreview && key === 'scheduledTaskHistory' && params.get('calendar-latency') === '600') return async (...args: Parameters<typeof calendarPreview.scheduledTaskHistory>) => {
+      await new Promise(resolve => window.setTimeout(resolve, 600));
+      return calendarPreview.scheduledTaskHistory(...args);
+    }
     if (calendarPreview && typeof key === 'string' && key in calendarPreview) return calendarPreview[key as keyof typeof calendarPreview];
     if (key === 'connect') return async () => ({ ok: true, result: { snapshot: [] } });
     if (key === 'listProjectDir') return async () => ({ entries: data.files.filter(file => file.type === 'file') });

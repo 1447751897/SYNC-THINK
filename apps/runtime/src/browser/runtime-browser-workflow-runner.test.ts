@@ -393,3 +393,12 @@ describe('BrowserWorkflowRunner', () => {
     f.connection.raw.close();
   });
 });
+
+it('replays one published search flow with two keywords and keeps one immutable version', async () => {
+  const f = await fixture(); try {
+    const flow = await publishWorkflow(f.store, 'Reusable search', [{ kind: 'fill', locator: { strategy: 'placeholder', value: 'Search' }, value: { kind: 'variable', name: 'keyword' } }]);
+    const actions: BrowserAction[] = []; const runner = new BrowserWorkflowRunner({ store: f.store, host: makeFakeHost(actions) }); runner.recordApproval(flow.taskId, ['https://example.test'], 'approval-search');
+    for (const keyword of ['衬衫', '裤子']) expect((await runner.replay({ ...flow, workflowVersionId: flow.versionId, workspaceId: 'ws', ownerId: keyword, capabilityToken: 'token', signal: new AbortController().signal, variables: { keyword } })).ok).toBe(true);
+    expect(actions.filter(action => action.kind === 'fill')).toMatchObject([{ text: '衬衫' }, { text: '裤子' }]); expect(f.store.getAutomationTask(flow.taskId)?.publishedVersionId).toBe(flow.versionId); expect(f.store.listWorkflowRuns(flow.taskId)).toHaveLength(2);
+  } finally { f.connection.raw.close(); }
+});

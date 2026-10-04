@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 /** @vitest-environment jsdom */
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -344,4 +346,17 @@ describe('main chat breadcrumb', () => {
     expect(await screen.findByTestId('edit-workspace-dialog')).toBeTruthy();
     expect((screen.getByTestId('workspace-form-name') as HTMLInputElement).value).toBe('同步工作区');
   });
+});
+
+
+it('keeps contextual headers in normal flow beside the collapsed-sidebar opener', () => {
+  const css = readFileSync(resolve(process.cwd(), 'src/renderer/shell/shell.css'), 'utf8');
+  const rule = css.match(/\.shell-context-tab\.shell-workspace-tab\s*\{([^}]+)\}/)?.[1];
+  expect(rule).toContain('position: relative');
+  expect(rule).toContain('left: auto');
+  const onToggleSidebar = vi.fn();
+  render(<TopBar workspaces={[workspaceTwo]} activeWorkspaceId={workspaceTwo.workspaceId} sidebarCollapsed contextStage="tasks" onSelectWorkspace={vi.fn()} onOpenFolder={vi.fn()} onCreateWorkspace={vi.fn().mockResolvedValue(true)} onUpdateWorkspace={vi.fn().mockResolvedValue(true)} onDeleteWorkspace={vi.fn().mockResolvedValue(true)} onToggleSidebar={onToggleSidebar} onPickFolder={vi.fn().mockResolvedValue({ canceled: true })} />);
+  fireEvent.click(screen.getByTestId('topbar-open-sidebar'));
+  expect(onToggleSidebar).toHaveBeenCalledTimes(1);
+  expect(screen.getByTestId('topbar-context-tab').textContent).toContain('定时任务');
 });

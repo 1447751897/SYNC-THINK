@@ -207,6 +207,16 @@ describe('runtime commands', () => {
 
     try {
       await hello(socket, reader, installId);
+      // The test uses a controlled provider, but model bindings still require a valid catalog + credential.
+      const createdProvider=await writeAndRead(socket,reader,{id:'scheduled-provider',kind:'request',type:'provider.create',payload:{
+        name:'Scheduled fixture',baseUrl:'https://scheduled-fixture.invalid/v1',protocol:'openai-chat',apiKey:'sk-fixture-not-a-real-key',supportsDiscovery:false,
+      }});
+      expect(createdProvider.error).toBeUndefined();
+      const providerId=(createdProvider.payload as {provider:{providerId:string}}).provider.providerId;
+      const addedModels=await writeAndRead(socket,reader,{id:'scheduled-models',kind:'request',type:'provider.addModels',payload:{
+        providerId,protocol:'openai-chat',models:[{providerModelId:'scheduled-selected-model'},{providerModelId:'scheduled-updated-model'}],
+      }});
+      expect(addedModels.error).toBeUndefined();
       const response = await writeAndRead(socket, reader, {
         id: 'scheduled-trigger-regression',
         kind: 'request',
@@ -229,7 +239,7 @@ describe('runtime commands', () => {
       expect(taskStore.listHistory(taskId)[0]?.status).toBe('success');
       expect(provider.requests[0]?.modelId).toBe('scheduled-selected-model');
 
-      // Editing the task must take effect even when its conversation is reused.
+      // A new target takes effect without rewriting the previous conversation identity.
       taskStore.update(taskId, { target: { kind: 'model', modelId: 'scheduled-updated-model' } });
       const rerun = await writeAndRead(socket, reader, {
         id: 'scheduled-trigger-updated-model',
@@ -240,7 +250,12 @@ describe('runtime commands', () => {
       expect(rerun.payload).toMatchObject({ fired: true });
       expect(await waitFor(() => taskStore.listHistory(taskId).length === 2, 2_000)).toBe(true);
       expect(provider.requests[1]?.modelId).toBe('scheduled-updated-model');
-      expect(taskStore.get(taskId)?.conversationId).toBe(stored?.conversationId);
+      const updatedConversationId=taskStore.get(taskId)?.conversationId;
+      expect(updatedConversationId).toBeTruthy();
+      expect(updatedConversationId).not.toBe(stored?.conversationId);
+      const conversations=new SqliteConversationStore(inspectConnection.raw);
+      expect(conversations.get(stored!.conversationId!)?.targetRef).not.toBe(conversations.get(updatedConversationId!)?.targetRef);
+      expect(taskStore.listHistory(taskId)).toHaveLength(2);
     } finally {
       socket.destroy();
       await session.close();

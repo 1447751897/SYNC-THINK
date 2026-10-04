@@ -1,4 +1,4 @@
-import type { PendingToolApproval } from './ToolApprovalCard.js';
+import type { PendingToolApproval } from './tool-approval-types.js';
 import {
   commandDisplayFromArguments,
   friendlyToolName,
@@ -205,6 +205,20 @@ export function approvalPresentation(approval: PendingToolApproval) {
               : String(value);
         return [{ label, value: display }];
       });
+  if (approval.toolName === 'task_schedule') {
+    const config = record(args.patch) ?? args;
+    const target = record(config.target);
+    const binding = record(config.automation);
+    const conversation = record(binding?.conversation);
+    if (target) parameters.push({ label: target.kind === 'model' ? '执行模型' : target.kind === 'team' ? '执行小队' : '执行智能体', value: text(target.modelId) ?? text(target.agentId) ?? text(target.teamId) ?? '待确认' });
+    if (Object.hasOwn(config, 'workspaceId')) parameters.push({ label: '运行工作区', value: text(config.workspaceId) ?? '全局任务 · 独立目录' });
+    if (conversation) parameters.push({ label: '运行会话', value: conversation.mode === 'new' ? '每次运行时新建会话' : conversation.mode === 'existing' ? `继续已有会话 · ${text(conversation.conversationId) ?? '待选择'}` : '此任务的专属会话' });
+    if (typeof config.instruction === 'string') parameters.push({ label: '执行内容', value: config.instruction });
+    if (typeof config.timeZone === 'string') parameters.push({ label: '时区', value: config.timeZone });
+    if (typeof config.enabled === 'boolean') parameters.push({ label: '任务状态', value: config.enabled ? '启用执行' : '保存草稿' });
+    const schedule = record(config.rule);
+    if (schedule) parameters.push({ label: '触发计划', value: schedule.kind === 'cron' ? `Cron · ${String(schedule.expression)}` : schedule.kind === 'every' ? `每 ${String(schedule.intervalMinutes)} 分钟` : schedule.kind === 'at' ? String(schedule.runAt) : JSON.stringify(schedule) });
+  }
   const hasDetails = Boolean(
     command || diff || changes.length || replacement || content || parameters.length,
   );

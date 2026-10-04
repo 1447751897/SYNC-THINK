@@ -84,6 +84,7 @@ describe('resolveCodexExecutablePath', () => {
       }
 
       const resolved = resolveCodexExecutablePath({
+        managedExecutable: null,
         localAppData,
         pathExecutable: oldExecutable,
         versionProbe: (candidate) => (candidate === managedExecutable ? '0.149.0' : '0.147.0'),
@@ -116,6 +117,7 @@ describe('resolveCodexExecutablePath', () => {
       }
 
       const resolved = resolveCodexExecutablePath({
+        managedExecutable: null,
         localAppData,
         pathExecutable,
         versionProbe: (candidate) => (candidate === managedExecutable ? '0.149.0' : '0.150.0'),

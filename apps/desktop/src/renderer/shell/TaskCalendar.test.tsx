@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type { ScheduledTask } from '@sync-think/shared';
 import { calendarTaskPalette, TaskCalendar, type TaskCalendarProps } from './TaskCalendar.js';
 
@@ -50,6 +50,47 @@ afterEach(() => {
 });
 
 describe('Board-style task calendar', () => {
+  it.each([
+    ['waiting_input', '等待操作', '等待页面确认'],
+    ['blocked', '配置阻塞', 'Profile 尚未配置'],
+    ['reconciling', '交付待核对', '文件与回执待核对'],
+  ])(
+    'shows %s on the existing calendar and retains the actual history reason in details',
+    async (status, label, reason) => {
+      const item = { ...task(), lastRunAt: new Date(2026, 8, 30, 9).toISOString() };
+      Object.defineProperty(window, 'syncThink', {
+        configurable: true,
+        value: {
+          runtime: {
+            scheduledTaskHistory: vi.fn(async () => ({
+              entries: [
+                {
+                  id: 'pending-calendar',
+                  taskId: item.id,
+                  status,
+                  firedAt: item.lastRunAt,
+                  summary: '实际运行摘要',
+                  reason,
+                },
+              ],
+            })),
+          },
+        },
+      });
+      render(<TaskCalendar {...props({ tasks: [item], allTasks: [item] })} />);
+      const event = await screen.findByRole('button', {
+        name: '2026-09-30 09:00 任务 one ' + label,
+      });
+      expect(event.getAttribute('data-status')).toBe(status);
+      fireEvent.click(event);
+      const details = await screen.findByRole('dialog', { name: '日程详情' });
+      expect(within(details).getByText(label)).toBeTruthy();
+      expect(within(details).getByText('实际运行摘要')).toBeTruthy();
+      expect(within(details).getByText(reason)).toBeTruthy();
+      expect(within(details).queryByText('执行失败')).toBeNull();
+    },
+  );
+
   it('shows missing hourly slots with an honest projection notice rather than success', async () => {
     const hourly = {
       ...task('hourly'),
@@ -357,5 +398,49 @@ describe('Board-style task calendar', () => {
     outside.focus();
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     expect(document.activeElement).toBe(outside);
+  });
+});
+
+
+describe('calendar background refresh stability', () => {
+  it('keeps history occurrences and their open card visible while refreshing, without resetting scroll', async () => {
+    const past = { ...task(), lastRunAt: new Date(now - 60_000).toISOString() };
+    const entry = { id: 'stable-history', taskId: past.id, firedAt: past.lastRunAt, status: 'success', summary: '保留的交付记录' };
+    let resolveRefresh!: (value: { entries: typeof entry[] }) => void;
+    const history = vi.fn().mockResolvedValueOnce({ entries: [entry] }).mockImplementationOnce(() => new Promise(resolve => { resolveRefresh = resolve; }));
+    (window as unknown as Record<string, unknown>).syncThink = { runtime: { scheduledTaskHistory: history } };
+    const input = props({ tasks: [past], allTasks: [past] });
+    const result = render(<TaskCalendar {...input} />);
+    await waitFor(() => expect(history).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.queryByText('正在加载运行记录…')).toBeNull());
+    const occurrence = screen.getByRole('button', { name: /任务 one.*已完成/ });
+    fireEvent.click(occurrence);
+    expect(screen.getByRole('dialog', { name: '日程详情' })).toBeTruthy();
+    const scroll = screen.getByTestId('task-calendar-scroll');
+    scroll.scrollTop = 80;
+    result.rerender(<TaskCalendar {...input} tasks={[{ ...past }]} />);
+    expect(history).toHaveBeenCalledTimes(2);
+    expect(screen.queryByText('正在加载运行记录…')).toBeNull();
+    expect(screen.getByRole('button', { name: /任务 one.*已完成/ })).toBeTruthy();
+    expect(screen.getByRole('dialog', { name: '日程详情' })).toBeTruthy();
+    expect(scroll.scrollTop).toBe(80);
+    await act(async () => { resolveRefresh({ entries: [entry] }); });
+    expect(screen.queryByText('正在加载运行记录…')).toBeNull();
+    expect(screen.getByRole('dialog', { name: '日程详情' })).toBeTruthy();
+  });
+
+  it('retains the last successful history on a transient refresh error but discards it for a different task scope', async () => {
+    const past = { ...task(), lastRunAt: new Date(now - 60_000).toISOString() };
+    const entry = { id: 'stable-history', taskId: past.id, firedAt: past.lastRunAt, status: 'success' };
+    const history = vi.fn().mockResolvedValueOnce({ entries: [entry] }).mockRejectedValueOnce(new Error('暂时断开'));
+    (window as unknown as Record<string, unknown>).syncThink = { runtime: { scheduledTaskHistory: history } };
+    const input = props({ tasks: [past], allTasks: [past] });
+    const result = render(<TaskCalendar {...input} />);
+    await waitFor(() => expect(screen.getByRole('button', { name: /任务 one.*已完成/ })).toBeTruthy());
+    result.rerender(<TaskCalendar {...input} tasks={[{ ...past }]} />);
+    await screen.findByText(/部分历史记录加载失败/);
+    expect(screen.getByRole('button', { name: /任务 one.*已完成/ })).toBeTruthy();
+    result.rerender(<TaskCalendar {...input} tasks={[task('other')]} allTasks={[task('other')]} />);
+    expect(screen.queryByRole('button', { name: /任务 one/ })).toBeNull();
   });
 });

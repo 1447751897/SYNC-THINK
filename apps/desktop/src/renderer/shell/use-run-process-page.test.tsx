@@ -45,17 +45,17 @@ describe('process page controls', () => {
       .mockResolvedValueOnce({ process: second })
       .mockResolvedValueOnce({ process: first });
     render(<FileChangesCard view={first} />);
-    expect(screen.getByText('编辑了 3 个文件')).toBeTruthy();
+    expect(screen.getByLabelText('3 个文件')).toBeTruthy();
     expect(read).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: '下一页文件' }));
-    await screen.findByText('second.txt');
-    expect(screen.queryByText('first.txt')).toBeNull();
+    await screen.findByRole('button', { name: '展开 second.txt diff' });
+    expect(screen.queryByRole('button', { name: '展开 first.txt diff' })).toBeNull();
     expect(read.mock.calls[0][0]).toMatchObject({
       conversationId: 'conversation-a',
       page: { section: 'fileChanges', offset: 1, version },
     });
     fireEvent.click(screen.getByRole('button', { name: '上一页文件' }));
-    await screen.findByText('first.txt');
+    await screen.findByRole('button', { name: '展开 first.txt diff' });
     expect(read.mock.calls[1][0].page?.offset).toBe(0);
   });
 
@@ -159,8 +159,8 @@ describe('accumulateRunProcessSection', () => {
     } as RunProcessView;
     const merged = accumulateRunProcessSection(first, incoming, 'steps');
     expect(merged.steps.map((step) => step.id)).toEqual(['first-step', 'second-step']);
-    expect(accumulateRunProcessSection(merged, first, 'steps').steps.map((step) => step.id)).toEqual(
-      ['first-step'],
-    );
+    expect(
+      accumulateRunProcessSection(merged, first, 'steps').steps.map((step) => step.id),
+    ).toEqual(['first-step']);
   });
 });

@@ -69,3 +69,9 @@ sync-think-arch.html
 /*.png
 /未命名*
 /notes/未命名*
+/designs/未命名*
+# 构建残留与生成物（误落入工作区，禁止入库）
+# settingsStore-*.js 为打包/解包残留的带 hash chunk，非源码
+/settingsStore-*.js
+/pelican-bicycle.html
+/visualizations/

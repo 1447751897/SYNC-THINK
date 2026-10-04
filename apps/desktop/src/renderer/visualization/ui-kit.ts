@@ -13,6 +13,10 @@
  * explicit.
  */
 
+import { boardDataStyles } from './board-data-styles.js';
+export { loadBoardDataFont } from './board-data-font-loader.js';
+import { buildBoardDataBootstrap } from './board-data.js';
+import { hasBoardDataMarkup } from './data-html.js';
 import { VISUALIZATION_UI_KIT_VERSION, type VisualizationTheme } from './design-system.js';
 
 /** Matches NewMax's `VISUALIZATION_VIEWPORT_GUTTER_PX`. */
@@ -307,7 +311,7 @@ svg, canvas, img { display: block; max-width: 100%; }
  * and is not needed for correct layout/height reporting.
  */
 export const VISUALIZATION_UI_KIT_ENFORCEMENT_STYLES = `
-main.viz-root button:where(:not(.viz-tab):not(.viz-select-trigger):not(.viz-select-option)) {
+main.viz-root button:where(:not(.bd-root *):not(.viz-tab):not(.viz-select-trigger):not(.viz-select-option)) {
   appearance: none !important;
   display: inline-flex !important;
   align-items: center !important;
@@ -343,8 +347,8 @@ main.viz-root button.is-ghost { background: transparent !important; }
 main.viz-root button[data-variant="danger"],
 main.viz-root button.danger,
 main.viz-root button.is-danger { background: color-mix(in srgb, var(--ds-danger) 6%, transparent) !important; color: var(--ds-danger) !important; }
-main.viz-root button:where(:not(.viz-tab):not(.viz-select-trigger):not(.viz-select-option)):hover:not(:disabled) { opacity: 0.8 !important; }
-main.viz-root button:where(:not(.viz-tab):not(.viz-select-trigger):not(.viz-select-option)):active:not(:disabled) { opacity: 0.7 !important; }
+main.viz-root button:where(:not(.bd-root *):not(.viz-tab):not(.viz-select-trigger):not(.viz-select-option)):hover:not(:disabled) { opacity: 0.8 !important; }
+main.viz-root button:where(:not(.bd-root *):not(.viz-tab):not(.viz-select-trigger):not(.viz-select-option)):active:not(:disabled) { opacity: 0.7 !important; }
 main.viz-root button:disabled { cursor: default !important; opacity: 0.4 !important; }
 `;
 
@@ -389,7 +393,8 @@ function injectHead(source: string, extras: string): string {
   // The kit is a baseline, not an authored-page theme override. Prepend it so
   // complete documents retain their own body background, type and spacing.
   // CSP also takes effect before authored scripts rather than after them.
-  if (/<head\b[^>]*>/i.test(source)) return source.replace(/<head\b[^>]*>/i, (head) => head + extras);
+  if (/<head\b[^>]*>/i.test(source))
+    return source.replace(/<head\b[^>]*>/i, (head) => head + extras);
   if (/<\/head>/i.test(source)) return source.replace(/<\/head>/i, `${extras}</head>`);
   if (/<body(?:\s|>)/i.test(source)) {
     return source.replace(/<body(?:\s|>)/i, (match) => `${extras}${match}`);
@@ -410,7 +415,11 @@ export function buildVisualizationDocumentHtml(
 ): string {
   const theme: VisualizationTheme = options.theme === 'dark' ? 'dark' : 'light';
   const reduceMotion = options.reduceMotion === true ? 'true' : 'false';
-  const trimmed = source.trim();
+  const dataComponents = hasBoardDataMarkup(source);
+  const nativeTables = /<table(?:\s|>)/i.test(source);
+  const trimmed = source
+    .trim()
+    .replace(/<table(?![^>]*\bclass\s*=)([^>]*)>/gi, '<table class="board-table"$1>');
   const headExtras = [
     '<meta charset="utf-8">',
     '<meta name="viewport" content="width=device-width, initial-scale=1">',
@@ -419,6 +428,8 @@ export function buildVisualizationDocumentHtml(
     `<meta http-equiv="Content-Security-Policy" content="${visualizationContentSecurityPolicy(source)}">`,
     `<style>${VISUALIZATION_UI_KIT_STYLES}</style>`,
     buildThemeBootstrap(options.tokens),
+    dataComponents || nativeTables ? `<style>${boardDataStyles()}</style>` : '',
+    dataComponents ? buildBoardDataBootstrap() : '',
     // Design drafts fill the host pane so 100vh layouts track the window, but
     // the box must still grow past the viewport when the content is taller —
     // that growth is what the guest reports back as a larger stage height.
@@ -452,7 +463,9 @@ export function buildVisualizationDocumentHtml(
     }
     // A full standalone page did not opt into kit buttons merely because we
     // added a measurement root. Keep its authored button colors and contrast.
-    const enforcement = rootWrapped ? `<style>${VISUALIZATION_UI_KIT_ENFORCEMENT_STYLES}</style>` : '';
+    const enforcement = rootWrapped
+      ? `<style>${VISUALIZATION_UI_KIT_ENFORCEMENT_STYLES}</style>`
+      : '';
     return /<\/body>/i.test(documentSource)
       ? documentSource.replace(/<\/body>/i, `${enforcement}</body>`)
       : `${documentSource}\n${enforcement}`;

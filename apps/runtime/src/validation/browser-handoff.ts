@@ -11,10 +11,12 @@ const validId = (value: unknown): value is string =>
 export function parseListWaitingBrowserHandoffsPayload(
   value: unknown,
 ): ListWaitingBrowserHandoffsPayload | undefined {
-  if (!isRecord(value) || !hasOnlyKeys(value, ['workspaceId', 'runId'])) return undefined;
+  if (!isRecord(value) || !hasOnlyKeys(value, ['workspaceId', 'runId', 'conversationId'])) return undefined;
+  if (value.conversationId !== undefined && !validId(value.conversationId)) return undefined;
   if (value.workspaceId !== undefined && !validId(value.workspaceId)) return undefined;
   if (value.runId !== undefined && !validId(value.runId)) return undefined;
   return {
+    ...(typeof value.conversationId === 'string' ? { conversationId: value.conversationId.trim() } : {}),
     ...(typeof value.workspaceId === 'string'
       ? { workspaceId: value.workspaceId.trim() as ListWaitingBrowserHandoffsPayload['workspaceId'] }
       : {}),

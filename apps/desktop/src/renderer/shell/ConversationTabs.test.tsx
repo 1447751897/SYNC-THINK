@@ -716,6 +716,29 @@ describe('ConversationTabs activity markers', () => {
 
 
 describe('sidebar-owned conversation navigation', () => {
+  it('omits the duplicate new-resource and more buttons when the sidebar owns a single chat pane', () => {
+    render(<ConversationTabs compactHeader hideConversationTabs conversations={conversations} openIds={['c1', 'c2']} activeId="c1" onSelect={vi.fn()} onClose={vi.fn()} onNew={vi.fn()} />);
+    expect(screen.queryByTestId('conversation-tabs')).toBeNull();
+    expect(screen.queryByRole('button', { name: '新建资源' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '窗格更多操作' })).toBeNull();
+  });
+
+  it('dismisses open resource menus when switching to sidebar-only navigation', () => {
+    const props = { conversations, openIds: ['c1', 'c2'], activeId: 'c1', onSelect: vi.fn(), onClose: vi.fn(), onNew: vi.fn() };
+    const { rerender } = render(<ConversationTabs {...props} />);
+    fireEvent.click(screen.getByRole('button', { name: '新建资源' }));
+    expect(screen.getByTestId('new-resource-menu')).toBeTruthy();
+
+    rerender(<ConversationTabs {...props} compactHeader hideConversationTabs />);
+    expect(screen.queryByTestId('new-resource-menu')).toBeNull();
+    expect(screen.queryByTestId('conversation-tabs')).toBeNull();
+
+    rerender(<ConversationTabs {...props} />);
+    expect(screen.getByRole('button', { name: '新建资源' }).getAttribute('aria-expanded')).toBe('false');
+    expect(screen.queryByTestId('new-resource-menu')).toBeNull();
+    expect(screen.getByRole('button', { name: '窗格更多操作' })).toBeTruthy();
+  });
+
   it('omits redundant conversation tabs but keeps file resources selectable', () => {
     const onSelectFile = vi.fn();
     render(<ConversationTabs hideConversationTabs conversations={conversations} openIds={['c1', 'c2']} activeId="c1" fileTabs={[{ id: 'readme', path: 'README.md' }]} onSelect={vi.fn()} onClose={vi.fn()} onNew={vi.fn()} onSelectFile={onSelectFile} />);
@@ -738,4 +761,13 @@ it('cleans up a cancelled conversation drag from the advanced manager while top 
   expect(onTabDragStateChange).toHaveBeenCalledWith({ type: 'conversation', id: 'c1' });
   fireEvent.dragEnd(row, { dataTransfer });
   expect(onTabDragStateChange).toHaveBeenLastCalledWith(null);
+});
+
+
+it('prioritizes awaiting-answer tab markers over active-run animation', () => {
+  render(<ConversationTabs conversations={conversations} openIds={['c1', 'c2']} activeId="c2"
+    conversationActivity={new Map([['c1', { running: true, unread: false, attention: 'answer' }]])}
+    onSelect={vi.fn()} onClose={vi.fn()} onNew={vi.fn()} />);
+  expect(screen.getByTestId('conversation-attention-c1').getAttribute('aria-label')).toBe('等你回答');
+  expect(screen.queryByTestId('conversation-running-c1')).toBeNull();
 });

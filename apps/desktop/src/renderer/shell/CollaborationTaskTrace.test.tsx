@@ -93,3 +93,36 @@ it('serializes live refresh with pagination and retains loaded events at complet
   expect(screen.getByText('事件正文 9')).toBeTruthy();
   expect(screen.queryByRole('button', { name: '加载更多事件' })).toBeNull();
 });
+
+it('shows the committed review edge and the exact artifact version despite a later producer retry', () => {
+  Object.defineProperty(window, 'syncThink', { configurable: true, value: { runtime: {} } });
+  const f = fixture();
+  const original = { ...f.attempt.artifacts![0], id: 'draft-1', taskId: 't1', attemptId: 'a1', title: '第一章初稿', content: '交给审校的第一版正文。', sha256: 'version-one-12345' };
+  const later = { ...original, id: 'draft-2', attemptId: 'a3', content: '随后产生的重试版本。', sha256: 'version-two-67890' };
+  const source = { ...f.snapshot.tasks[0], currentAttemptId: 'a3' };
+  const task = { ...f.task, parentTaskId: 't1', purpose: 'coordination' as const, dependsOnTaskIds: [], handoff: { kind: 'review' as const, sourceTaskId: 't1', sourceAttemptId: 'a1', artifactIds: ['draft-1'] } };
+  const snapshot = { ...f.snapshot, conversation: { id: 'conv-review', room: {} }, tasks: [source, task], attempts: [
+    { ...f.attempt, id: 'a1', taskId: 't1', number: 1, artifacts: [original] },
+    { ...f.attempt, id: 'a3', taskId: 't1', number: 2, artifacts: [later] }, f.attempt,
+  ] } as CollaborationSnapshot;
+  const onSelectTask = vi.fn();
+  render(<CollaborationTaskTrace snapshot={snapshot} task={task} attempt={{ ...f.attempt, runId: undefined }} onSelectTask={onSelectTask} />);
+  expect(screen.getByText('审核 · 来源：正文')).toBeTruthy();
+  expect(screen.getByLabelText('交接关系')).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: '正文 · 第 1 次' }));
+  expect(onSelectTask).toHaveBeenCalledWith('t1', 'a1');
+  fireEvent.click(screen.getByRole('button', { name: /第一章初稿/ }));
+  expect(screen.getByText('交给审校的第一版正文。')).toBeTruthy();
+  expect(screen.getByText(/产物版本 version-on/)).toBeTruthy();
+  expect(screen.queryByText('随后产生的重试版本。')).toBeNull();
+});
+
+it('does not replace a missing or failed handoff reference with another available draft', () => {
+  Object.defineProperty(window, 'syncThink', { configurable: true, value: { runtime: {} } });
+  const f = fixture();
+  const task = { ...f.task, handoff: { kind: 'report' as const, sourceTaskId: 't1', sourceAttemptId: 'missing', artifactIds: ['failed-draft', 'absent'] } };
+  const snapshot = { ...f.snapshot, attempts: [...f.snapshot.attempts, { ...f.attempt, id: 'failed', status: 'failed' as const, artifacts: [{ ...f.attempt.artifacts![0], id: 'failed-draft', title: '未完成稿', content: '未完成正文' }] }] };
+  render(<CollaborationTaskTrace snapshot={snapshot} task={task} attempt={{ ...f.attempt, runId: undefined }} onSelectTask={vi.fn()} />);
+  expect(screen.getByText(/2 份引用产物尚未确认交付/)).toBeTruthy();
+  expect(screen.queryByRole('button', { name: /未完成稿/ })).toBeNull();
+});

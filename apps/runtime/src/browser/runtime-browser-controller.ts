@@ -32,6 +32,9 @@ export type BrowserHandoffReason =
 export type BrowserHandoffCancelDisposition = 'keep-open' | 'close-page';
 
 export interface RuntimeBrowserHandoffRequest {
+  scheduledBinding?: { taskId: string; firedAt: string; threadId: string; conversationId: string; fingerprint: string };
+  groupBinding?: { conversationId: string; taskId: string; attemptId: string; goalRevision: number };
+  profileId?: string;
   workspaceId: string;
   runId: string;
   ownerId: string;
@@ -44,6 +47,9 @@ export interface RuntimeBrowserHandoffRequest {
 }
 
 export interface RuntimeBrowserHandoffSummary {
+  scheduledTaskId?: string;
+  profileId?: string;
+  conversationId?: string;
   handoffId: string;
   revision: 1;
   workspaceId: string;
@@ -67,6 +73,12 @@ export type RuntimeBrowserHandoffRequestResult =
   | { status: 'cancelled'; handoffId: string; replayed: true };
 
 export interface RuntimeBrowserHandoffContext {
+  scheduledBinding?: RuntimeBrowserHandoffRequest['scheduledBinding'];
+  groupBinding?: RuntimeBrowserHandoffRequest['groupBinding'];
+  ownerId: string;
+  idempotencyKey: string;
+  requestedOutcome: string;
+  onCancel: BrowserHandoffCancelDisposition;
   handoffId: string;
   revision: 1;
   workspaceId: string;
@@ -115,6 +127,8 @@ export interface RuntimeBrowserControllerOptions {
 }
 
 export interface RuntimeBrowserPermissionInput {
+  /** Host-selected Profile; never inferred from model arguments. */
+  profileId?: string;
   toolName: string;
   argumentsJson: string;
   workspaceId: string;
@@ -245,13 +259,13 @@ export class RuntimeBrowserController {
 
     let command;
     try {
-      command = await this.profileGate.runExclusive(this.profileId, () =>
+      command = await this.profileGate.runExclusive(input.profileId ?? this.profileId, () =>
         this.store.reserveCommand({
           idempotencyKey: input.idempotencyKey,
           workspaceId: input.workspaceId,
           runId: input.runId,
           ownerId: input.ownerId,
-          profileId: this.profileId,
+          profileId: input.profileId ?? this.profileId,
           toolName: input.toolName,
           action: resolved.permissionAction,
           targetOrigin: resolved.targetOrigin,
@@ -368,7 +382,7 @@ export class RuntimeBrowserController {
       commandId: command.id,
       idempotencyKey: input.idempotencyKey,
       toolName: input.toolName,
-      profileId: this.profileId,
+      profileId: input.profileId ?? this.profileId,
       ownerId: input.ownerId,
       ...(input.agentVersionId ? { agentVersionId: input.agentVersionId } : {}),
       ...(input.stepId ? { stepId: input.stepId } : {}),
@@ -395,7 +409,7 @@ export class RuntimeBrowserController {
     const workingDir = input.workspaceRoot ?? this.fallbackWorkingDir;
     const workerInput: BrowserWorkerInput = {
       workingDir,
-      profileId: this.profileId,
+      profileId: input.profileId ?? this.profileId,
       ownerId: input.ownerId,
       allowedSites: [resolved.targetOrigin],
       action: resolved.prepared.action,
@@ -467,7 +481,7 @@ export class RuntimeBrowserController {
       workspaceId: normalized.workspaceId,
       runId: normalized.runId,
       ownerId: normalized.ownerId,
-      profileId: this.profileId,
+      profileId: input.profileId ?? this.profileId,
     });
     if (!previous?.leaseId || !previous.pageId) {
       throw new RuntimeBrowserHandoffError(
@@ -475,19 +489,21 @@ export class RuntimeBrowserController {
         'A completed Browser command with an active Page lease is required before handoff.',
       );
     }
-    const command = await this.profileGate.runExclusive(this.profileId, () =>
+    const command = await this.profileGate.runExclusive(input.profileId ?? this.profileId, () =>
       this.store.reserveCommand({
         idempotencyKey: normalized.idempotencyKey,
         workspaceId: normalized.workspaceId,
         runId: normalized.runId,
         ownerId: normalized.ownerId,
-        profileId: this.profileId,
+        profileId: input.profileId ?? this.profileId,
         leaseId: previous.leaseId,
         pageId: previous.pageId,
         toolName: 'browser_handoff',
         action: 'handoff',
         targetOrigin: previous.targetOrigin,
         sanitizedArgs: {
+          ...(input.groupBinding ? { groupBinding: input.groupBinding } : {}),
+          ...(input.scheduledBinding ? { scheduledBinding: input.scheduledBinding } : {}),
           reason: normalized.reason,
           requestedOutcome: normalized.requestedOutcome,
           onCancel: normalized.onCancel,
@@ -565,8 +581,14 @@ export class RuntimeBrowserController {
       workspaceId: command.workspaceId,
       runId: command.runId,
       profileId: command.profileId,
+      ownerId: command.ownerId,
+      idempotencyKey: command.idempotencyKey,
+      ...(command.sanitizedArgs.scheduledBinding ? { scheduledBinding: command.sanitizedArgs.scheduledBinding as RuntimeBrowserHandoffRequest['scheduledBinding'] } : {}),
+      ...(command.sanitizedArgs.groupBinding ? { groupBinding: command.sanitizedArgs.groupBinding as RuntimeBrowserHandoffRequest['groupBinding'] } : {}),
       siteOrigin: command.targetOrigin,
       reason: args.reason,
+      requestedOutcome: args.requestedOutcome,
+      onCancel: args.onCancel,
       ...(args.stepId ? { stepId: args.stepId } : {}),
       ...(args.agentVersionId ? { agentVersionId: args.agentVersionId } : {}),
       state: command.state,
@@ -596,6 +618,11 @@ export class RuntimeBrowserController {
       );
     }
     await this.assertHandoffLease(command);
+    // The lease check is asynchronous; another Continue may already have consumed it.
+    const latest = this.getHandoffCommand(input.handoffId);
+    if (['approved', 'running', 'completed'].includes(latest.state)) {
+      return { status: 'continued', handoffId: latest.id, replayed: true };
+    }
     try {
       this.store.markApproved(command.id);
     } catch (error) {
@@ -735,7 +762,7 @@ export class RuntimeBrowserController {
       this.store.getLastCompletedOrigin({
         workspaceId: input.workspaceId,
         ownerId: input.ownerId,
-        profileId: this.profileId,
+        profileId: input.profileId ?? this.profileId,
       });
     if (!targetOrigin) {
       return {
@@ -847,8 +874,12 @@ function handoffArgs(command: BrowserCommandRecord): {
 
 function handoffSummary(command: BrowserCommandRecord): RuntimeBrowserHandoffSummary {
   const args = handoffArgs(command);
+  const binding = command.sanitizedArgs.groupBinding as RuntimeBrowserHandoffRequest['groupBinding'];
   return {
     handoffId: command.id,
+    ...(command.sanitizedArgs.scheduledBinding ? {scheduledTaskId:(command.sanitizedArgs.scheduledBinding as NonNullable<RuntimeBrowserHandoffRequest['scheduledBinding']>).taskId} : {}),
+    profileId: command.profileId,
+    ...(binding ? { conversationId: binding.conversationId } : {}),
     revision: 1,
     workspaceId: command.workspaceId,
     runId: command.runId,

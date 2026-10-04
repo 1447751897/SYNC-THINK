@@ -38,3 +38,9 @@ describe('parseConversationDecideToolApprovalPayload', () => {
     ).toBeUndefined();
   });
 });
+
+it('accepts only one-shot human exclusions, rejecting denial, duplicates and persistent edits', () => {
+  const payload = { approvalId: 'approval', decision: 'approve', excludedSkillTools: ['write_file'] };
+  expect(parseConversationDecideToolApprovalPayload(payload)).toMatchObject({ excludedSkillTools: ['write_file'], scope: 'once' });
+  for (const update of [{ decision: 'deny' }, { scope: 'session' }, { excludedSkillTools: ['write_file', 'write_file'] }, { excludedSkillTools: [''] }, { excludedSkillTools: 'write_file' }]) expect(parseConversationDecideToolApprovalPayload({ ...payload, ...update })).toBeUndefined();
+});

@@ -4,7 +4,7 @@ import type { KernelEvent, KernelRequest } from '@sync-think/shared';
 import { startKernelProcess } from './process.js';
 import { CodexAppServerKernelAdapter } from './codex-app-server-adapter.js';
 import { commandSilenceNotice } from './persistent-terminal-command.js';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { KernelStartupError } from './kernel-diagnostics.js';
@@ -914,4 +914,18 @@ describe('Codex editing capabilities and native instruction preservation', () =>
     await adapter.stop();
     expect(existsSync(paths[0])).toBe(false);
   });
+});
+
+it('isolates API-key state from the desktop Codex home but preserves explicit local-login behavior', async () => {
+ const directory=mkdtempSync(join(tmpdir(),'sync-think-codex-home-test-'));
+ const home=join(directory,'persistent-home'); const environments:Array<Record<string,string>>=[];
+ const adapter=new CodexAppServerKernelAdapter({apiHomeDirectory:home,spawn:(args,env,cwd)=>{environments.push({...env});return startKernelProcess({command:process.execPath,args:[fixturePath,...args],env,cwd});}});
+ adapters.add(adapter);
+ try {
+  for await (const _ of adapter.start(makeRequest({credential:{apiKey:'fixture-key'}}))) {}
+  expect(environments.every(env=>env.CODEX_HOME===home)).toBe(true); expect(existsSync(home)).toBe(true);
+  for await (const _ of adapter.start(makeRequest({credential:{reuseLocalLogin:true}}))) {}
+  expect(environments.at(-1)?.CODEX_HOME).toBeUndefined();
+  expect(environments.at(-1)?.OPENAI_API_KEY).toBeUndefined();
+ } finally {await adapter.stop(); rmSync(directory,{recursive:true,force:true});}
 });

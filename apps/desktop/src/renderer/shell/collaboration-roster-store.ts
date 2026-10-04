@@ -54,18 +54,27 @@ function subscribe(listener: () => void) {
   return () => { listeners.delete(listener); };
 }
 
-/** Roster for one collaboration conversation; `undefined` for ordinary chats. */
-export function useCollaborationRoster(conversationId: string, enabled: boolean) {
+function useRosterSnapshot<T>(enabled: boolean, snapshot: () => T) {
   useEffect(() => {
     if (!enabled) return;
     retain();
     return release;
   }, [enabled]);
-  return useSyncExternalStore(subscribe, () => (enabled ? rosters.get(conversationId) : undefined));
+  return useSyncExternalStore(subscribe, snapshot);
+}
+
+/** Roster for one collaboration conversation; `undefined` for ordinary chats. */
+export function useCollaborationRoster(conversationId: string, enabled: boolean) {
+  return useRosterSnapshot(enabled, () => (enabled ? rosters.get(conversationId) : undefined));
 }
 
 /** Test seam: seed or clear the cache without a runtime. */
 export function setCollaborationRostersForTest(next: readonly CollaborationRosterSummary[]) {
   rosters = new Map(next.map((roster) => [roster.conversationId, roster]));
   for (const listener of listeners) listener();
+}
+
+/** Shared room-list subscription; switching the viewed room never owns execution. */
+export function useCollaborationRosters(enabled: boolean) {
+  return useRosterSnapshot(enabled, () => rosters);
 }

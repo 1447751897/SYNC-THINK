@@ -146,7 +146,17 @@ export function expandStdioEndpoint(
 export function parseLocalStdioCommand(
   endpoint: string,
   env: NodeJS.Dict<string> = process.env,
-): { ok: true; command: string; args: string[] } | { ok: false; reason: string } {
+): { ok: true; command: string; args: string[]; env?: Record<string, string> } | { ok: false; reason: string } {
+  if (endpoint.trim().startsWith('{')) {
+    try {
+      const config = JSON.parse(endpoint) as { command?: unknown; args?: unknown; env?: unknown };
+      if (typeof config.command !== 'string' || !config.command.trim() || (config.args !== undefined && (!Array.isArray(config.args) || config.args.some((arg: unknown) => typeof arg !== 'string')))) return { ok: false, reason: 'Invalid stdio command or args' };
+      if (config.env !== undefined && (!config.env || typeof config.env !== 'object' || Array.isArray(config.env) || Object.entries(config.env).some(([key, value]) => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || typeof value !== 'string'))) return { ok: false, reason: 'Invalid stdio environment' };
+      const parsed = parseLocalStdioCommand('"' + config.command.replaceAll('"', '') + '"', env);
+      if (!parsed.ok) return parsed;
+      return { ok: true, command: parsed.command, args: (config.args ?? []) as string[], ...(config.env ? { env: config.env as Record<string, string> } : {}) };
+    } catch { return { ok: false, reason: 'Invalid stdio configuration JSON' }; }
+  }
   const expanded = expandStdioEndpoint(endpoint, env);
   if (!expanded.ok) return expanded;
   const raw = expanded.endpoint;
@@ -316,7 +326,7 @@ export class LocalStdioMcpWorker implements Worker<LocalStdioMcpWorkerInput> {
   private async *execSpawnProbe(
     input: LocalStdioMcpWorkerInput,
     policy: McpProcessPolicy,
-    parsed: { command: string; args: string[] },
+    parsed: { command: string; args: string[]; env?: Record<string, string> },
     toolName: string,
     transport: string,
     token: WorkerToken,
@@ -352,6 +362,7 @@ export class LocalStdioMcpWorker implements Worker<LocalStdioMcpWorkerInput> {
         cwd: input.workingDir,
         env: {
           ...process.env,
+          ...parsed.env,
           SYNC_THINK_MCP_SPAWN: '1',
         },
         shell: false,
@@ -568,7 +579,7 @@ export class LocalStdioMcpWorker implements Worker<LocalStdioMcpWorkerInput> {
   private async *execCallTool(
     input: LocalStdioMcpWorkerInput,
     policy: McpProcessPolicy,
-    parsed: { command: string; args: string[] },
+    parsed: { command: string; args: string[]; env?: Record<string, string> },
     toolName: string,
     transport: string,
     token: WorkerToken,
@@ -611,6 +622,7 @@ export class LocalStdioMcpWorker implements Worker<LocalStdioMcpWorkerInput> {
         cwd: input.workingDir,
         env: {
           ...process.env,
+          ...parsed.env,
           SYNC_THINK_MCP_SPAWN: '1',
           SYNC_THINK_MCP_TOOL: toolName,
         },
@@ -951,7 +963,7 @@ export class LocalStdioMcpWorker implements Worker<LocalStdioMcpWorkerInput> {
   private async *execListTools(
     input: LocalStdioMcpWorkerInput,
     policy: McpProcessPolicy,
-    parsed: { command: string; args: string[] },
+    parsed: { command: string; args: string[]; env?: Record<string, string> },
     transport: string,
     token: WorkerToken,
   ): AsyncIterable<WorkerEvent> {
@@ -992,6 +1004,7 @@ export class LocalStdioMcpWorker implements Worker<LocalStdioMcpWorkerInput> {
         cwd: input.workingDir,
         env: {
           ...process.env,
+          ...parsed.env,
           SYNC_THINK_MCP_SPAWN: '1',
           SYNC_THINK_MCP_LIST: '1',
         },

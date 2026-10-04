@@ -250,7 +250,6 @@ describe('CommandSessionStore', () => {
     for (let round = 1; round <= 20; round++) {
       const result = evaluateToolLoopGuard({
         toolLoopRound: round,
-        maxToolRounds: 8,
         stagnantRounds: round,
         completedResults: [
           { toolCallId: 'read', content: '{"ok":true,"status":"running"}', pendingCommand: true },
@@ -261,9 +260,8 @@ describe('CommandSessionStore', () => {
     expect(
       evaluateToolLoopGuard({
         toolLoopRound: 8,
-        maxToolRounds: 8,
         completedResults: [{ toolCallId: 'other-tool', content: '{"ok":true}' }],
       }).kind,
-    ).toBe('force_final');
+    ).toBe('continue');
   });
 });

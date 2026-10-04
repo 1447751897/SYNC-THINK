@@ -53,6 +53,24 @@ function captureEventPageQuery(raw: BetterSQLite3Raw, input: ListEventPageInput)
 }
 
 describe('SqliteEventCheckpointStore', () => {
+  it('retains native image-preparation records in completed process snapshots without context bodies', async () => {
+    const path = makeDbPath(); await runMigrations(path);
+    const {raw} = await openDatabaseAsync({path});
+    try {
+      const store = new SqliteEventCheckpointStore(raw);
+      const workspaceId = 'workspace-images' as WorkspaceId;
+      const runId = 'run-images' as RunId;
+      const drafts = ['context.image.prepared','context.image.prepared','context.packet.built'].map((type,index) => ({
+        ...eventDraft('image-process-'+index,workspaceId,'unused'),runId,type,
+        payload:{imageName:'image.jpg',path:`images/${index}.jpg`,route:'forwarded',preview:'MIME：image/jpeg'},
+      }));
+      store.commitTransition({events:[drafts[0]!,...drafts.slice(1)]});
+      const events = store.listRunProcessEvents(runId);
+      expect(events.map(event=>event.type)).toEqual(['context.image.prepared','context.image.prepared']);
+      expect(events.map(event=>event.payload.path)).toEqual(['images/0.jpg','images/1.jpg']);
+    } finally {raw.close();}
+  });
+
   it('includes precise approval boundaries in the scoped process read without loading context bodies', async () => {
     const path = makeDbPath();
     await runMigrations(path);

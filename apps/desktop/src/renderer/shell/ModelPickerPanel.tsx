@@ -10,13 +10,14 @@ import {
 import { createPortal } from 'react-dom';
 import { Brain, Check, ChevronDown, Cpu, Search, X, LoaderCircle } from 'lucide-react';
 import {
+  REASONING_EFFORT_LEVELS,
   isKernelExecutable,
   isKernelExecutionSupported,
   kernelExecutionUnavailableReason,
   type KernelDetectionResult,
 } from '@sync-think/shared';
 import type { ModelOption } from './NewConversationDialog.js';
-import type { FloatingAnchorRect, KernelInstallState, ReasoningEffort } from './compose-toolbar.js';
+import type { FloatingAnchorRect, KernelInstallState, ReasoningEffort } from './composer-toolbar-types.js';
 import { BrandLogoMark } from './BrandLogoMark.js';
 import { resolveKernelBrandLogo, resolveKernelDisplayName } from './brand-icons.js';
 import { ProviderIdentityMark } from './ProviderIdentityMark.js';
@@ -45,14 +46,7 @@ interface Props {
     options: { width: number; maxHeight: number; align?: 'left' | 'right' },
   ): CSSProperties;
 }
-const EFFORT_LEVELS: readonly ReasoningEffort[] = [
-  'minimal',
-  'low',
-  'medium',
-  'high',
-  'xhigh',
-  'max',
-];
+const EFFORT_LEVELS: readonly ReasoningEffort[] = REASONING_EFFORT_LEVELS.filter(level => level !== 'auto' && level !== 'off');
 const providerKey = (model: ModelOption) => model.providerId || 'name:' + model.providerName;
 
 function beside(
@@ -224,6 +218,12 @@ export function ModelPickerPanel(props: Props) {
     (selectedOption ?? menu?.querySelector<HTMLButtonElement>('button:not(:disabled)'))?.focus();
   }, [props.open, popover]);
   const chooseEffort = (value: ReasoningEffort) => props.onReasoningChange?.(value);
+  // A modal owns pointer events, focus and its accessibility subtree. Portalling
+  // to body from inside that modal makes this panel visible but inert. Mount at
+  // the dialog root (not the scrolling field) while keeping viewport positioning.
+  // Standalone chat pickers still escape their composer through the body portal.
+  const portalContainer =
+    props.anchorEl?.closest('dialog, [role="dialog"], [role="alertdialog"]') ?? document.body;
   const content =
     props.open && anchor
       ? createPortal(
@@ -478,7 +478,7 @@ export function ModelPickerPanel(props: Props) {
                 </div>
               </div>
             ) : null}
-            {!!props.kernels?.length ? (
+            {props.kernels?.length ? (
               <div ref={kernelPicker} className="shell-model-picker__kernel-row">
                 <button
                   ref={kernelButton}
@@ -611,7 +611,7 @@ export function ModelPickerPanel(props: Props) {
               </div>
             ) : null}
           </div>,
-          document.body,
+          portalContainer,
         )
       : null;
   return (

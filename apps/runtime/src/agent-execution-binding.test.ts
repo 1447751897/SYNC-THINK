@@ -1,3 +1,5 @@
+import { REASONING_EFFORT_LEVELS } from '@sync-think/shared';
+import { CHAT_AGENT_TOOL_SCHEMAS } from './chat-tools.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -17,6 +19,16 @@ import {
 } from './validation/agent.js';
 
 describe('agent-owned execution configuration', () => {
+  it.each(['create_agent', 'update_agent'])('offers the full reasoning ladder through %s', name => {
+    const schema = CHAT_AGENT_TOOL_SCHEMAS.find(tool => tool.name === name)!.inputSchema as { properties: { reasoningEffort: { enum: string[] } } };
+    expect(schema.properties.reasoningEffort.enum).toEqual([...REASONING_EFFORT_LEVELS]);
+  });
+
+  it.each(REASONING_EFFORT_LEVELS)('accepts %s on agent create and update', reasoningEffort => {
+    expect(parseCreateGlobalAgentPayload({ name: 'Agent', defaultModelId: 'model', reasoningEffort })?.reasoningEffort).toBe(reasoningEffort);
+    expect(parseUpdateGlobalAgentPayload({ agentId: 'a', reasoningEffort })?.reasoningEffort).toBe(reasoningEffort);
+  });
+
   it('validates kernel IDs on create and update', () => {
     expect(
       parseCreateGlobalAgentPayload({
@@ -93,6 +105,13 @@ describe('agent-owned execution configuration', () => {
           kernelId: 'claude-code',
           reasoningEffort: 'low',
         });
+        for (const kernelId of ['native', 'codex'] as const) {
+          for (const reasoningEffort of REASONING_EFFORT_LEVELS) {
+            agents.update({ agentId: agent.id, defaultKernelId: kernelId, reasoningEffort });
+            expect(agents.get(agent.id)?.reasoningEffort).toBe(reasoningEffort);
+            expect(binding.prepareRunBinding({ ...input, runId: `run-${kernelId}-${reasoningEffort}` }).run).toMatchObject({ kernelId, reasoningEffort });
+          }
+        }
       } finally {
         await runtime.stop();
         connection.raw.close();

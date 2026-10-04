@@ -62,6 +62,13 @@ describe('browser handoff IPC boundary', () => {
     expect(order).toEqual(['source', 'connect', `request:${command}`]);
   });
 
+  it('forwards the exact group query without losing its conversation/workspace isolation', async () => {
+    const { handlers, request } = fixture();
+    const payload = { conversationId: 'group-1', workspaceId: 'workspace-1' };
+    await handlers.get('runtime:browser-handoff-list-waiting')!('trusted', payload);
+    expect(request).toHaveBeenCalledWith('browser.handoff.listWaiting', payload);
+  });
+
   it('rejects untrusted senders before connection, parsing and transport', async () => {
     const { handlers, host, request } = fixture();
     host.assertSource.mockImplementation(() => {

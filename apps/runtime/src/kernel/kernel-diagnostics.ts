@@ -58,5 +58,12 @@ export function formatKernelExitDiagnostic(
     code === null
       ? `${kernelName} exited unexpectedly`
       : `${kernelName} exited with code ${String(code)}`;
-  return detail ? `${summary}: ${detail}` : summary;
+  // Warnings can precede the fatal error. Put the root cause first so bounded
+  // UI/index summaries retain it, while keeping the full warning detail below.
+  const lines = detail.split('\n');
+  const fatal = lines.filter((line) => /^error:/i.test(line.trim()));
+  const ordered = fatal.length
+    ? [...fatal, ...lines.filter((line) => !fatal.includes(line))].join('\n')
+    : detail;
+  return ordered ? `${summary}: ${ordered}` : summary;
 }

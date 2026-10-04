@@ -365,6 +365,7 @@ export const browserWorkflowSchedule = sqliteTable(
       .references(() => browserAutomationTask.id, { onDelete: 'restrict' }),
     enabled: integer('enabled', { mode: 'boolean' }).notNull().default(false),
     intervalMinutes: integer('interval_minutes').notNull(),
+    variablesJson: text('variables_json').notNull().default('{}'),
     nextRunAt: text('next_run_at'),
     lastRunAt: text('last_run_at'),
     revision: integer('revision').notNull().default(1),

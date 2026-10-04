@@ -28,7 +28,7 @@ describe('component documentation taxonomy', () => {
       'CodeBlockButton',
     ]);
     expect(filterComponents('', 'conversation')[0].name).toBe('ComposerEditor');
-    expect(filterComponents('', undefined, true)).toHaveLength(123);
+    expect(filterComponents('', undefined, true)).toHaveLength(125);
     expect(filterComponents('', 'legacy')).toHaveLength(23);
   });
   it('round-trips every category and component deep link and rejects malformed routes', () => {

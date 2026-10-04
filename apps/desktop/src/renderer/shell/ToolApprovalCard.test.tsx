@@ -259,3 +259,31 @@ describe('Be UI tool approval integration', () => {
     );
   });
 });
+
+describe('editable Skill declarations', () => {
+  const approval: PendingToolApproval = { approvalId: 'skill', toolName: 'update_skill', title: '更新 Skill', detail: '版本 1.1.0 · 工具声明：read_file, write_file · 仅解析文本', arguments: { skillMd: '---\nname: example\ndescription: example\nversion: 1.1.0\nallowed-tools: ["read_file", "write_file"]\n---\nBody' }, allowedScopes: ['once'] };
+  it('removes a tag without approving and submits the exact exclusion on approval', () => {
+    const { onApprove } = show({ approval });
+    fireEvent.click(screen.getByRole('button', { name: '移除工具声明 write_file' }));
+    expect(onApprove).not.toHaveBeenCalled();
+    expect(screen.queryByRole('button', { name: '移除工具声明 write_file' })).toBeNull();
+    expect(screen.getByRole('button', { name: '移除工具声明 read_file' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '仅本次允许' }));
+    expect(onApprove).toHaveBeenCalledWith('once', ['write_file']);
+  });
+  it('restores declarations and disables removal while submitting', () => {
+    const view = show({ approval });
+    fireEvent.click(screen.getByRole('button', { name: '移除工具声明 read_file' }));
+    fireEvent.click(screen.getByRole('button', { name: '恢复声明' }));
+    expect(screen.getByRole('button', { name: '移除工具声明 read_file' })).toBeTruthy();
+    view.rerender(<ToolApprovalCard approval={approval} busy onApprove={view.onApprove} onDeny={view.onDeny} />);
+    expect((screen.getByRole('button', { name: '移除工具声明 read_file' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+  it('shows an empty declaration and never offers persistent approval for an editable Skill', () => {
+    show({ approval: { ...approval, allowedScopes: ['once', 'session'] } });
+    fireEvent.click(screen.getByRole('button', { name: '移除工具声明 read_file' }));
+    fireEvent.click(screen.getByRole('button', { name: '移除工具声明 write_file' }));
+    expect(screen.getByText('未声明工具')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '本会话允许此工具' })).toBeNull();
+  });
+});

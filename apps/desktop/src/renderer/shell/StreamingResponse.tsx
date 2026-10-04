@@ -74,12 +74,15 @@ export function StreamingResponse({
   showContent = true,
   notice,
   metadata,
+  additionalActions,
+  details,
   sources = NO_CITATION_SOURCES,
   showActions = true,
   copyState = 'idle',
   onCopy,
   onRetry,
   onContinue,
+  continueFailed = false,
   busy = false,
   feedback = null,
   onFeedbackChange,
@@ -92,12 +95,18 @@ export function StreamingResponse({
   showContent?: boolean;
   notice?: ReactNode;
   metadata?: ReactNode;
+  /** Opt-in controls belong in the footer, never in the answer bubble. */
+  additionalActions?: ReactNode;
+  /** Expanded detail panels remain outside both the bubble and action row. */
+  details?: ReactNode;
   sources?: readonly AnswerSource[];
   showActions?: boolean;
   copyState?: ResponseCopyState;
   onCopy?: () => void;
   onRetry?: () => void;
   onContinue?: () => void;
+  /** Only preserved, resumable failures opt in; unrelated errors still offer retry only. */
+  continueFailed?: boolean;
   busy?: boolean;
   feedback?: ResponseFeedback;
   onFeedbackChange?: (feedback: ResponseFeedback) => void;
@@ -106,12 +115,12 @@ export function StreamingResponse({
 }) {
   const active = status === 'streaming' || status === 'waiting';
   const complete = status === 'complete';
-  const canContinue = (status === 'cancelled' || status === 'paused') && onContinue;
+  const canContinue = (status === 'cancelled' || status === 'paused' || (status === 'error' && continueFailed)) && onContinue;
   const showFeedback = complete && Boolean(onFeedbackChange);
   const showFooter =
     !active &&
     (Boolean(metadata) ||
-      (showActions && Boolean(onCopy || onRetry || canContinue || showFeedback || sources.length)));
+      (showActions && Boolean(onCopy || onRetry || canContinue || showFeedback || sources.length || additionalActions)));
   const copyLabel =
     copyState === 'copying'
       ? '读取原文中'
@@ -202,6 +211,7 @@ export function StreamingResponse({
                           />
                         </ResponseAction>
                       ) : null}
+                      {additionalActions}
                       {showFeedback ? (
                         <>
                           <ResponseAction
@@ -228,6 +238,7 @@ export function StreamingResponse({
             {metadata}
           </div>
         ) : null}
+        {details}
       </div>
     </CitationScope>
   );

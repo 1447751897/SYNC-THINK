@@ -72,3 +72,13 @@ describe('BrowserHandoffCard', () => {
     expect(onRetry).toHaveBeenCalledTimes(1);
   });
 });
+
+it('preserves the established default copy while concrete failure details take priority', () => {
+  const view = render(<BrowserHandoffQueryError busy={false} onRetry={vi.fn()} />);
+  expect(screen.getByText('无法读取浏览器接管状态，请检查 Runtime 连接后重试。')).toBeDefined();
+  view.rerender(<BrowserHandoffQueryError busy error="Invalid list-waiting-browser-handoffs payload" onRetry={vi.fn()} />);
+  expect(screen.queryByText('无法读取浏览器接管状态，请检查 Runtime 连接后重试。')).toBeNull();
+  fireEvent.click(screen.getByText('失败详情'));
+  expect(screen.getByText('Invalid list-waiting-browser-handoffs payload').closest('details')?.open).toBe(true);
+  expect(screen.getByRole('button', { name: '重试' })).toHaveProperty('disabled', true);
+});

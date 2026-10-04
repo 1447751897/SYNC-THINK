@@ -75,21 +75,12 @@ describe('TeamLibrary shared visual structure', () => {
     expect(dialog.querySelector('.shell-library-drawer__body')).toBeTruthy();
   });
 
-  it('moves the selected style between collaboration strategies', () => {
+  it('shows dynamic coordination instead of editable fixed workflow strategies', () => {
     renderLibrary();
     fireEvent.click(screen.getByText('Team Alpha').closest('.shell-library-card')!);
-
-    const options = Array.from(
-      document.querySelectorAll<HTMLButtonElement>('.shell-library-option'),
-    );
-    expect(options).toHaveLength(2);
-    expect(options[0]?.classList.contains('shell-library-option--selected')).toBe(true);
-    expect(options[1]?.classList.contains('shell-library-option--selected')).toBe(false);
-
-    fireEvent.click(options[1]!);
-
-    expect(options[0]?.classList.contains('shell-library-option--selected')).toBe(false);
-    expect(options[1]?.classList.contains('shell-library-option--selected')).toBe(true);
+    expect(document.querySelectorAll('.shell-library-option')).toHaveLength(0);
+    expect(screen.getByRole('dialog').textContent).toContain('负责人');
+    expect(screen.getByRole('dialog').textContent).toContain('群聊');
   });
 
   it('starts a team conversation without opening the detail dialog', () => {

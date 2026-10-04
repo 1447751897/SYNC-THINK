@@ -4,6 +4,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { HtmlSandbox } from './HtmlSandbox.js';
+import { INCOMPLETE_HTML_OPEN_ERROR } from './html-browser.js';
 import { HTML_PREVIEW_SIZE_MESSAGE, HTML_PREVIEW_VIEWPORT_MESSAGE } from './html-preview-sizing.js';
 
 const executeJavaScript = vi.fn();
@@ -209,4 +210,49 @@ describe('HtmlSandbox', () => {
     expect(screen.getByRole('button', { name: '源码' })).toBeTruthy();
     expect(screen.getByText('HTML')).toBeTruthy();
   });
+});
+
+it('shows data directly without a permanent header and exposes advanced actions on demand', () => {
+  const { container } = render(
+    <HtmlSandbox
+      code={
+        '<script type="application/json" data-boardui>{"version":1,"title":"Overview","components":[]}</script>'
+      }
+    />,
+  );
+  const menu = container.querySelector('details.shell-data-actions');
+  expect(menu).toBeTruthy();
+  expect(menu?.hasAttribute('open')).toBe(false);
+  expect(container.querySelector('.shell-html--data > .shell-html__bar')).toBeNull();
+  expect(screen.getByLabelText('数据操作')).toBeTruthy();
+});
+it('keeps a permanent preview/source toolbar for explicit custom authored data layouts', () => {
+  const { container } = render(
+    <HtmlSandbox
+      code={'<main data-boardui-layout="custom"><div data-boardui="{}"></div></main>'}
+    />,
+  );
+  expect(container.querySelector('details.shell-data-actions')).toBeNull();
+  expect(container.querySelector('.shell-html > .shell-html__bar')).toBeTruthy();
+});
+
+
+it('keeps a deferred prefix intact for source recovery and displays the handoff error', async () => {
+  const source = '<html><head><style>body{color:red;\n[预览；完整内容按需读取]';
+  const open = vi.fn().mockRejectedValue(new Error(INCOMPLETE_HTML_OPEN_ERROR));
+  render(<HtmlSandbox code={source} onOpenInBrowser={open} />);
+  fireEvent.click(screen.getByRole('button', { name: '浏览器打开' }));
+  expect(open).toHaveBeenCalledWith(source);
+  expect((await screen.findByRole('alert')).textContent).toBe(INCOMPLETE_HTML_OPEN_ERROR);
+});
+
+it('blocks standalone browser and download exports of truncated HTML', async () => {
+  const open = vi.spyOn(window, 'open').mockImplementation(() => null);
+  const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+  render(<HtmlSandbox code={'<html><style>body{color:red;\n[预览；完整内容按需读取]'} />);
+  fireEvent.click(screen.getByRole('button', { name: '浏览器打开' }));
+  expect((await screen.findByRole('alert')).textContent).toBe(INCOMPLETE_HTML_OPEN_ERROR);
+  fireEvent.click(screen.getByRole('button', { name: '下载' }));
+  expect(open).not.toHaveBeenCalled();
+  expect(click).not.toHaveBeenCalled();
 });

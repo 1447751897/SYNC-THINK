@@ -124,16 +124,16 @@ describe('ChatView assistant identity projection', () => {
     const answer = await screen.findByText('头像应该与智能体保持一致');
     const messageRow = answer.closest('[data-message-id]');
     await waitFor(() => {
-      expect(messageRow?.querySelector('canvas')?.getAttribute('data-bot-avatar')).toBe(shape);
+      expect(messageRow?.querySelector('canvas')?.getAttribute('data-shape')).toBe(shape);
       expect(
         screen
           .getByTestId('compose-identity')
           .querySelector('canvas')
-          ?.getAttribute('data-bot-avatar'),
+          ?.getAttribute('data-shape'),
       ).toBe(shape);
     });
-    expect(messageRow?.querySelector('[data-animated]')?.getAttribute('data-animated')).toBe(
-      'false',
+    expect(messageRow?.querySelector('canvas')?.getAttribute('data-motion')).toBe(
+      'still',
     );
   });
 
@@ -206,7 +206,7 @@ describe('ChatView assistant identity projection', () => {
     expect(within(messageRow as HTMLElement).getByText('原智能体')).toBeTruthy();
   });
 
-  it('keeps model-conversation assistant replies avatar-free', async () => {
+  it('gives model replies and their composer the fixed host system identity', async () => {
     const modelConversation = {
       ...conversation,
       track: 'model',
@@ -218,8 +218,56 @@ describe('ChatView assistant identity projection', () => {
     const messageRow = (await screen.findByText('头像应该与智能体保持一致')).closest(
       '[data-message-id]',
     );
-    expect(within(messageRow as HTMLElement).queryByRole('img')).toBeNull();
+    const portrait = within(messageRow as HTMLElement).getByRole('img', { name: '宿主系统' });
+    expect(portrait.getAttribute('src')).toContain('host-system.png');
+    const identity = within(messageRow as HTMLElement).getByRole('group', { name: '回复者：宿主系统' });
+    expect(identity.contains(portrait)).toBe(true);
+    const hostButton = within(identity).getByRole('button', { name: '宿主系统，点击转一圈' });
+    fireEvent.click(hostButton);
+    expect(hostButton.getAttribute('data-spinning')).toBe('true');
+    expect(hostButton.getAttribute('data-animated')).toBe('false');
+    expect(within(identity).getByText('宿主系统')).toBeTruthy();
+    expect(screen.getByTestId('compose-identity').textContent).toBe('宿主系统');
+    expect(screen.getByTestId('compose-identity').getAttribute('title')).toBe('对话对象：宿主系统');
     expect(messageRow?.querySelector('.shell-ai-avatar')).toBeNull();
+  });
+
+  it('does not expose an internal run agent as the model conversation sender', async () => {
+    const internal = agent('data:image/png;base64,internal');
+    const event = { id: 'internal-event', runId: 'run-agent-avatar', type: 'run.started',
+      payload: { threadId: 'thread-agent-avatar', globalAgentId: internal.id, globalAgentName: internal.name },
+    } as unknown as Event;
+    render(chat([internal], { ...conversation, track: 'model' }, [event]));
+    const row = (await screen.findByText('头像应该与智能体保持一致')).closest('[data-message-id]') as HTMLElement;
+    expect(within(row).getByRole('img', { name: '宿主系统' })).toBeTruthy();
+    expect(within(row).queryByText(internal.name)).toBeNull();
+    expect(row.querySelector('.shell-host-avatar')?.getAttribute('data-animated')).toBe('false');
+  });
+
+  it.each(['thinking', 'working', 'waiting'] as const)('connects the live %s run to the host portrait', async state => {
+    runtime.listConversationMessages.mockResolvedValue({ messages: [], hasMore: false });
+    const makeEvent = (sequence: number, type: string, payload: Record<string, unknown> = {}) => ({
+      id: `host-${state}-${sequence}`, taskId: 'task-agent-avatar', workspaceId: 'workspace-agent-avatar',
+      runId: `host-${state}`, sequence, type, category: type.startsWith('run.') ? 'run' : 'message',
+      occurredAt: new Date().toISOString(), payload: { threadId: 'thread-agent-avatar', ...payload },
+    }) as unknown as Event;
+    const events = [makeEvent(1, 'run.started'), makeEvent(2, state === 'working' ? 'message.delta' : 'message.reasoning_delta', { textDelta: '正在核对组件。' })];
+    if (state === 'waiting') events.push(makeEvent(3, 'tool.approval_requested', { approvalId: 'host-approval', toolName: 'exec_command', title: '批准检查命令' }));
+    const { container } = render(chat([], { ...conversation, id: `host-${state}` as Conversation['id'], track: 'model' }, events));
+    await waitFor(() => {
+      const portrait = container.querySelector(`.shell-msg-avatar .shell-host-avatar[data-state="${state}"]`);
+      expect(portrait?.getAttribute('data-animated')).toBe('true');
+      expect(portrait?.querySelector('.shell-host-eyes')).toBeTruthy();
+    });
+  });
+
+  it('keeps the fixed host identity but stops motion after a failed model run', async () => {
+    runtime.listConversationMessages.mockResolvedValue({ messages: [{ ...persistedAssistantMessage,
+      blocks: [{ type: 'error', text: '测试中的连接中断', payload: { terminalState: 'failed' } }],
+    }], hasMore: false });
+    const { container } = render(chat([], { ...conversation, id: 'host-failed' as Conversation['id'], track: 'model' }));
+    await waitFor(() => expect(container.querySelector('.shell-msg-avatar .shell-host-avatar[data-state="error"]')?.getAttribute('data-animated')).toBe('false'));
+    expect(container.querySelector('.shell-host-name')?.textContent).toBe('宿主系统');
   });
 });
 

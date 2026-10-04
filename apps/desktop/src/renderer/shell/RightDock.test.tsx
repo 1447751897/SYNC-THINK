@@ -119,9 +119,9 @@ describe('WorkspaceFilesPanel', () => {
     expect(await screen.findByText('check.cjs')).toBeTruthy();
     expect(document.querySelector('[data-file-type="javascript"]')?.textContent).toBe('JS');
     expect(document.querySelector('[data-file-type="python"]')?.textContent).toBe('PY');
-    expect(document.querySelector('[data-file-type="typescript"]')?.textContent).toBe('TS');
+    expect(document.querySelector('[data-file-type="react-typescript"] svg')).toBeTruthy();
     expect(document.querySelector('[data-file-type="css"]')?.textContent).toBe('CSS');
-    for (const kind of ['package', 'markdown']) {
+    for (const kind of ['json', 'markdown']) {
       expect(document.querySelector(`[data-file-type="${kind}"] svg`)).toBeTruthy();
     }
   });

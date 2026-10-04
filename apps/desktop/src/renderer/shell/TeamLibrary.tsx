@@ -1,3 +1,4 @@
+import { WorkbenchPageHeader } from './WorkbenchPageHeader.js';
 // P2 · Global Team Library
 // NewMax-style card grid + centered two-column edit dialog with member management.
 import { Plus, Trash2, Users, X, ChevronRight, ArrowRight, Pencil } from 'lucide-react';
@@ -235,18 +236,16 @@ export function TeamLibrary({ teams, agents, onRefresh, onStartConversation }: P
   );
 
   return (
-    <div className="shell-library-page">
+    <div className="shell-library-page" data-workbench-page="teams">
       {/* ── Library panel ─────────────────────────────────────────── */}
       <div className="shell-library-panel">
-        <div className="shell-library-header">
-          <span className="text-[14px] font-semibold text-text">小队库</span>
-          <button
-            className="shell-library-primary-action"
-            onClick={openNew}
-          >
-            <Plus size={13} /> 新建小队
-          </button>
-        </div>
+        <WorkbenchPageHeader
+          className="shell-library-header"
+          heading={<><h1>小队库</h1><p>{teams.length} 个小队 · 让智能体分工协作</p></>}
+          actions={<button type="button" className="shell-library-primary-action" onClick={openNew}>
+            <Plus size={14} /> 新建小队
+          </button>}
+        />
 
         <div className="shell-library-content">
           {teams.length === 0 ? (
@@ -362,11 +361,11 @@ export function TeamLibrary({ teams, agents, onRefresh, onStartConversation }: P
                     </div>
                   </div>
                   {/* Mission */}
-                  <Field label="使命 / 总目标">
+                  <Field label="小队职责与协作说明">
                     <textarea
                       className="w-full resize-y rounded-lg border border-border bg-page px-3 py-2 text-[12.5px] text-text focus:border-accent focus:outline-none"
                       rows={5}
-                      placeholder="负责完整交付功能：从设计到实现到测试"
+                      placeholder="说明各角色负责什么、通常怎样协作；每次执行以群聊确认的目标为准。"
                       value={draft.mission}
                       onChange={(e) => setDraft((d) => ({ ...d, mission: e.target.value }))}
                     />
@@ -376,27 +375,7 @@ export function TeamLibrary({ teams, agents, onRefresh, onStartConversation }: P
                 {/* ── 协作策略 ── */}
                 <div className="shell-agent-setting-group space-y-5">
                   <SectionTitle>协作策略</SectionTitle>
-                  <Field label="执行方式">
-                    <div className="flex gap-2">
-                      {(['serial', 'parallel'] as TeamStrategy[]).map((s) => (
-                        <button
-                          key={s}
-                          className={clsx(
-                            'shell-library-option flex-1',
-                            draft.strategy === s
-                              ? 'shell-library-option--selected'
-                              : undefined,
-                          )}
-                          onClick={() => setDraft((d) => ({ ...d, strategy: s }))}
-                        >
-                          {s === 'serial' ? '串行' : '并行'}
-                          <span className="ml-1 text-[10px] text-text-faint">
-                            {s === 'serial' ? '（依次执行）' : '（同时执行）'}
-                          </span>
-                        </button>
-                      ))}
-                    </div>
-                  </Field>
+                  <p className="text-[12px] text-text-faint">这里描述小队成员的职责和通常的协作方式，不是强制执行清单。群聊先唤醒负责人，再按当前目标、已有成果和实际情况动态分工；可跳过无关环节、调整顺序。同一小队可以加入多个群聊。</p>
                   {/* Coordinator — only meaningful when there are members */}
                   {draft.members.length > 0 && (
                     <Field label="统筹智能体（可代审分工卡）">
@@ -557,7 +536,7 @@ function MemberModal({
     return isPreset(role) ? '' : role;
   });
   const [title, setTitle] = useState(member?.title ?? '');
-  const [dependsOn, setDependsOn] = useState<string[]>(member?.dependsOn ?? []);
+  const dependsOn = member?.dependsOn ?? [];
   const firstFieldRef = useRef<HTMLSelectElement>(null);
 
   useEffect(() => {
@@ -575,8 +554,6 @@ function MemberModal({
   const agent = agents.find((a) => a.id === agentId);
   const resolvedRole = roleChoice === CUSTOM_ROLE ? customRole.trim() : roleChoice;
   const canSubmit = agentId !== '' && resolvedRole !== '';
-  // Other members are valid dependency targets (self excluded).
-  const dependencyCandidates = members.filter((m) => m.agentId !== agentId);
 
   const submit = () => {
     if (!canSubmit) return;
@@ -584,7 +561,7 @@ function MemberModal({
       agentId,
       role: resolvedRole,
       title: title.trim(),
-      dependsOn: dependsOn.filter((dep) => dep !== agentId),
+      dependsOn: dependsOn.filter((dep) => dep !== agentId && members.some(m => m.agentId === dep)),
     });
   };
 
@@ -702,42 +679,7 @@ function MemberModal({
             )}
           </Field>
 
-          {/* Dependencies */}
-          {dependencyCandidates.length > 0 && (
-            <Field label="依赖成员（需等待其完成）">
-              <div className="space-y-1">
-                {dependencyCandidates.map((m) => {
-                  const depAgent = agents.find((a) => a.id === m.agentId);
-                  if (!depAgent) return null;
-                  const checked = dependsOn.includes(m.agentId);
-                  return (
-                    <label
-                      key={m.agentId}
-                      className="flex cursor-pointer items-center gap-2.5 rounded-lg border border-border bg-page px-3 py-1.5 transition-colors hover:border-border-strong"
-                    >
-                      <input
-                        type="checkbox"
-                        className="accent-[var(--color-accent)]"
-                        checked={checked}
-                        onChange={(e) =>
-                          setDependsOn((prev) =>
-                            e.target.checked
-                              ? [...prev, m.agentId]
-                              : prev.filter((id) => id !== m.agentId),
-                          )
-                        }
-                      />
-                      <AgentAvatar agent={depAgent} size={20} />
-                      <span className="flex-1 truncate text-[12px] text-text">
-                        {m.title.trim() || depAgent.name}
-                      </span>
-                      <span className="st-member-role-chip">{roleLabel(m.role)}</span>
-                    </label>
-                  );
-                })}
-              </div>
-            </Field>
-          )}
+
         </div>
 
         {/* Footer */}
@@ -794,7 +736,7 @@ function TeamCard({
           <div className="flex items-center gap-1.5 text-[11.5px] text-text-faint">
             <span>{team.members.length} 名成员</span>
             <span>·</span>
-            <span>{team.strategy === 'serial' ? '串行' : '并行'}</span>
+            <span>负责人协调</span>
           </div>
         </div>
         <ChevronRight size={14} className="text-text-faint opacity-0 transition-opacity group-hover:opacity-100" />
@@ -830,7 +772,7 @@ function TeamCard({
           className="shell-library-card__action"
           onClick={(e) => { e.stopPropagation(); onStartConversation(team.id); }}
         >
-          <ArrowRight size={12} /> 开始小队对话
+          <ArrowRight size={12} /> 邀请小队新建群聊
         </button>
       )}
     </div>

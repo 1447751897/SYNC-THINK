@@ -27,6 +27,23 @@ describe('Board chat presentation preserves runtime controls', () => {
     expect(frame.getAttribute('data-presentation')).toBe('default');
   });
 
+  it.each(['empty', 'conversation'] as const)('uses attachment-panel geometry for %s without the legacy outside status row', (variant) => {
+    render(<NewMaxComposerFrame variant={variant} presentation="attachments"
+      contextBar={<nav data-testid="repository">仓库</nav>}
+      beforeInput={<div data-testid="files">已选择附件</div>}
+      input={<textarea aria-label="消息" />}
+      toolbar={<footer data-testid="toolbar"><button>添加</button><button>权限</button><button>模型</button><button>发送</button></footer>} />);
+    const frame = screen.getByTestId('newmax-composer-frame');
+    const body = frame.querySelector('.shell-compose')!;
+    expect(frame.getAttribute('data-presentation')).toBe('attachments');
+    expect(frame.firstElementChild).toBe(screen.getByTestId('repository'));
+    expect(body.contains(screen.getByTestId('files'))).toBe(true);
+    expect(body.contains(screen.getByTestId('toolbar'))).toBe(true);
+    expect(screen.getByTestId('files').compareDocumentPosition(screen.getByLabelText('消息')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByLabelText('消息').compareDocumentPosition(screen.getByTestId('toolbar')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.queryByTestId('composer-status-bar')).toBeNull();
+  });
+
   it('shows a real voice action and disabled empty send; content enables sending', () => {
     const onVoice = vi.fn(), onSend = vi.fn(), onStop = vi.fn();
     const props = { presentation: 'paired' as const, running: false, onVoice, onSend, onStop };

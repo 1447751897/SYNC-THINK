@@ -1,3 +1,4 @@
+import { parseCreateScheduledTaskPayload, parseUpdateScheduledTaskPayload } from './team-payloads.js';
 ﻿import { describe, expect, it } from 'vitest';
 import {
   parseConversationDecideToolApprovalPayload,
@@ -232,5 +233,26 @@ describe('parseSetConversationContextWindowOverridePayload', () => {
     expect(() => parseSetConversationContextWindowOverridePayload(payload)).toThrow(
       'Invalid set-conversation-context-window-override payload',
     );
+  });
+});
+
+describe('scheduled task capability IPC boundary', () => {
+  const base = { name: '每日商品汇总', instruction: '采集、整理并交付表格', target: { kind: 'agent', agentId: 'agent-1' }, rule: { kind: 'every', intervalMinutes: 30 } };
+  const automation = { executionMode: 'workspace', browser: { profileId: 'work-account' }, outputs: ['spreadsheet'], requiredMcpServerIds: ['gmail'], delivery: { kind: 'gmail', mcpServerId: 'gmail', toolName: 'send_mail', recipient: 'reader@example.test' }, acceptanceChecks: { minimumRows: 20, requiredColumns: ['商品', '来源'] } };
+  it('preserves the real browser, output, MCP, delivery and acceptance configuration on create', () => {
+    expect(parseCreateScheduledTaskPayload({ ...base, enabled: false, automation }).automation).toEqual(automation);
+  });
+  it('preserves an explicit group binding instead of creating an unrelated task conversation', () => {
+    expect(parseCreateScheduledTaskPayload({ ...base, collaborationConversationId: 'group-a' }).collaborationConversationId).toBe('group-a');
+    expect(() => parseCreateScheduledTaskPayload({ ...base, collaborationConversationId: 1 })).toThrow();
+  });
+  it('preserves capability changes, clearing, and omission as three different update operations', () => {
+    expect(parseUpdateScheduledTaskPayload({ taskId: 'task-a', patch: { automation } }).patch.automation).toEqual(automation);
+    expect(parseUpdateScheduledTaskPayload({ taskId: 'task-a', patch: { automation: null } }).patch.automation).toBeNull();
+    expect(parseUpdateScheduledTaskPayload({ taskId: 'task-a', patch: { name: '改名' } }).patch).not.toHaveProperty('automation');
+  });
+  it.each([null, [], 1, { browser: { profileId: '' } }, { executionMode: 'everything' }, { unknown: true }])('rejects invalid capability bindings rather than silently stripping them: %j', bad => {
+    expect(() => parseCreateScheduledTaskPayload({ ...base, automation: bad })).toThrow('Invalid scheduled-task-create payload');
+    if (bad !== null) expect(() => parseUpdateScheduledTaskPayload({ taskId: 'task-a', patch: { automation: bad } })).toThrow('Invalid scheduled-task-update payload');
   });
 });

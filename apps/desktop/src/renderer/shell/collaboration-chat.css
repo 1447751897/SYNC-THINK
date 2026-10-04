@@ -88,4 +88,71 @@
   background: var(--color-hover); color: var(--color-text); font: inherit; line-height: inherit;
 }
 .agent-chat-workspace .collab-composer__editor .shell-composer-editor__atomic-token--agent { background: var(--aw-hover); color: var(--aw-text); }
-.aw-existing-chat { display: flex; align-items: center; justify-content: center; gap: 6px; margin: 4px 16px 8px; }
+
+/* Task-room controls use existing shell tokens and remain separate from chat scroll. */
+.task-room-intent { margin-bottom: 8px; }
+.task-room-intent [aria-pressed="true"] { background: var(--color-accent-soft); color: var(--color-accent-text); }
+
+/* Results have an independent scroll area; delivery bodies never expand the chat. */
+.collab-panel.collab-panel--results,.agent-chat-workspace .collab-panel.collab-panel--results{display:flex;flex-direction:column;min-height:0;width:min(420px,38vw);flex:0 0 min(420px,38vw)}
+.collab-results{display:flex;flex:1;flex-direction:column;min-height:0;overflow:hidden}
+.collab-results-empty{padding:14px}.collab-results__list{display:flex;flex-direction:column;gap:5px;flex-shrink:0;max-height:190px;overflow:auto;padding:10px;border-bottom:1px solid var(--color-border,#303030)}
+.collab-results__list button{display:flex;flex-direction:column;gap:4px;padding:9px;text-align:left;border:1px solid transparent;border-radius:10px;background:transparent;color:inherit;cursor:pointer}
+.collab-results__list button[aria-pressed=true]{border-color:var(--color-border,#444);background:var(--color-hover,#292929)}
+.collab-results__list strong{font-size:12px}.collab-results__list small{font-size:10px;color:var(--color-text-secondary,#aaa)}
+.collab-results__reader{min-height:0;flex:1;overflow:auto;padding:16px;overflow-wrap:anywhere}.collab-results__reader h3{font-size:15px;margin:0 0 8px}.collab-results__reader .markdown-content{font-size:13px}
+.collab-results__metadata{margin:12px 0;font-size:11px;color:var(--color-text-secondary,#aaa)}.collab-results__metadata summary{cursor:pointer}.collab-results__metadata code{display:block;white-space:pre-wrap;overflow-wrap:anywhere}
+@media(max-width:1000px){.collab-panel.collab-panel--results,.agent-chat-workspace .collab-panel.collab-panel--results{position:absolute;inset:0 0 0 auto;z-index:12;width:min(100%,420px);flex:auto}}
+
+
+/* One compact control strip; lengthy content lives in accessible dialogs. */
+.task-room-bar{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 14px;flex-shrink:0;border-bottom:1px solid var(--color-border)}
+.task-room-bar__tags,.task-room-bar__actions{display:flex;align-items:center;flex-wrap:wrap;gap:5px}
+.task-room-tag,.task-room-bar .task-room-tag,.collab-event .task-room-tag{display:inline-flex;align-items:center;gap:4px;padding:2px 6px;border:1px solid color-mix(in srgb,currentColor 24%,transparent);border-radius:6px;font:inherit;font-size:10px;line-height:14px;white-space:nowrap;color:var(--room-tag-color,var(--color-text-secondary));background:color-mix(in srgb,currentColor 8%,transparent)}
+button.task-room-tag{cursor:pointer}button.task-room-tag:hover,button.task-room-tag[aria-pressed=true]{background:color-mix(in srgb,currentColor 16%,transparent)}
+.task-room-tag--goal{--room-tag-color:var(--calendar-event-blue-title,#4771bc)}
+.task-room-tag--execution{--room-tag-color:var(--calendar-event-purple-title,#8b6bc2)}
+.task-room-tag--results,.task-room-tag--completed{--room-tag-color:var(--calendar-event-emerald-title,#167b67)}
+.task-room-tag--review,.task-room-tag--paused,.task-room-tag--pausing{--room-tag-color:var(--color-warning,#d4aa62)}
+.task-room-tag--running{--room-tag-color:var(--color-accent,#719ef1)}.task-room-tag--error{--room-tag-color:var(--color-danger,#e07c81)}
+.task-room-bar__actions button,.task-room-dialog button:not(.task-room-dialog__tasks button){font:inherit;font-size:11px;color:inherit;border:1px solid var(--color-border);border-radius:8px;background:transparent;padding:5px 9px;cursor:pointer}
+.task-room-bar button:disabled,.task-room-dialog button:disabled{opacity:.45;cursor:default}
+.task-room-bar__actions span{font-size:11px;color:var(--color-text-secondary)}
+.task-room-bar button:focus-visible,.task-room-dialog button:focus-visible,.collab-event button:focus-visible{outline:2px solid var(--color-accent);outline-offset:2px}
+.task-room-dialog-overlay{position:fixed;inset:0;background:rgb(0 0 0 / 24%);z-index:90}
+.task-room-dialog{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);width:min(640px,calc(100vw - 32px));max-height:calc(100dvh - 40px);overflow:auto;box-sizing:border-box;padding:22px;background:var(--color-surface,#202020);color:var(--color-text,#eee);border:1px solid var(--color-border);border-radius:16px;z-index:91;box-shadow:0 16px 64px #0004;font-size:13px}
+.task-room-dialog header{display:flex;align-items:center;justify-content:space-between;gap:12px}.task-room-dialog h2{margin:0;font-size:17px}
+.task-room-dialog header+p,.task-room-dialog small{color:var(--color-text-secondary);font-size:12px}.task-room-dialog__goal{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.8;margin:20px 0}
+.task-room-dialog textarea{width:100%;box-sizing:border-box;resize:vertical;min-height:180px;max-height:50vh;font:inherit;line-height:1.7}
+.task-room-dialog footer{display:flex;justify-content:flex-end;align-items:center;gap:10px;margin-top:18px}.task-room-dialog footer small{margin-right:auto}
+.task-room-dialog__stats{display:flex;flex-wrap:wrap;gap:14px;margin:18px 0}.task-room-dialog__tasks{display:flex;flex-direction:column;gap:6px;margin-top:16px}
+.task-room-dialog__tasks button{display:flex;justify-content:space-between;gap:12px;text-align:left;font:inherit;color:inherit;background:var(--color-hover,transparent);border:1px solid var(--color-border);padding:10px;border-radius:8px;cursor:pointer}
+.task-room-dialog__resume{flex-wrap:wrap}.task-room-dialog__resume label{margin-right:auto}
+.collab-event__body p{margin:0}.collab-event__heading{display:flex;align-items:center;gap:8px}.collab-event__heading small{font-size:11px;color:var(--color-text-secondary)}
+.collab-event__document{display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;padding:10px;border:1px solid var(--color-border);border-radius:10px;background:transparent;font:inherit;color:inherit;text-align:left;cursor:pointer}.collab-event__document small{font-size:11px;white-space:nowrap;color:var(--color-text-secondary)}
+.agent-chat-workspace .collab-event .collab-message__body{order:2;gap:10px}
+@media(max-width:760px){.task-room-bar{align-items:flex-start;flex-wrap:wrap;padding:6px 12px}.task-room-bar__actions{margin-left:auto}.task-room-dialog{padding:16px}.collab-event__document{flex-wrap:wrap}}
+
+.task-room-dialog__error{padding:10px;border:1px solid var(--color-danger,#e07c81);border-radius:8px;color:var(--color-danger,#e07c81)}
+
+.collab-event__note{font-size:12px;color:var(--color-text-secondary);line-height:1.6}
+
+.task-room-bar .task-room-bar__actions button{font-size:10px;line-height:14px;padding:3px 8px;border-radius:6px}
+
+.task-room-tag--blocked { color: var(--color-danger, #f2a7a7); background: color-mix(in srgb, var(--color-danger, #f2a7a7) 9%, transparent); }
+.collab-event__blocker { overflow-wrap: anywhere; color: var(--color-text); }
+
+.collab-automation-settings { display: grid; gap: 12px; padding-block-end: 14px; margin-block-end: 14px; border-bottom: 1px solid var(--color-border, #343434); }
+.collab-automation-settings details { display: grid; gap: 10px; }
+.collab-automation-settings summary { cursor: pointer; margin-block-end: 10px; }
+.collab-automation-settings small { display: block; color: var(--color-text-secondary, #b6b6b6); line-height: 1.6; }
+
+/* Recovery is a persistent bubble action, not a hover-only feedback toolbar. */
+.collab-event__actions{display:flex;align-items:center;flex-wrap:wrap;gap:12px}
+.collab-event__retry{display:inline-flex;align-items:center;gap:4px;min-height:28px}
+
+/* Version-bound work/review/report edges in the task trajectory. */
+.collab-handoff-trace { border-block: 1px solid var(--color-border); padding-block: 12px; }
+.collab-handoff-trace__route { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 12px; overflow-wrap: anywhere; }
+.collab-handoff-trace__route > span:last-child { flex: 1; min-width: 120px; }
+.collab-handoff-trace__route .collab-pill { white-space: normal; text-align: left; }

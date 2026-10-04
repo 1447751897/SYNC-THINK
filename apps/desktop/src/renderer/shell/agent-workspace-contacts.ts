@@ -94,8 +94,6 @@ export function sortAgentWorkspaceContacts(
 export function buildAgentWorkspaceContacts({
   agents,
   conversations,
-  groupedAgentIds,
-  teamIds,
   selectedId,
   searchTerm,
   order,
@@ -103,18 +101,17 @@ export function buildAgentWorkspaceContacts({
 }: {
   agents: readonly GlobalAgent[];
   conversations: readonly Conversation[];
-  groupedAgentIds: ReadonlySet<string>;
-  teamIds: ReadonlySet<string>;
   selectedId?: string;
   searchTerm: string;
   order: readonly string[];
   pinnedAgentIds: ReadonlySet<string>;
 }): AgentWorkspaceContact[] {
-  const live = conversations.filter((conversation) => !conversation.archivedAt && hasAgentChatMessages(conversation));
+  // An explicitly created room is durable even before its first message.
+  const live = conversations.filter((conversation) => !conversation.archivedAt && !conversation.id.startsWith('draft:'));
   const agentContacts: AgentWorkspaceContact[] = agents.flatMap((agent) => {
-    if (groupedAgentIds.has(agent.id)) return [];
     const history = live.filter(
       (conversation) =>
+        hasAgentChatMessages(conversation) &&
         conversation.collaborationKind !== 'group' &&
         conversation.track !== 'team' &&
         conversation.targetRef === agent.id,
@@ -136,8 +133,7 @@ export function buildAgentWorkspaceContacts({
     ];
   });
   const groupContacts: AgentWorkspaceContact[] = live.flatMap((conversation) => {
-    if (conversation.collaborationKind !== 'group') return [];
-    if (conversation.track === 'team' && teamIds.has(conversation.targetRef)) return [];
+    if (conversation.collaborationKind !== 'group' && conversation.track !== 'team') return [];
     const haystack =
       `${conversation.title} ${conversation.lastMessagePreview ?? ''}`.toLocaleLowerCase();
     if (searchTerm && !haystack.includes(searchTerm)) return [];

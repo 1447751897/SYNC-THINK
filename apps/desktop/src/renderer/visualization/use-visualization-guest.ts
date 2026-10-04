@@ -47,6 +47,8 @@ export interface UseVisualizationGuestOptions {
   initialHeight: number;
   minHeight: number;
   maxHeight: number;
+  /** Optional startup deadline; protects file previews from a missing guest handshake. */
+  readyTimeoutMs?: number;
   /**
    * Maps a guest-reported height to the stage height. Defaults to a plain
    * clamp; design drafts additionally keep a host pane floor.
@@ -73,6 +75,7 @@ export function useVisualizationGuest({
   minHeight,
   maxHeight,
   resolveReportedHeight,
+  readyTimeoutMs,
 }: UseVisualizationGuestOptions): VisualizationGuest {
   const webviewRef = useRef<VisualizationWebviewElement | null>(null);
   const partition = useMemo(() => createVisualizationPartition(), []);
@@ -106,14 +109,29 @@ export function useVisualizationGuest({
     setErrorDetail(null);
     const webview = webviewRef.current;
     if (!webview || !active || !src) return;
+    let initialized = false;
+    let closed = false;
+    const deadline = readyTimeoutMs && Number.isFinite(readyTimeoutMs) && readyTimeoutMs > 0
+      ? setTimeout(() => {
+          if (initialized || closed || !webview.isConnected) return;
+          closed = true;
+          readyRef.current = false;
+          setErrorDetail('预览初始化超时，可重试，或展开备用预览查看内容。');
+          setStatus('error');
+        }, readyTimeoutMs)
+      : undefined;
 
     const handleDomReady = () => {
+      if (closed || !webview.isConnected) return;
       readyRef.current = true;
       sendDesignSystem();
     };
     const handleIpcMessage = (rawEvent: Event) => {
+      if (closed || !webview.isConnected) return;
       const event = rawEvent as Event & { channel?: string; args?: unknown[] };
       if (event.channel === VISUALIZATION_CHANNELS.ready) {
+        initialized = true;
+        clearTimeout(deadline);
         readyRef.current = true;
         setStatus('ready');
         sendDesignSystem();
@@ -128,13 +146,31 @@ export function useVisualizationGuest({
         return;
       }
       if (event.channel === VISUALIZATION_CHANNELS.error) {
+        closed = true;
+        clearTimeout(deadline);
         readyRef.current = false;
         const payload = event.args?.[0] as VisualizationErrorReport | undefined;
         setErrorDetail(typeof payload?.message === 'string' ? payload.message : null);
         setStatus('error');
       }
     };
-    const handleLoadFailure = () => {
+    const handleLoadFailure = (rawEvent: Event) => {
+      if (closed || !webview.isConnected) return;
+      const event = rawEvent as Event & {
+        errorCode?: number;
+        isMainFrame?: boolean;
+        validatedURL?: string;
+      };
+      // Source updates cancel an old navigation. Its failure is not a failure
+      // of the new document, and a subframe must not take down the whole guest.
+      if (
+        event.errorCode === -3 ||
+        event.isMainFrame === false ||
+        (event.validatedURL && event.validatedURL !== src)
+      )
+        return;
+      closed = true;
+      clearTimeout(deadline);
       readyRef.current = false;
       setErrorDetail(null);
       setStatus('error');
@@ -152,12 +188,14 @@ export function useVisualizationGuest({
       webview.reload?.();
     }
     return () => {
+      closed = true;
+      clearTimeout(deadline);
       readyRef.current = false;
       webview.removeEventListener('dom-ready', handleDomReady);
       webview.removeEventListener('ipc-message', handleIpcMessage);
       webview.removeEventListener('did-fail-load', handleLoadFailure);
     };
-  }, [active, clamp, initialHeight, reloadKey, sendDesignSystem, src]);
+  }, [active, clamp, initialHeight, readyTimeoutMs, reloadKey, sendDesignSystem, src]);
 
   // The shell theme can change without the guest navigating: class/data-theme
   // swaps on <html> and token re-definitions both land in the style attribute.

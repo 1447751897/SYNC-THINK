@@ -250,7 +250,9 @@ export async function openPersistentRuntime(
     const collaborationStore = new SqliteCollaborationStore(connection.raw);
     const messageStore = new SqliteMessageStore(connection.raw);
     const collaborationBridge: { runtime?: Runtime } = {};
-    const collaborationChatHost = new CollaborationChatHost(collaborationStore, {
+    // Transient scheduled-task workers share the database, not ownership of live group runs.
+    // Constructing/recovering a host here would pause the managed Runtime's active rooms.
+    const collaborationChatHost = runtimeOptions.daemonWorker ? undefined : new CollaborationChatHost(collaborationStore, {
       ownerId: options.installId,
       conversations: conversationStore,
       messages: messageStore,
@@ -274,7 +276,7 @@ export async function openPersistentRuntime(
         ? collaborationBridge.runtime.executeCollaborationTaskForHost(input)
         : Promise.reject(new Error('collaboration.runtime_not_ready')),
     });
-    collaborationChatHost.service.recover();
+    collaborationChatHost?.service.recover();
     // Usage aggregation runs in an isolated Worker for file-backed databases so a
     // first-time scan cannot block the Runtime pipe or its healthcheck.
     let inMemoryUsageSnapshot:

@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { DesktopWaitingCommandSummary } from '@sync-think/protocol';
 import type { Conversation, Event } from '@sync-think/shared';
-import { ChatView } from './ChatView.js';
+import { ChatView, resetRecentConversationPageCacheForTests } from './ChatView.js';
 
 const runtime = {
   listConversationMessages: vi.fn(),
@@ -96,6 +96,7 @@ function renderChat(props: { runtimeConnectionRevision?: number; events?: readon
 }
 
 beforeEach(() => {
+  resetRecentConversationPageCacheForTests();
   runtime.listConversationMessages.mockReset().mockResolvedValue({ messages: [], hasMore: false });
   runtime.listWaitingDesktopCommands.mockReset().mockResolvedValue({ commands: [command()] });
   runtime.continueDesktopCommand.mockReset().mockResolvedValue({
@@ -119,6 +120,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  resetRecentConversationPageCacheForTests();
   Reflect.deleteProperty(window, 'syncThink');
 });
 

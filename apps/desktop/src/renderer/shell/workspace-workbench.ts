@@ -50,7 +50,8 @@ export const WORKBENCH_FILE_BROWSER_MAX_WIDTH = 600;
 export const MAX_TERMINAL_SESSIONS = 9;
 
 const MAX_WORKBENCH_TABS = 50;
-const MAX_WORKBENCH_WORKSPACES = 100;
+// Layouts are conversation-scoped; a project may contain hundreds of chats.
+const MAX_WORKBENCH_SCOPES = 1_000;
 const MAX_ID_LENGTH = 4_000;
 const RESERVED_RECORD_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 
@@ -138,6 +139,7 @@ function normalizeWorkbenchTab(value: unknown): WorkbenchTab | null {
           id: `browser:${browserId}`,
           type: 'browser',
           browserId,
+          ...(typeof record.ownerId === 'string' && record.ownerId.trim() ? { ownerId: record.ownerId.trim().slice(0, MAX_ID_LENGTH) } : {}),
           url:
             typeof record.url === 'string'
               ? normalizeBrowserUrl(record.url)
@@ -210,7 +212,7 @@ export function parseWorkspaceWorkbenchLayouts(value: unknown): WorkspaceWorkben
   const result: WorkspaceWorkbenchLayouts = {};
   for (const [workspaceId, candidate] of Object.entries(source).slice(
     0,
-    MAX_WORKBENCH_WORKSPACES,
+    MAX_WORKBENCH_SCOPES,
   )) {
     if (!workspaceId || RESERVED_RECORD_KEYS.has(workspaceId)) continue;
     const layout = parseWorkspaceWorkbenchLayout(candidate);
@@ -439,12 +441,21 @@ export function findWorkbenchBrowser(
 export function findWorkbenchBrowserByUrl(
   layout: WorkspaceWorkbenchLayout,
   url: string,
+  ownerId?: string,
 ): { placement: WorkbenchPlacement; tab: BrowserPaneTab } | null {
   for (const placement of ['right', 'bottom'] as const) {
     const tab = layout[placement].tabs.find(
       (item): item is BrowserPaneTab =>
-        item.type === 'browser' && workbenchBrowserUrlsMatch(item.url, url),
+        item.type === 'browser' && (!ownerId || !item.ownerId || item.ownerId === ownerId) && workbenchBrowserUrlsMatch(item.url, url),
     );
+    if (tab) return { placement, tab };
+  }
+  return null;
+}
+
+export function findWorkbenchBrowserByOwner(layout: WorkspaceWorkbenchLayout, ownerId: string) {
+  for (const placement of ['right', 'bottom'] as const) {
+    const tab = layout[placement].tabs.find((item): item is BrowserPaneTab => item.type === 'browser' && item.ownerId === ownerId);
     if (tab) return { placement, tab };
   }
   return null;
@@ -455,12 +466,15 @@ export function openOrFocusWorkbenchBrowser(
   browserId: string,
   url: string,
   placement: WorkbenchPlacement = 'right',
+  ownerId?: string,
 ): WorkspaceWorkbenchLayout {
-  const existingSame = findWorkbenchBrowserByUrl(layout, url);
+  const existingSame = (ownerId ? findWorkbenchBrowserByOwner(layout, ownerId) : null) ?? findWorkbenchBrowserByUrl(layout, url, ownerId);
   if (existingSame) {
-    return activateWorkbenchTab(layout, existingSame.placement, existingSame.tab.id);
+    const scope = layout[existingSame.placement];
+    const next = ownerId ? { ...layout, [existingSame.placement]: { ...scope, tabs: scope.tabs.map(tab => tab.id === existingSame.tab.id ? { ...tab, ownerId } : tab) } } : layout;
+    return activateWorkbenchTab(next, existingSame.placement, existingSame.tab.id);
   }
-  return openWorkbenchTab(layout, placement, browserWorkbenchTab(browserId, url));
+  return openWorkbenchTab(layout, placement, { ...browserWorkbenchTab(browserId, url), ...(ownerId ? { ownerId } : {}) });
 }
 
 export function findWorkbenchConversation(

@@ -10,6 +10,20 @@ export function collaborationRequest(command: CollaborationCommand): Promise<Col
 
 export function collaborationErrorMessage(cause: unknown): string {
   const message = cause instanceof Error ? cause.message : String(cause);
+  const roomErrors: Record<string, string> = {
+    'task_room.resume_required': '本群工作已暂停或已验收。请先核对检查点并继续，或更新任务书。',
+    'task_room.still_stopping': '执行器仍在停止中，确认停止后再继续。',
+    'task_room.goal_revision_conflict': '任务书已被更新，请重新打开编辑并核对最新内容。',
+    'task_room.pause_before_goal_change': '修改任务书前请先暂停本群工作。',
+    'task_room.work_already_active': '本群已有工作正在执行，可查看进度或 @分配局部工作。',
+    'task_room.unfinished_work': '仍有未完成、失败或中断的工作，请先检查并处理后再验收。',
+    'task_room.task_replaced': '这项失败工作已被新的任务替代，请查看替代任务；原记录仍保留在历史中。',
+    'task_room.invalid_replacement': '仅可替代本群当前目标下的失败或中断工作，请核对任务与交付类型。',
+    'task_room.replacement_has_dependents': '旧任务仍有待处理的后续依赖，请先重规划这条依赖链。',
+    'task_room.goal_changed': '这项工作属于旧版目标，历史已保留。请在当前目标下安排工作。',
+    'task_room.no_work_to_accept': '先确认任务目标并完成工作，再进行验收。',
+  };
+  for (const [code, text] of Object.entries(roomErrors)) if (message.includes(code)) return text;
   if (/timed out|timeout/i.test(message)) return '运行时响应超时，正在核对消息是否已收到。草稿已保留，请先重新连接。';
   if (/disconnected|ECONN|pipe.*closed/i.test(message)) return '运行时连接已断开。草稿已保留，重新连接后可继续。';
   return message;
@@ -75,17 +89,21 @@ export function useCollaborationChat(conversationId: string, active = true) {
 
   const command = useCallback(async (request: CollaborationCommand) => {
     try {
-      if (['members', 'start-workflow', 'dispatch'].includes(request.action) && scope.executionVersion !== COLLABORATION_EXECUTION_VERSION) throw new Error('当前后台版本尚未支持成员拓扑与小队工作链，请先结束执行并重启守护进程。');
+      if (['send', 'policy', 'members', 'start-workflow', 'dispatch', 'room-pause', 'room-resume', 'room-complete', 'room-brief'].includes(request.action) && scope.executionVersion !== COLLABORATION_EXECUTION_VERSION) throw new Error('当前后台尚未支持新版群内通信，请先结束执行并重启守护进程。');
       const response = await collaborationRequest(request);
       accept(scope, response.snapshot, response.executionVersion);
       return response;
     } catch (cause) {
       // A timeout is not proof of rejection. Read the durable receipt, never resend blindly.
-      if (request.action === 'send') {
+      const ambiguous = /timed out|timeout|disconnected|ECONN|pipe.*closed/i.test(cause instanceof Error ? cause.message : String(cause));
+      if (ambiguous && 'clientRequestId' in request && 'conversationId' in request) {
         try {
           const recovered = await collaborationRequest({ action: 'get', conversationId: request.conversationId });
           accept(scope, recovered.snapshot, recovered.executionVersion);
-          if (recovered.snapshot?.receipts['send:' + request.clientRequestId]) return recovered;
+          const receiptKeys = request.action === 'start-workflow'
+            ? ['dispatch:room-start:' + request.clientRequestId, 'dispatch:workflow:' + request.clientRequestId]
+            : [request.action + ':' + request.clientRequestId];
+          if (recovered.snapshot && receiptKeys.some(key => recovered.snapshot!.receipts[key])) return recovered;
         } catch { /* Keep draft + idempotency receipt for a deliberate retry. */ }
       }
       reportError(scope, cause);

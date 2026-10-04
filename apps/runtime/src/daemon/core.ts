@@ -152,6 +152,11 @@ export function rollDaemonStatusDay(status: DaemonStatus, now: Date = new Date()
   return { ...status, counterDate: date, todayFired: 0 };
 }
 
+/** A fresh process owns liveness; a previous shutdown flag is not restorable state. */
+export function restoreDaemonStatus(previous: DaemonStatus | undefined, now: Date = new Date()): DaemonStatus {
+  return { ...rollDaemonStatusDay(previous ?? createDaemonStatus(now), now), running: true };
+}
+
 export interface DaemonStatusUpdate {
   heartbeatAt?: Date;
   todayFired?: number;

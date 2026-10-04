@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { RefreshCw } from 'lucide-react';
+import { HtmlSandbox } from './HtmlSandbox.js';
+import { hasBoardDataMarkup } from '../visualization/data-html.js';
 import { projectResourcePath } from './project-resource-path.js';
 
 export function isHtmlPath(path: string): boolean {
@@ -19,7 +21,26 @@ export function htmlPreviewDocument(text: string, baseUrl?: string): string {
   return '<!doctype html>\n' + document.documentElement.outerHTML;
 }
 
-export function HtmlFilePreview({
+export function HtmlFilePreview(props: {
+  text: string;
+  path: string;
+  projectFolder?: string;
+  persisted?: boolean;
+}) {
+  if (hasBoardDataMarkup(props.text))
+    return (
+      <section
+        className="shell-html-preview"
+        data-preview-kind="html"
+        aria-label={`网页 ${props.path}`}
+      >
+        <HtmlSandbox code={props.text} />
+      </section>
+    );
+  return <LocalHtmlFilePreview {...props} />;
+}
+
+function LocalHtmlFilePreview({
   text,
   path,
   projectFolder,

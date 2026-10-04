@@ -62,6 +62,62 @@ afterEach(() => {
 });
 
 describe('deferred file differences', () => {
+  it('loads only on disclosure and backfills file and complete summary counts', async () => {
+    vi.mocked(fileDiffReader.read).mockResolvedValue({ diff: first });
+    const { container } = render(<FileChangesCard view={view} />);
+    expect(fileDiffReader.read).not.toHaveBeenCalled();
+    expect(container.querySelector('.shell-changes-card__file-lines')).toBeNull();
+    expect(container.querySelector('.shell-changes-card__lines')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '展开 fixture.txt diff' }));
+    await screen.findByLabelText('总计新增 1 行，删除 1 行');
+    expect(screen.getByLabelText('新增 1 行，删除 1 行')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '收起 fixture.txt diff' }));
+    expect(screen.getByLabelText('总计新增 1 行，删除 1 行')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '展开 fixture.txt diff' }));
+    expect(fileDiffReader.read).toHaveBeenCalledTimes(1);
+  });
+
+  it('backfills known file counts without presenting a partially known total', async () => {
+    vi.mocked(fileDiffReader.read).mockResolvedValue({ diff: first });
+    const { container } = render(
+      <FileChangesCard
+        view={{ ...view, fileChanges: [item, { path: 'unknown.txt', action: 'edited' }] }}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: '展开 fixture.txt diff' }));
+    await screen.findByLabelText('新增 1 行，删除 1 行');
+    expect(container.querySelector('.shell-changes-card__lines')).toBeNull();
+  });
+
+  it('does not reuse counts after a snapshot changes for the same file', async () => {
+    let resolveNext!: (response: { diff: FileDiffPage }) => void;
+    vi.mocked(fileDiffReader.read)
+      .mockResolvedValueOnce({ diff: first })
+      .mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolveNext = resolve;
+        }),
+      );
+    const { container, rerender } = render(<FileChangesCard view={view} />);
+    fireEvent.click(screen.getByRole('button', { name: '展开 fixture.txt diff' }));
+    await screen.findByLabelText('总计新增 1 行，删除 1 行');
+    const changedItem: FileChangeItem = {
+      ...item,
+      contentRef: {
+        ...item.contentRef!,
+        reference: { ...item.contentRef!.reference, id: 'event-newer' },
+      },
+    };
+    rerender(<FileChangesCard view={{ ...view, fileChanges: [changedItem] }} />);
+    expect(container.querySelector('.shell-changes-card__file-lines')).toBeNull();
+    expect(container.querySelector('.shell-changes-card__lines')).toBeNull();
+    await act(async () => {
+      resolveNext({ diff: { ...first, added: 5, removed: 2 } });
+    });
+    await screen.findByLabelText('总计新增 5 行，删除 2 行');
+    expect(screen.getByLabelText('新增 5 行，删除 2 行')).toBeTruthy();
+  });
+
   it('renders the first page without a read gate, in chat and in Review', async () => {
     const dense = {
       ...item,

@@ -78,11 +78,16 @@ export class RendererBrowserWorker implements BrowserWorker {
         token.timeoutMs,
       );
       if (!result.ok) {
+        let code = 'browser.renderer-command-failed';
+        try {
+          const parsed = JSON.parse(result.resultJson ?? '{}') as { code?: string };
+          if (['invalid-selector', 'ambiguous-target', 'disabled-target', 'target-not-found', 'occluded-target', 'page-not-ready', 'trusted-click-failed', 'input-target-invalid'].some(reason => parsed.code === `browser.${reason}`)) code = parsed.code!;
+        } catch { /* Never promote arbitrary guest text to an audit error code. */ }
         yield {
           type: 'failed',
           failureClass: 'acceptance',
           error: {
-            code: 'browser.renderer-command-failed',
+            code,
             message: result.error || '内置浏览器命令执行失败',
           },
         };

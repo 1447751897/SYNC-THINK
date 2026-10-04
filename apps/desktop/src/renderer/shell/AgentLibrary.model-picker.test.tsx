@@ -3,11 +3,9 @@
  *
  * Real-interaction coverage for the agent drawer default-model picker.
  * This file deliberately does NOT mock compose-toolbar: it exercises the real
- * Radix DropdownMenu root flow inside the tabbed drawer. Radix sub-menus
- * (provider → model flyout) cannot be reliably driven by jsdom events, so the
- * sub-menu step is covered by the mocked menu test in AgentLibrary.test.tsx;
- * here we verify the menu opens, providers render, and the overview tab offers
- * a jump into the editable settings tab.
+ * model panel inside the Radix modal, including focus ownership, missing-model
+ * repair and persistence. A body-level portal can look correct while Radix
+ * blocks its pointer events, focus and accessibility tree.
  */
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
@@ -103,11 +101,11 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-function openDrawer() {
+function openDrawer(currentAgent: GlobalAgent = agent) {
   render(
     <DialogProvider>
       <AgentLibrary
-        agents={[agent]}
+        agents={[currentAgent]}
         models={[
           { modelId: 'model-alpha', displayName: 'Model Alpha', providerName: 'Provider Alpha' },
           { modelId: 'model-beta', displayName: 'Model Beta', providerName: 'Provider Alpha' },
@@ -119,7 +117,7 @@ function openDrawer() {
   fireEvent.click(screen.getByText('Agent Alpha').closest('.agent-card')!);
 }
 
-describe('AgentLibrary default model picker (real Radix menu)', () => {
+describe('AgentLibrary default model picker (real modal interaction)', () => {
   it('opens the model menu from the settings tab and lists providers', async () => {
     openDrawer();
     fireEvent.click(screen.getByTestId('agent-drawer-tab-settings'));
@@ -131,6 +129,62 @@ describe('AgentLibrary default model picker (real Radix menu)', () => {
     // Clicking the trigger opens the provider menu (real Radix flow).
     fireEvent.click(trigger);
     expect(await screen.findByTestId('model-provider-Provider Alpha')).toBeTruthy();
+  });
+
+  it('keeps the panel inside the modal focus scope and allows model search', async () => {
+    openDrawer();
+    fireEvent.click(screen.getByTestId('agent-drawer-tab-settings'));
+    fireEvent.click(screen.getByTitle('切换模型'));
+    const drawer = screen.getByTestId('agent-detail-drawer');
+    const picker = await screen.findByRole('dialog', { name: '选择模型' });
+    expect(drawer.contains(picker)).toBe(true);
+    const search = screen.getByRole('textbox', { name: '搜索模型' });
+    await waitFor(() => expect(document.activeElement).toBe(search));
+    fireEvent.change(search, { target: { value: 'Beta' } });
+    expect(screen.queryByRole('menuitemradio', { name: /Model Alpha/ })).toBeNull();
+    expect(screen.getByRole('menuitemradio', { name: /Model Beta/ })).toBeTruthy();
+  });
+
+  it('repairs an unavailable default model with a real selection and saves the new id', async () => {
+    openDrawer({ ...agent, defaultModelId: 'removed-model' as GlobalAgent['defaultModelId'] });
+    fireEvent.click(screen.getByTestId('agent-drawer-tab-settings'));
+    expect(screen.getByTitle('切换模型').textContent).toContain('模型不可用');
+    fireEvent.click(screen.getByTitle('切换模型'));
+    const option = await screen.findByRole('menuitemradio', { name: /Model Beta/ });
+    fireEvent.pointerDown(option);
+    fireEvent.click(option);
+    expect(screen.getByTitle('切换模型').textContent).toContain('Model Beta');
+    expect(screen.getByTestId('agent-detail-drawer')).toBeTruthy();
+    expect(option.getAttribute('aria-checked')).toBe('true');
+    fireEvent.click(screen.getByRole('button', { name: '保存' }));
+    await waitFor(() => expect(runtime.updateGlobalAgent).toHaveBeenCalledWith(
+      expect.objectContaining({ agentId: agent.id, defaultModelId: 'model-beta' }),
+    ));
+  });
+
+  it('dismisses the picker with Escape without closing the drawer or losing the draft', async () => {
+    openDrawer();
+    fireEvent.click(screen.getByTestId('agent-drawer-tab-settings'));
+    fireEvent.click(screen.getByTitle('切换模型'));
+    fireEvent.click(await screen.findByRole('menuitemradio', { name: /Model Beta/ }));
+    fireEvent.keyDown(screen.getByRole('textbox', { name: '搜索模型' }), { key: 'Escape' });
+    expect(screen.queryByRole('dialog', { name: '选择模型' })).toBeNull();
+    expect(screen.getByTestId('agent-detail-drawer')).toBeTruthy();
+    expect(screen.getByTitle('切换模型').textContent).toContain('Model Beta');
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(screen.queryByTestId('agent-detail-drawer')).toBeNull();
+  });
+
+  it('dismisses only the kernel submenu with the first Escape inside the modal', async () => {
+    openDrawer();
+    fireEvent.click(screen.getByTestId('agent-drawer-tab-settings'));
+    await waitFor(() => expect(runtime.detectKernels).toHaveBeenCalled());
+    fireEvent.click(screen.getByTitle('切换模型'));
+    fireEvent.click(await screen.findByTestId('model-kernel-trigger'));
+    fireEvent.keyDown(await screen.findByTestId('kernel-option-native'), { key: 'Escape' });
+    expect(screen.queryByRole('menu', { name: '选择内核' })).toBeNull();
+    expect(screen.getByRole('dialog', { name: '选择模型' })).toBeTruthy();
+    expect(screen.getByTestId('agent-detail-drawer')).toBeTruthy();
   });
 
   it('jumps from the overview model row to the editable settings tab', () => {

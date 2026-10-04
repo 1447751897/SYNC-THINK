@@ -81,8 +81,8 @@ export function paginateRunProcess(
     request?.section === 'taskPlan' ? request.offset : 0,
     request?.section === 'taskPlan' ? (request.limit ?? 40) : fallbackLimit,
   );
-  if (!request && [steps, files, plan].every((selected) => selected.page.nextOffset === undefined))
-    return process;
+  // Even a complete embedded page carries totals/version so callers can safely request another range.
+  // nextOffset remains absent when all entries fit; this does not force redundant UI reads.
   const { version } = describeRunProcessSnapshot(process);
   if (request?.version && request.version !== version) throw new Error('history.version-changed');
   return {

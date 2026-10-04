@@ -43,6 +43,25 @@ export class SqliteAppSettingStore {
     return { key: k, value: value ?? null, updatedAt: ts };
   }
 
+  /** Atomic evidence revision fence, including an absent row; no awaited work inside the claim. */
+  compareAndSet(key: string, expected: unknown, value: unknown, now?: string): boolean {
+    const k = String(key ?? '').trim();
+    if (!k) throw new Error('Setting key must not be empty');
+    return this.raw
+      .transaction(() => {
+        const current = this.get(k);
+        if (
+          expected === undefined
+            ? current !== undefined
+            : current === undefined || JSON.stringify(current.value) !== JSON.stringify(expected)
+        )
+          return false;
+        this.set(k, value, now);
+        return true;
+      })
+      .immediate();
+  }
+
   list(): AppSettingRecord[] {
     const rows = this.raw
       .prepare(`SELECT key, value_json, updated_at FROM app_setting ORDER BY key ASC`)

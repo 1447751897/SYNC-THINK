@@ -53,7 +53,21 @@ const conversationGetContextStatusResponseSchema = z
     contextWindowEstimated: z.boolean().optional(),
     estimatedUsedTokens: z.number().int().min(0).max(MAX_CONTEXT_STATUS_TOKENS),
     usageRatio: z.number().finite().min(0).max(MAX_CONTEXT_STATUS_USAGE_RATIO),
-    compactThreshold: z.literal(0.7),
+    compactThreshold: z.number().finite().min(0).max(0.85),
+    measurement: z.object({
+      source:z.enum(['estimate','provider-calibrated']),
+      estimatedTokens:z.number().int().nonnegative().max(MAX_CONTEXT_STATUS_TOKENS),
+      providerInputTokens:z.number().int().positive().max(MAX_CONTEXT_STATUS_TOKENS).optional(),
+    }).strict().superRefine((value,context) => {
+      if(value.source === 'provider-calibrated' && value.providerInputTokens === undefined)
+        context.addIssue({code:z.ZodIssueCode.custom,path:['providerInputTokens'],message:'Calibration requires a provider input anchor'});
+    }).optional(),
+    budget: z.object({
+      contextWindow: z.number().int().positive(), reservedOutputTokens: z.number().int().nonnegative(),
+      safetyMarginTokens: z.number().int().nonnegative(), fixedInputTokens: z.number().int().nonnegative(),
+      availableInputTokens: z.number().int().nonnegative(), availableHistoryTokens: z.number().int().nonnegative(),
+      compactTriggerTokens: z.number().int().nonnegative(), retainedTailTokens: z.number().int().nonnegative(),
+    }).strict().optional(),
     compactedAt: z.string().datetime({ offset: true }).optional(),
     sections: z.array(contextStatusSectionSchema).length(CONTEXT_STATUS_SECTION_TYPES.length),
   })
@@ -105,6 +119,17 @@ const conversationGetContextStatusResponseSchema = z
       });
     }
 
+    if (value.budget) {
+      const budget = value.budget;
+      const fixed = value.sections.filter(section => section.type !== 'messages').reduce((sum, section) => sum + section.tokens, 0);
+      if (budget.contextWindow !== value.contextWindow || budget.fixedInputTokens !== fixed ||
+          budget.availableInputTokens !== Math.max(0, value.contextWindow - budget.reservedOutputTokens - budget.safetyMarginTokens) ||
+          budget.availableHistoryTokens !== Math.max(0, budget.availableInputTokens - fixed) ||
+          budget.compactTriggerTokens !== Math.min(Math.floor(value.contextWindow * .85), budget.availableInputTokens) ||
+          Math.abs(value.compactThreshold - budget.compactTriggerTokens / value.contextWindow) > 1e-9) {
+        context.addIssue({ code: z.ZodIssueCode.custom, path: ['budget'], message: 'Context budget must match window, fixed sections and output/safety reservations' });
+      }
+    }
     const sectionTypes = new Set(value.sections.map((section) => section.type));
     if (sectionTypes.size !== CONTEXT_STATUS_SECTION_TYPES.length) {
       context.addIssue({

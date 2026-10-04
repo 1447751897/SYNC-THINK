@@ -6,8 +6,8 @@ import {
 } from './browser-commands.js';
 
 interface BrowserCommandDispatcherOptions {
-  open(url: string, workspaceId: string): void;
-  projectFolder(workspaceId: string): string | undefined;
+  open(url: string, workspaceId: string, ownerId?: string): void;
+  projectFolder(workspaceId: string, ownerId?: string): string | undefined;
   submit(result: {
     requestId: string;
     ok: boolean;
@@ -45,13 +45,13 @@ export function createBrowserCommandDispatcher(options: BrowserCommandDispatcher
         action === 'browser_open' &&
         !navigateOwnedBrowserWebview(ownerId, String(args.url ?? ''))
       ) {
-        options.open(String(args.url ?? ''), workspaceId);
+        options.open(String(args.url ?? ''), workspaceId, ownerId);
       }
       const outcome = await (options.execute ?? executeBrowserCommand)({
         action,
         args,
         ownerId,
-        projectFolder: options.projectFolder(workspaceId),
+        projectFolder: options.projectFolder(workspaceId, ownerId),
         saveScreenshot: options.saveScreenshot,
         sendTrustedClick: options.sendTrustedClick,
       });

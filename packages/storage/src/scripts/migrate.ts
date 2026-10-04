@@ -540,6 +540,27 @@ export const MIGRATIONS: { name: string; sql: string }[] = [
     name: '0064_agent_default_kernel',
     sql: `ALTER TABLE agent ADD COLUMN default_kernel_id TEXT NOT NULL DEFAULT 'native';`,
   },
+  { name: '0065_browser_schedule_variables', sql: `ALTER TABLE browser_workflow_schedule ADD COLUMN variables_json TEXT NOT NULL DEFAULT '{}';` },
+  {
+    name: '0066_scheduled_task_automation',
+    // Nullable so legacy tasks retain their existing behavior after upgrade.
+    sql: `ALTER TABLE scheduled_task ADD COLUMN automation_json TEXT
+      CHECK (automation_json IS NULL OR (json_valid(automation_json) AND json_type(automation_json) = 'object'));`,
+  },
+  {
+    name: '0067_scheduled_task_history_lifecycle',
+    // Preserve old entries verbatim; waiting/reconciliation are new outcomes, not retroactive rewrites.
+    sql: `CREATE TABLE scheduled_task_history_lifecycle (
+      id TEXT PRIMARY KEY, task_id TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('success','failed','skipped','cancelled','waiting_input','blocked','reconciling')),
+      fired_at TEXT NOT NULL, run_id TEXT, summary TEXT, reason TEXT, created_at TEXT NOT NULL
+    );
+    INSERT INTO scheduled_task_history_lifecycle (id,task_id,status,fired_at,run_id,summary,reason,created_at)
+      SELECT id,task_id,status,fired_at,run_id,summary,reason,created_at FROM scheduled_task_history;
+    DROP TABLE scheduled_task_history;
+    ALTER TABLE scheduled_task_history_lifecycle RENAME TO scheduled_task_history;
+    CREATE INDEX scheduled_task_history_task_fired_idx ON scheduled_task_history(task_id, fired_at DESC);`,
+  },
 ];
 
 function taskPlanDdlSql(): string {

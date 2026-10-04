@@ -345,3 +345,13 @@ describe('kernel mcp-servers registry', () => {
     expect(parsed2.title).toBe('t');
   });
 });
+
+
+it.each(['native', 'claude-code', 'codex', 'pi'])('exposes structured automation outcome on %s and fences planning', kernelId => {
+  const normal = selectKernelMcpRun({kernelId});
+  expect(normal.nativeTools.map(tool => tool.name)).toContain('automation_report_outcome');
+  expect(normal.externalTools.map(tool => tool.name)).toContain('automation_report_outcome');
+  const planning = selectKernelMcpRun({kernelId, planningMode: true});
+  expect(planning.nativeTools.map(tool => tool.name)).not.toContain('automation_report_outcome');
+  expect(planning.externalTools.map(tool => tool.name)).not.toContain('automation_report_outcome');
+});

@@ -529,3 +529,24 @@ describe('conversation stream event consumption', () => {
     expect(batch.operations[0]).toMatchObject({ runId: 'parent-1', delta: 'parent answer' });
   });
 });
+
+
+describe('provider failure visibility', () => {
+  it('shows the timeout reason as soon as model fallback is selected', () => {
+    const status = selectLatestRunConnectionStatus({
+      events: [event({ sequence: 1, type: 'run.fallback.selected', runId: 'run-a', threadId: 'thread-a', payload: { fromProviderModelId: 'model-a', toProviderModelId: 'model-b', failureClass: 'timeout', errorMessage: 'provider.timeout' } })],
+      threadId: 'thread-a', activeRunId: 'run-a',
+    });
+    expect(status?.text).toContain('模型请求超时');
+    expect(status?.text).toContain('model-a → model-b');
+  });
+
+  it('shows the timeout reason while retrying the same model', () => {
+    const status = selectLatestRunConnectionStatus({
+      events: [event({ sequence: 1, type: 'run.retrying', runId: 'run-a', threadId: 'thread-a', payload: { attempt: 1, maxAttempts: 3, failureClass: 'timeout' } })],
+      threadId: 'thread-a', activeRunId: 'run-a',
+    });
+    expect(status?.text).toContain('模型请求超时');
+    expect(status?.text).toContain('1/3');
+  });
+});

@@ -891,3 +891,9 @@
   font-size: 12px;
   line-height: 1.6;
 }
+
+/* Revalidation must never shrink the grid or move the user's scroll position. */
+.task-cal__main { position: relative; }
+.task-cal__refresh-notice { position: absolute; z-index: 5; top: 8px; left: 50%; transform: translateX(-50%); max-width: calc(100% - 24px); border-radius: 8px; border: 1px solid var(--color-border); box-shadow: 0 2px 8px color-mix(in srgb, var(--color-text) 8%, transparent); pointer-events: none; white-space: nowrap; }
+.task-cal--board .task-cal__scroll { scrollbar-gutter: stable; overflow-anchor: none; }
+.task-cal__data-notice { position: absolute; z-index: 5; bottom: 8px; left: 12px; right: 12px; border: 1px solid var(--color-border); border-radius: 8px; pointer-events: none; }

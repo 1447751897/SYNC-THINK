@@ -1,8 +1,10 @@
 // 0044: 定时任务表（ScheduledTask）持久化。
 // 规则/目标/最近结果以 JSON 列存储；nextRunAt 索引支撑心跳扫描。
 import type { BetterSQLite3Raw } from './connection.js';
+import { parseScheduledTaskAutomation } from '@sync-think/shared';
 import type {
   ScheduledTask,
+  ScheduledTaskAutomation,
   ScheduledTaskHistoryEntry,
   ScheduledTaskRunResult,
   ScheduledTaskRunStatus,
@@ -25,6 +27,7 @@ interface ScheduledTaskRow {
   conversation_id: string | null;
   workspace_id: string | null;
   skill_version_ids_json: string | null;
+  automation_json: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -36,6 +39,13 @@ function parseJson<T>(raw: string | null | undefined, fallback: T): T {
   } catch {
     return fallback;
   }
+}
+
+function validatedAutomation(value: unknown): ScheduledTaskAutomation | undefined {
+  if (value === undefined) return undefined;
+  const automation = parseScheduledTaskAutomation(value);
+  if (!automation) throw new Error('scheduledTask.automation_invalid');
+  return automation;
 }
 
 interface ScheduledTaskHistoryRow {
@@ -80,6 +90,9 @@ function mapRow(row: ScheduledTaskRow): ScheduledTask {
     { kind: 'model', modelId: row.target_ref },
   );
   const skillVersionIds = parseJson<string[]>(row.skill_version_ids_json, []);
+  const automation = row.automation_json == null
+    ? undefined
+    : validatedAutomation(parseJson<unknown>(row.automation_json, null));
   return {
     id: row.id,
     name: row.name,
@@ -96,6 +109,7 @@ function mapRow(row: ScheduledTaskRow): ScheduledTask {
     conversationId: row.conversation_id ?? undefined,
     workspaceId: row.workspace_id ?? undefined,
     skillVersionIds,
+    ...(automation ? { automation } : {}),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -116,16 +130,18 @@ export class SqliteScheduledTaskStore {
     conversationId?: string;
     workspaceId?: string;
     skillVersionIds?: string[];
+    automation?: ScheduledTaskAutomation;
     now?: string;
   }): ScheduledTask {
     const now = input.now ?? new Date().toISOString();
+    const automation = validatedAutomation(input.automation);
     this.raw
       .prepare(
         `INSERT INTO scheduled_task (
           id, name, instruction, target_kind, target_ref, rule_json, time_zone,
-          enabled, next_run_at, conversation_id, workspace_id, skill_version_ids_json,
+          enabled, next_run_at, conversation_id, workspace_id, skill_version_ids_json, automation_json,
           created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         input.id,
@@ -140,6 +156,7 @@ export class SqliteScheduledTaskStore {
         input.conversationId ?? null,
         input.workspaceId ?? null,
         JSON.stringify(input.skillVersionIds ?? []),
+        automation ? JSON.stringify(automation) : null,
         now,
         now,
       );
@@ -177,6 +194,7 @@ export class SqliteScheduledTaskStore {
       conversationId?: string | null;
       workspaceId?: string | null;
       skillVersionIds?: string[] | null;
+      automation?: ScheduledTaskAutomation | null;
     }>,
     now?: string,
   ): ScheduledTask | undefined {
@@ -201,6 +219,9 @@ export class SqliteScheduledTaskStore {
           : (patch.conversationId ?? undefined),
       workspaceId:
         patch.workspaceId === undefined ? current.workspaceId : (patch.workspaceId ?? undefined),
+      automation: patch.automation === undefined
+        ? current.automation
+        : patch.automation === null ? undefined : validatedAutomation(patch.automation),
       skillVersionIds:
         patch.skillVersionIds === undefined
           ? current.skillVersionIds
@@ -212,7 +233,7 @@ export class SqliteScheduledTaskStore {
           name = ?, instruction = ?, target_kind = ?, target_ref = ?, rule_json = ?,
           time_zone = ?, enabled = ?, next_run_at = ?, last_run_at = ?,
           last_result_json = ?, conversation_id = ?, workspace_id = ?,
-          skill_version_ids_json = ?, updated_at = ?
+          skill_version_ids_json = ?, automation_json = ?, updated_at = ?
         WHERE id = ?`,
       )
       .run(
@@ -229,6 +250,7 @@ export class SqliteScheduledTaskStore {
         next.conversationId ?? null,
         next.workspaceId ?? null,
         JSON.stringify(next.skillVersionIds ?? []),
+        next.automation ? JSON.stringify(next.automation) : null,
         ts,
         id,
       );
@@ -260,6 +282,13 @@ export class SqliteScheduledTaskStore {
       )
       .all(taskId, limit) as ScheduledTaskHistoryRow[];
     return rows.map(mapHistoryRow);
+  }
+
+  /** Durable idempotency is independent of the UI's paginated recent-history window. */
+  hasHistoryResult(taskId: string, firedAt: string, status: ScheduledTaskRunStatus): boolean {
+    return Boolean(this.raw.prepare(
+      'SELECT 1 FROM scheduled_task_history WHERE task_id = ? AND fired_at = ? AND status = ? LIMIT 1',
+    ).get(taskId, firedAt, status));
   }
 
   /** 写入一条执行历史（触发/失败/跳过时）。 */

@@ -1,4 +1,4 @@
-import { AGENT_DEFINITION_TOOLS, managementToolAllowed, type AgentManagementIntent } from './agent-management-intent.js';
+import { LIBRARY_DEFINITION_TOOLS, managementToolAllowed, type AgentManagementIntent } from './agent-management-intent.js';
 import type { AgentWritePolicy, ConversationTrack } from '@sync-think/shared';
 import {
   capabilitiesForConversationTrack,
@@ -124,9 +124,10 @@ export function resolveCollaborationToolDenial(input: {
   toolName: string;
   settings?: CollaborationSettings;
   agentManagementIntent?: AgentManagementIntent;
+  allowAgentDefinitionProposals?: boolean;
 }): CollaborationToolDenial | null {
-  if (input.agentManagementIntent !== undefined && AGENT_DEFINITION_TOOLS.has(input.toolName)) {
-    return managementToolAllowed(input.agentManagementIntent, input.toolName) ? null : { reason: 'track', error: '仅在用户明确要求创建或修改智能体时提供对应管理操作；任务执行中不自行创建助手。' };
+  if ((input.agentManagementIntent !== undefined || input.allowAgentDefinitionProposals) && LIBRARY_DEFINITION_TOOLS.has(input.toolName)) {
+    return managementToolAllowed(input.agentManagementIntent ?? 'none', input.toolName, input.allowAgentDefinitionProposals) ? null : { reason: 'track', error: '仅在用户直接聊天时提供智能体、小队或 Skill 管理提案；普通任务执行中不自行更改能力库配置。' };
   }
   const settings = input.settings ?? DEFAULT_COLLABORATION_SETTINGS;
   const capabilities = capabilitiesForConversationTrack(input.track, settings);
@@ -186,6 +187,7 @@ export function isCollaborationToolAllowed(input: {
   toolName: string;
   settings?: CollaborationSettings;
   agentManagementIntent?: AgentManagementIntent;
+  allowAgentDefinitionProposals?: boolean;
 }): boolean {
   return resolveCollaborationToolDenial(input) === null;
 }

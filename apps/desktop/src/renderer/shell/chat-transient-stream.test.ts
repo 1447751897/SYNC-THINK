@@ -282,7 +282,7 @@ describe('chat transient stream reducer', () => {
     expect(secondBoundary.remaining).toEqual([]);
   });
 
-  it('publishes one small provider delta per visual beat', () => {
+  it('coalesces already-arrived small provider deltas in one paint', () => {
     const queue = Array.from({ length: 2 }, (_, index) => ({
       source: 'transient' as const,
       frame: frame(index + 1, 'text', { textDelta: 'x'.repeat(20) }),
@@ -293,12 +293,12 @@ describe('chat transient stream reducer', () => {
       getConversationDisplayQueueBatchOptions(queue),
     );
 
-    expect(batch.operations).toHaveLength(1);
-    expect(batch.completed).toHaveLength(1);
-    expect(batch.remaining).toHaveLength(1);
+    expect(batch.operations).toHaveLength(2);
+    expect(batch.completed).toHaveLength(2);
+    expect(batch.remaining).toHaveLength(0);
   });
 
-  it('publishes one readable streaming token per visual beat', () => {
+  it('does not add word-by-word latency to an already-arrived provider delta', () => {
     const text = 'Pistachio is your fastest-growing flavor';
     const queue = [
       { source: 'transient' as const, frame: frame(1, 'text', { textDelta: text }), offset: 0 },
@@ -309,9 +309,9 @@ describe('chat transient stream reducer', () => {
     );
 
     expect(batch.operations).toEqual([
-      expect.objectContaining({ type: 'text.delta', delta: 'Pistachio ' }),
+      expect.objectContaining({ type: 'text.delta', delta: text }),
     ]);
-    expect(batch.remaining).toEqual([expect.objectContaining({ source: 'transient', offset: 10 })]);
+    expect(batch.remaining).toEqual([]);
   });
 
   it('keeps the normal word rhythm for a small queue and accelerates a large backlog', () => {
@@ -331,11 +331,11 @@ describe('chat transient stream reducer', () => {
     ];
 
     expect(getConversationDisplayQueueBatchOptions(smallQueue)).toEqual({
-      maxFrames: 1,
-      maxTextCharacters: 24,
-      maxReadableTokens: 1,
+      maxFrames: 64,
+      maxTextCharacters: 128,
+      maxReadableTokens: Number.MAX_SAFE_INTEGER,
     });
-    expect(getConversationDisplayQueueFlushDelay(smallQueue)).toBe(55);
+    expect(getConversationDisplayQueueFlushDelay(smallQueue)).toBe(16);
     expect(getConversationDisplayQueueBatchOptions(largeQueue)).toEqual(
       expect.objectContaining({
         maxFrames: expect.any(Number),
@@ -349,7 +349,7 @@ describe('chat transient stream reducer', () => {
     expect(getConversationDisplayQueueBatchOptions(largeQueue).maxReadableTokens).toBeGreaterThan(
       1,
     );
-    expect(getConversationDisplayQueueFlushDelay(largeQueue)).toBeLessThan(55);
+    expect(getConversationDisplayQueueFlushDelay(largeQueue)).toBe(16);
   });
 
   it('drains a long Chinese summary within a bounded adaptive playback budget', () => {
@@ -376,7 +376,7 @@ describe('chat transient stream reducer', () => {
 
     expect(rendered).toBe(text);
     expect(queue).toHaveLength(0);
-    expect(playbackMs).toBeLessThan(12_000);
+    expect(playbackMs).toBeLessThan(500);
   });
 
   it('publishes the first small delta and preserves later provider order', () => {
@@ -497,27 +497,17 @@ describe('chat transient stream reducer', () => {
     expect(visibleText).toBe(text);
   });
 
-  it('keeps terminal behind the paced queued delta', () => {
+  it('publishes all queued final text before terminal in the same flush', () => {
     const text = 'final'.repeat(2_000);
     const queue = [
       { source: 'transient' as const, frame: frame(1, 'text', { textDelta: text }), offset: 0 },
-      {
-        source: 'transient' as const,
-        frame: frame(2, 'terminal', { terminalState: 'completed' }),
-        offset: 0,
-      },
+      { source: 'transient' as const, frame: frame(2, 'terminal', { terminalState: 'completed' }), offset: 0 },
     ];
-    const batch = takeConversationDisplayQueueBatch(
-      queue,
-      getConversationDisplayQueueBatchOptions(queue),
-    );
-
-    expect(batch.operations.map((operation) => operation.type)).toEqual(['text.delta']);
-    expect(batch.remaining).toHaveLength(2);
-    expect(batch.remaining.at(-1)).toMatchObject({
-      source: 'transient',
-      frame: expect.objectContaining({ kind: 'terminal' }),
-    });
+    const batch = takeConversationDisplayQueueBatch(queue, getConversationDisplayQueueBatchOptions(queue));
+    expect(batch.operations.map(operation => operation.type)).toEqual(['text.delta', 'run.terminal']);
+    expect(batch.operations[0]).toMatchObject({ delta: text });
+    expect(batch.completed).toHaveLength(2);
+    expect(batch.remaining).toHaveLength(0);
   });
 
   it('reconciles reset snapshots directly instead of replaying catch-up characters', () => {
@@ -591,6 +581,38 @@ describe('chat transient stream reducer', () => {
       'run.terminal',
     ]);
     expect(queue).toEqual([]);
+  });
+
+  it.each(['process', 'terminal'] as const)('catches up queued Chinese text immediately at a %s boundary', kind => {
+    const text = '已经收到的中文正文不应该继续逐词回放。'.repeat(500);
+    const queue = [
+      { source: 'transient' as const, frame: frame(1, 'text', { textDelta: text }), offset: 4 },
+      { source: 'transient' as const, frame: frame(2, kind, { terminalState: 'completed' }), offset: 0 },
+      { source: 'transient' as const, frame: frame(3, 'commentary', { textDelta: '下一步。' }), offset: 0 },
+    ];
+    const batch = takeConversationDisplayQueueBatch(queue, getConversationDisplayQueueBatchOptions(queue));
+    expect(batch.operations[0]).toMatchObject({ type: 'text.delta', delta: text.slice(4) });
+    expect(batch.operations[1]?.type).toBe(kind === 'process' ? 'process.boundary' : 'run.terminal');
+    expect(batch.completed).toHaveLength(2);
+    expect(batch.remaining).toEqual([queue[2]]);
+  });
+
+  it('does not split surrogate pairs while rapidly catching up a burst', () => {
+    const text = '🙂'.repeat(6_000);
+    let queue = [{ source: 'transient' as const, frame: frame(1, 'text', { textDelta: text }), offset: 0 }];
+    // An odd character budget must not bisect an emoji.
+    let rendered = '';
+    while (queue.length) {
+      const batch = takeConversationDisplayQueueBatch(queue, { maxFrames: 64, maxTextCharacters: 127, maxReadableTokens: Number.MAX_SAFE_INTEGER });
+      for (const operation of batch.operations) {
+        if (operation.type === 'text.delta') {
+          expect(operation.delta.length % 2).toBe(0);
+          rendered += operation.delta;
+        }
+      }
+      queue = batch.remaining as typeof queue;
+    }
+    expect(rendered).toBe(text);
   });
 
   it('keeps commentary when a same-run process frame arrives', () => {

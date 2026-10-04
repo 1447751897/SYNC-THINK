@@ -8,6 +8,8 @@ import { readContextToolText } from './context-tool-text.js';
  */
 import {
   Fragment,
+  lazy,
+  Suspense,
   createContext,
   useContext,
   memo,
@@ -44,9 +46,8 @@ import { AgentActivityStateContext, AgentActivityStatus, AgentActivityViewport, 
 import { useAutoDisclosure } from './auto-disclosure.js';
 import { MessageTextContent } from './MessageTextContent.js';
 import { FileChangeDiff } from './ExecutionProcessBlock.js';
-import { CodeBlock, type CodeBlockReadingState } from './CodeBlock.js';
+import type { CodeBlockReadingState } from './CodeBlock.js';
 import { ToolResult } from './ToolResult.js';
-import { CopyTextButton } from './CopyTextButton.js';
 import { buildExecutionTimeline } from './ExecutionTimeline.js';
 import {
   activityFingerprint,
@@ -67,18 +68,26 @@ import {
   type ProcessStallState,
   type ProcessToolVisualKind,
 } from './process-activity.js';
-import { LoadingPixelGrid } from './LoadingPixelGrid.js';
-import { GridReveal } from './GridReveal.js';
+import { TaskBranch, TaskListIcon, TaskListSection, TaskResourceChip, TaskReveal } from './TaskList.js';
+import { AgentThinking, type AgentThinkingVariant } from './AgentThinking.js';
 import {
   extractGeneratedImageModelLine,
   normalizeImageGenerationToolResult,
 } from './markdown-image-gallery.js';
 import { ConversationContentScope, DeferredToolContent } from './DeferredToolContent.js';
-import { parseDeferredContent } from '@sync-think/shared';
+import { normalizeToolName } from '@sync-think/shared';
+
+import { isImagePreviewTool } from './tool-image-kind.js';
+
+// Full parameter rendering is only needed when a tool row is expanded.
+const ToolPayload = lazy(() => import('./ToolPayload.js').then(m => ({ default: m.ToolPayload })));
+const ToolImagePreview = lazy(() => import('./ToolImagePreview.js'));
+const GridReveal = lazy(() => import('./GridReveal.js').then(m => ({ default: m.GridReveal })));
+const WebSearchToolTrail = lazy(() => import('./WebSearch.js').then(m => ({default:m.WebSearchToolTrail})));
 
 const EMPTY_TOOL_FILE_CHANGES = { byCall: new Map<string, readonly FileChangeItem[]>() };
 const ToolFileChangesContext = createContext<{
-  byCall: ReadonlyMap<string, readonly FileChangeItem[]>; conversationId?: string;
+  byCall: ReadonlyMap<string, readonly FileChangeItem[]>; conversationId?: string; projectFolder?: string;
 }>(EMPTY_TOOL_FILE_CHANGES);
 
 function latestLine(text: string): string {
@@ -306,135 +315,6 @@ const TOOL_STATUS_TEXT: Readonly<Record<'running' | 'completed' | 'failed', stri
   failed: '失败',
 };
 
-function structuredFields(text: string): ReadonlyArray<readonly [string, unknown]> | undefined {
-  try {
-    const parsed = JSON.parse(text) as unknown;
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined;
-    const entries = Object.entries(parsed as Record<string, unknown>);
-    return entries.length > 0 ? entries : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-function structuredValueText(value: unknown): string {
-  if (typeof value === 'string') return value;
-  if (value === null) return 'null';
-  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
-  try {
-    return JSON.stringify(value, null, 2);
-  } catch {
-    return String(value);
-  }
-}
-
-/**
- * 卡内顶条的说明文字。详情区左侧已经有「参数/输出」标签，这里再写一遍语言名是噪声，
- * 换成「类型 · 规模」，让这一行提供块外没有的信息。
- */
-function describePayload(text: string, language: string): string {
-  const lines = text.replace(/\r\n/g, '\n').replace(/\n$/, '').split('\n').length;
-  return `${language === 'json' ? 'JSON' : '文本'} · ${lines} 行`;
-}
-
-function renderCommandContent(text: string) {
-  const command = commandDisplayFromArguments(text);
-  if (!command) return <p className="shell-deferred-content__notice">正在读取命令内容…</p>;
-  return (
-    <div className="shell-command-input">
-      <CodeBlock
-        code={command.code}
-        language={command.language}
-        copyLabel="复制命令"
-        showStatus={false}
-        collapsible={false}
-        maxHeight={240}
-        wrapControl
-      />
-    </div>
-  );
-}
-
-function ToolPayload({
-  text,
-  testId,
-  failed = false,
-  streaming = false,
-  label = '输出',
-  deferred,
-  commandInput = false,
-}: {
-  text: string;
-  testId: string;
-  failed?: boolean;
-  streaming?: boolean;
-  label?: string;
-  commandInput?: boolean;
-  deferred?: import('@sync-think/shared').DeferredContent;
-}) {
-  const contentReference = parseDeferredContent(deferred);
-  if (contentReference)
-    return (
-      <DeferredToolContent
-        deferred={contentReference}
-        preview={text}
-        label={label}
-        streaming={streaming}
-        failed={failed}
-        testId={testId}
-        wrapControl
-        renderContent={commandInput ? renderCommandContent : undefined}
-      />
-    );
-  if (commandInput && commandDisplayFromArguments(text)) {
-    return (
-      <div className="shell-tool-result" data-testid={testId}>
-        {renderCommandContent(text)}
-      </div>
-    );
-  }
-  const fields = structuredFields(text);
-  if (!fields) {
-    const language = ['{', '['].includes(text.trimStart().charAt(0)) ? 'json' : 'text';
-    return (
-      <div className={`shell-tool-result${failed ? ' is-failed' : ''}`} data-testid={testId}>
-        <CodeBlock
-          code={text}
-          language={language}
-          streaming={streaming}
-          copyLabel={`复制${label}`}
-          collapsible={false}
-          maxHeight={240}
-          showStatus={false}
-          wrapControl
-          identity={
-            <span className="shell-tool-result__label">{describePayload(text, language)}</span>
-          }
-        />
-      </div>
-    );
-  }
-  return (
-    <div className={`shell-tool-result${failed ? ' is-failed' : ''}`} data-testid={testId}>
-      <div className="shell-tool-result__bar">
-        <span className="shell-tool-result__label">JSON 对象 · {fields.length} 个字段</span>
-        <CopyTextButton text={text} label={`复制${label}`} />
-      </div>
-      <dl className={`shell-inline-process__structured${failed ? ' is-failed' : ''}`}>
-        {fields.map(([key, value]) => {
-          const nested = value !== null && typeof value === 'object';
-          return (
-            <div className="shell-inline-process__structured-row" key={key}>
-              <dt>{key}</dt>
-              <dd className={nested ? 'is-nested' : undefined}>{structuredValueText(value)}</dd>
-            </div>
-          );
-        })}
-      </dl>
-    </div>
-  );
-}
-
 /**
  * One tool row of a delegated child Agent.
  *
@@ -443,13 +323,14 @@ function ToolPayload({
  * copy buttons) instead of a bespoke `<code>`/`<pre>` dump, so the same call
  * reads the same way wherever it came from.
  */
-export function DelegatedAgentToolRow({ event }: { event: DelegatedAgentToolEventView }) {
+export function DelegatedAgentToolRow({ event, projectFolder }: { event: DelegatedAgentToolEventView; projectFolder?: string }) {
+  const parentFiles = useContext(ToolFileChangesContext);
   const [open, setOpen] = useState(false);
   const item = useMemo(() => delegatedToolEventToProcessItem(event), [event]);
   return (
     // The wrapper keeps the child log's own row divider; every other pixel of the
     // row is the shared ToolRow surface.
-    <ToolFileChangesContext.Provider value={EMPTY_TOOL_FILE_CHANGES}>
+    <ToolFileChangesContext.Provider value={{ ...EMPTY_TOOL_FILE_CHANGES, projectFolder: projectFolder ?? parentFiles.projectFolder, conversationId: parentFiles.conversationId }}>
       <div className="shell-delegated-agent__tool" data-testid="delegated-agent-tool">
         <ToolRow
           item={item}
@@ -539,8 +420,11 @@ function ToolRow({
       : runState === 'cancelled' ? 'cancelled' : 'interrupted'
     : undefined;
   const displayStatus = suspendedStatus ?? status;
+  const [technicalOpen, setTechnicalOpen] = useState(false);
+  const previewTool = isImagePreviewTool(item.name) && status !== 'failed';
   const resultReadingState = useRef<CodeBlockReadingState>({ expanded: false, following: true, scrollTop: 0, scrollLeft: 0 });
   const visualKind = toolVisualKind(item.name);
+  const fileRead = ['read', 'read_file', 'file_read'].includes(normalizeToolName(item.name));
   const fileDiffOnly = visualKind === 'write' && Boolean(changedFiles?.length);
   const summary =
     fileDiffOnly && changedFiles
@@ -566,14 +450,15 @@ function ToolRow({
     <ToolResult
       output={text}
       status={suspendedStatus ?? (status === 'failed' ? 'error' : status === 'completed' ? 'success' : 'running')}
-      kind={visualKind === 'command' ? 'terminal' : 'request'}
+      kind={fileRead ? 'file' : visualKind === 'command' ? 'terminal' : 'request'}
+      filename={fileRead ? fullReadPath(item.argumentsJson) : undefined}
       truncated={status === 'running' && item.progressTruncated}
       readingState={resultReadingState.current}
       onRead={onRead}
       testId={item.resultRef ? undefined : 'inline-process-tool-result'}
     />
   );
-  const visibleSummary = errorSummary || summary;
+  const visibleSummary = errorSummary || (previewTool ? '' : summary);
   const resourcePath = fileDiffOnly
     ? changedFiles?.length === 1
       ? changedFiles[0].path
@@ -671,7 +556,9 @@ function ToolRow({
                 }
               : {})}
           >
-            {resourcePath && visualKind === 'read' ? resourceLabel(resourcePath) : visibleSummary}
+            {resourcePath && status !== 'failed'
+              ? <TaskResourceChip label={resourceLabel(resourcePath)} path={resourcePath} />
+              : visibleSummary}
           </span>
         ) : null}
         {commandDescription && visibleSummary ? (
@@ -708,9 +595,14 @@ function ToolRow({
           {progressLine}
         </div>
       ) : null}
+      {previewTool ? (
+        <Suspense fallback={<p role="status">正在读取图片…</p>}>
+          <ToolImagePreview item={item} root={fileChanges.projectFolder} />
+        </Suspense>
+      ) : null}
       {showGridReveal ? (
         <div className="shell-inline-process__grid-reveal" data-testid="inline-process-grid-reveal">
-          <GridReveal
+          <Suspense fallback={null}><GridReveal
             src={generatedSrc}
             alt={summary || '生成图片'}
             caption={
@@ -721,7 +613,7 @@ function ToolRow({
                   : undefined
             }
             aspect={1}
-          />
+          /></Suspense>
         </div>
       ) : null}
       {open ? (
@@ -731,7 +623,10 @@ function ToolRow({
           tabIndex={0}
           aria-label={`${displayName}详情`}
         >
-          {!fileDiffOnly && visualKind !== 'command' ? (
+          {previewTool ? <button type="button" className="shell-tool-image__details-toggle" aria-label="技术详情" aria-expanded={technicalOpen}
+            onClick={() => setTechnicalOpen(value => !value)}>技术详情</button> : null}
+          {!previewTool || technicalOpen ? <>
+          {!fileDiffOnly ? (
             <div className="shell-inline-process__detail-row">
               <span>原始工具</span>
               <code>{item.name}</code>
@@ -774,17 +669,19 @@ function ToolRow({
           ) : null}
           {!fileDiffOnly && item.argumentsJson ? (
             <div className="shell-inline-process__detail-block">
-              <span>{visualKind === 'command' ? '命令' : '参数'}</span>
-              <ToolPayload
-                text={item.argumentsJson}
-                commandInput={visualKind === 'command'}
-                testId="inline-process-tool-arguments"
-                label="参数"
-                deferred={item.argumentsRef}
-              />
+              <span>参数</span>
+              <Suspense fallback={<p role="status">正在读取参数…</p>}>
+                <ToolPayload
+                  text={item.argumentsJson}
+                  toolName={item.name}
+                  testId="inline-process-tool-arguments"
+                  label="参数"
+                  deferred={item.argumentsRef}
+                />
+              </Suspense>
             </div>
           ) : null}
-          {!fileDiffOnly && visualKind !== 'command' && item.detailsRef ? (
+          {!fileDiffOnly && item.detailsRef ? (
             <DeferredToolContent
               deferred={item.detailsRef}
               preview="包含较大的附加字段；完整事件展示数据按需读取。"
@@ -825,6 +722,7 @@ function ToolRow({
               </p>
             </div>
           ) : null}
+          </> : null}
         </div>
       ) : null}
     </div>
@@ -883,6 +781,15 @@ function StatusRow({ item }: { item: Extract<InlineProcessItem, { kind: 'status'
   );
 }
 
+// Choose by the derived activity, not its localized or reasoning-preview label.
+const PROCESS_ACTIVITY_VARIANTS: Readonly<Record<Exclude<ProcessActivity['kind'], 'approval'>, AgentThinkingVariant>> = {
+  waiting: 'wave',
+  thinking: 'infinity',
+  tool: 'spin',
+  answering: 'wave',
+  status: 'wave',
+};
+
 function ProcessActivityRow({
   activity,
   stall,
@@ -901,19 +808,15 @@ function ProcessActivityRow({
       role="status"
       aria-live="polite"
     >
-      {activity.kind === 'approval' ? (
+      {activity.kind === 'approval' ? <>
         <Shield size={16} aria-hidden="true" />
-      ) : (
-        <LoadingPixelGrid />
-      )}
-      <span
-        className="shell-process-panel__activity-label"
-        data-label={activity.label}
-        data-testid="process-activity-label"
-      >
-        {activity.label}
-      </span>
-      {elapsed ? <span className="shell-process-panel__activity-elapsed">{elapsed}</span> : null}
+        <span className="shell-process-panel__activity-label" data-label={activity.label} data-testid="process-activity-label">
+          {activity.label}
+        </span>
+        {elapsed ? <span className="shell-process-panel__activity-elapsed">{elapsed}</span> : null}
+      </> : <AgentThinking variant={PROCESS_ACTIVITY_VARIANTS[activity.kind]} tone="primary" label={activity.label} showTimer={Boolean(elapsed)}
+        elapsedLabel={elapsed} announce={false} testId="process-activity" className="shell-process-panel__thinking" />}
+
       {stall && stall.level !== 'active' ? (
         <span className="shell-process-panel__activity-idle">
           {stall.hint ?? `${Math.floor(stall.idleMs / 1000)}s 无输出`}
@@ -998,7 +901,8 @@ function ProcessEntry({
   // row instead of remounting it.
   const itemKey = processItemKey(item, index);
   return (
-    <div className="shell-inline-process__entry" data-testid="process-entry" key={itemKey}>
+    <TaskReveal className="shell-inline-process__entry" data-testid="process-entry" key={itemKey} role="listitem" reveal={streaming}>
+      <TaskBranch />
       <div className="shell-inline-process__entry-content">
         <ProcessItemView
           item={item}
@@ -1014,7 +918,7 @@ function ProcessEntry({
           onOpenChange={onOpenChange}
         />
       </div>
-    </div>
+    </TaskReveal>
   );
 }
 
@@ -1023,6 +927,22 @@ function processItemKey(item: InlineProcessItem, index: number): string {
   if (item.id) return item.id;
   if (item.sequence !== undefined) return `${item.kind}-${item.sequence}`;
   return `${item.kind}-${index}`;
+}
+
+function processStepItem(step: ExecutionProcessStep): Extract<InlineProcessItem, { kind: 'tool' }> {
+  return {
+    kind: 'tool', toolCallId: step.id, sequence: step.sequence,
+    name: step.toolName ?? step.label ?? '工具',
+    argumentsJson: step.command ?? step.url ?? step.path ?? '',
+    result: step.preview ?? step.error ?? '',
+    ...(step.outputRef ? { resultRef: step.outputRef } : {}),
+    ...(step.detailsRef ? { detailsRef: step.detailsRef } : {}),
+    ...(step.argumentsRef ? { argumentsRef: step.argumentsRef } : {}),
+    status: step.status === 'error' ? 'failed' : step.completedAt ? 'completed' : 'running',
+    ...(step.status === 'error' ? { failed: true } : {}),
+    ...(step.startedAt ? { startedAt: step.startedAt } : {}),
+    ...(step.completedAt ? { completedAt: step.completedAt } : {}),
+  };
 }
 
 function enrichToolBoundaries(
@@ -1162,36 +1082,12 @@ function mergeMissingCommentary(
   return ordered;
 }
 
-function ProcessActionSummary({
-  summary,
-  open,
-  onToggle,
-  children,
-}: {
-  summary: string;
-  open: boolean;
-  onToggle: () => void;
-  children?: ReactNode;
+function ProcessActionSummary({ summary, open, running, iconKind, onToggle, children }: {
+  summary: string; open: boolean; running: boolean; iconKind: 'search' | 'file' | 'command';
+  onToggle: () => void; children?: ReactNode;
 }) {
-  return (
-    <div className="shell-process-actions" data-testid="process-action-summary">
-      <button
-        type="button"
-        className="shell-process-actions__toggle"
-        data-testid="process-action-summary-toggle"
-        aria-expanded={open}
-        onClick={onToggle}
-      >
-        <ChevronDown
-          size={13}
-          className={`shell-process-actions__chevron${open ? ' is-open' : ''}`}
-          aria-hidden="true"
-        />
-        <span className="shell-process-actions__label">{summary}</span>
-      </button>
-      {open ? <div className="shell-process-actions__body">{children}</div> : null}
-    </div>
-  );
+  return <TaskListSection title={summary} icon={<TaskListIcon kind={iconKind} />} open={open} running={running}
+    onToggle={onToggle} testId="process-action-summary" toggleTestId="process-action-summary-toggle">{children}</TaskListSection>;
 }
 
 function consecutiveToolRunShouldOpen(
@@ -1316,6 +1212,7 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
   answerStarted = false,
   runId,
   conversationId,
+  projectFolder,
   startedAt,
   completedAt,
   durationMs,
@@ -1349,6 +1246,7 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
   answerStarted?: boolean;
   runId?: string;
   conversationId?: string;
+  projectFolder?: string;
   startedAt?: string;
   completedAt?: string;
   durationMs?: number;
@@ -1390,8 +1288,8 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
       const group = byCall.get(change.toolCallId) ?? [];
       group.push(change); byCall.set(change.toolCallId, group);
     }
-    return { byCall, conversationId };
-  }, [fileChanges, conversationId]);
+    return { byCall, conversationId, projectFolder };
+  }, [fileChanges, conversationId, projectFolder]);
   const orderedItems = useMemo<readonly InlineProcessItem[]>(() => {
     const stepsById = new Map(steps?.map((step) => [step.id, step]));
     const visibleItems = items
@@ -1421,7 +1319,10 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
       });
     const visibleSteps = showToolUse ? steps : undefined;
     if (visibleItems.some((item) => item.kind === 'tool' || item.kind === 'status')) {
-      return mergeMissingCommentary(visibleItems, visibleSteps, commentarySegments);
+      const ids = new Set(visibleItems.flatMap(item => item.kind === 'tool' ? [item.toolCallId, item.id] : []));
+      // Image preparation is host-owned and absent from the model's tool timeline.
+      const images = visibleSteps?.filter(step => step.toolName === 'image_input' && !ids.has(step.id)).map(processStepItem) ?? [];
+      return mergeMissingCommentary(interleaveByStartedAt(visibleItems, images), visibleSteps, commentarySegments);
     }
     if (!visibleSteps?.length && !commentarySegments?.length) return visibleItems;
     const merged: InlineProcessItem[] = [];
@@ -1439,21 +1340,7 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
         continue;
       }
       for (const step of item.steps) {
-        merged.push({
-          kind: 'tool',
-          toolCallId: step.id,
-          sequence: step.sequence,
-          name: step.toolName ?? step.label ?? '工具',
-          argumentsJson: step.command ?? step.url ?? step.path ?? '',
-          result: step.preview ?? step.error ?? '',
-          ...(step.outputRef ? { resultRef: step.outputRef } : {}),
-          ...(step.detailsRef ? { detailsRef: step.detailsRef } : {}),
-          ...(step.argumentsRef ? { argumentsRef: step.argumentsRef } : {}),
-          status: step.status === 'error' ? 'failed' : step.completedAt ? 'completed' : 'running',
-          ...(step.status === 'error' ? { failed: true } : {}),
-          ...(step.startedAt ? { startedAt: step.startedAt } : {}),
-          ...(step.completedAt ? { completedAt: step.completedAt } : {}),
-        });
+        merged.push(processStepItem(step));
       }
     }
     return interleaveByStartedAt(
@@ -1602,7 +1489,7 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
       (item.kind === 'reasoning' && item.status === 'streaming') ||
       (item.kind === 'tool' && toolStatusOf(item) === 'running'),
   );
-  // 活动摘要始终落在执行流最下方，作为这一轮的实时落点。像素格与 shimmer
+  // 活动摘要始终落在执行流最下方，作为这一轮的实时落点。BoardUI 波纹与流光
   // 是进程活着的视觉证据；停滞分级只在长时间无输出时追加中性提示。
   // Activity still reads hidden Think rows so the bottom status can show the
   // latest reasoning line after the user turns the Think switch off.
@@ -1610,6 +1497,8 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
     streaming: Boolean(streaming) && !terminalState,
     waitingForApproval: waitingForApproval && !terminalState,
   });
+  const lastTimelineBlock = timelineBlocks.at(-1);
+  const researchOwnsActivity = activity?.kind === 'tool' && lastTimelineBlock?.kind === 'web' && lastTimelineBlock.entries.some(entry => entry.item.toolCallId === activity.toolCallId && toolStatusOf(entry.item) === 'running');
   const fingerprint = useMemo(() => activityFingerprint(orderedItems), [orderedItems]);
   const [lastProgressAt, setLastProgressAt] = useState(() => Date.now());
   useEffect(() => {
@@ -1689,7 +1578,7 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
       <ToolFileChangesContext.Provider value={fileChangesContext}>
       <AgentActivityStateContext.Provider value={activityState}>
       <section
-        className="shell-process-panel shell-harness-trace shell-agent-activity-panel"
+        className="shell-process-panel shell-harness-trace shell-agent-activity-panel shell-task-list-flow"
         data-activity-state={activityState}
         data-testid="process-panel"
         data-streaming={streaming ? '1' : '0'}
@@ -1748,11 +1637,16 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
               <div className="shell-inline-process" data-testid="inline-process-flow">
                 {timelineBlocks.map((block) => {
                   if (block.kind === 'item') return renderProcessEntry(block.item, block.index);
+                  if (block.kind === 'web') return <Suspense key={block.key} fallback={<div role="status">载入搜索过程…</div>}><WebSearchToolTrail items={block.entries.map(e=>e.item)} conversationId={conversationId} settled={settled || activityState === 'complete'}/></Suspense>;
                   const open = openToolRuns.has(block.key);
                   return (
                     <ProcessActionSummary
                       key={block.key}
-                      summary={block.summary}
+                      summary={activityState === 'working' && block.entries.some(entry => toolStatusOf(entry.item) === 'running')
+                        ? friendlyToolName(block.entries.find(entry => toolStatusOf(entry.item) === 'running')!.item.name) + '…' : block.summary}
+                      running={activityState === 'working' && block.entries.some(entry => toolStatusOf(entry.item) === 'running')}
+                      iconKind={block.entries.some(entry => toolVisualKind(entry.item.name) === 'write') ? 'file'
+                        : block.entries.some(entry => ['command', 'git'].includes(toolVisualKind(entry.item.name))) ? 'command' : 'search'}
                       open={open}
                       onToggle={() => toggleToolRun(block.key)}
                     >
@@ -1782,7 +1676,7 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
             </AgentActivityViewport>
           </div>
         ) : null}
-        {activity ? (
+        {activity && !researchOwnsActivity ? (
           <ProcessActivityRow activity={activity} stall={stall} elapsed={durationLabel} />
         ) : null}
       </section>

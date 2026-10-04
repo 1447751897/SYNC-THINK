@@ -94,6 +94,7 @@ describe('ComposerAttachments', () => {
     expect(
       (screen.getByRole('button', { name: '打开附件 photo.png' }) as HTMLButtonElement).disabled,
     ).toBe(true);
+    expect(screen.getByRole('button', { name: '取消处理附件 photo.png' }).title).toBe('取消处理附件');
     fireEvent.click(screen.getByRole('button', { name: '取消处理附件 photo.png' }));
     expect(remove).toHaveBeenCalledWith('image:1');
     rerender(<ComposerAttachments attachments={[image]} onRemove={remove} onOpen={open} />);
@@ -105,7 +106,12 @@ describe('ComposerAttachments', () => {
     ).toBe('100 100');
     fireEvent.click(screen.getByRole('button', { name: '打开附件 photo.png' }));
     expect(open).toHaveBeenCalledWith(image);
-    expect(screen.getByRole('button', { name: '移除附件 photo.png' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '移除附件 photo.png' }).title).toBe('移除附件');
+    const close = screen.getByRole('button', { name: '移除附件 photo.png' });
+    expect(close.querySelector('svg')?.getAttribute('width')).toBe('10');
+    fireEvent.click(close);
+    expect(remove).toHaveBeenLastCalledWith('image:1');
+    expect(open).toHaveBeenCalledTimes(1);
   });
   it('disables open/remove actions for a locked composer', () => {
     render(
@@ -127,6 +133,8 @@ describe('ComposerAttachments', () => {
     ['launch.key', 'presentation'],
     ['types.tsx', 'code'],
     ['movie.mp4', 'video'],
+    ['song.mp3', 'audio'],
+    ['voice.wav', 'audio'],
     ['data.csv', 'spreadsheet'],
   ])('classifies %s without changing its outbound file reference', (name, kind) => {
     expect(attachmentTileKind({ ...file, name })).toBe(kind);

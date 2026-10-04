@@ -10,7 +10,7 @@ function toTool(
   schema: (typeof CHAT_BROWSER_WORKFLOW_TOOL_SCHEMAS)[number],
 ): KernelMcpToolDefinition {
   const planningDenied =
-    schema.name === 'browser_workflow_create_draft' || schema.name === 'browser_workflow_execute';
+    schema.name === 'browser_workflow_create_draft' || schema.name === 'browser_workflow_execute' || schema.name === 'automation_export_artifact' || schema.name === 'automation_report_outcome';
   return {
     name: schema.name,
     description: schema.description ?? schema.name,

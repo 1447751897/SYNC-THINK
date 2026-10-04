@@ -1,7 +1,7 @@
 /** @vitest-environment jsdom */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import type { Conversation, DeferredContent, Message, RunId } from '@sync-think/shared';
+import type { Conversation, DeferredContent, Event, Message, RunId } from '@sync-think/shared';
 import type { ConversationTransientSubscriptionEvent } from './use-conversation-transient-subscription.js';
 import { ChatView } from './ChatView.js';
 import { deferredContentReader } from './deferred-content-reader.js';
@@ -44,7 +44,8 @@ function reply(deferred = false): Message {
     ],
   } as unknown as Message;
 }
-function renderChat(agentWorkspace = false, track: Conversation['track'] = 'model') {
+// The compact workspace surface is an agent chat; model chats retain host-system execution UI.
+function renderChat(agentWorkspace = false, track: Conversation['track'] = agentWorkspace ? 'agent' : 'model') {
   const conversation = {
     id: 'conversation-response-' + ++sequence,
     workspaceId: 'workspace-response',
@@ -56,16 +57,18 @@ function renderChat(agentWorkspace = false, track: Conversation['track'] = 'mode
     createdAt: '2026-09-24T12:00:00Z',
     updatedAt: '2026-09-24T12:00:00Z',
   } as unknown as Conversation;
-  return render(
+  const element = (events: Event[]) => (
     <ChatView
       agentWorkspace={agentWorkspace}
       conversation={conversation}
       modelName="Model A"
       models={[{ modelId: 'model-a', displayName: 'Model A', providerName: 'Provider' }]}
-      eventHistory={[]}
+      eventHistory={events}
       onTitleUpdated={vi.fn()}
-    />,
+    />
   );
+  const view = render(element([]));
+  return { ...view, updateEvents: (events: Event[]) => view.rerender(element(events)) };
 }
 beforeEach(() => {
   window.localStorage.clear();
@@ -117,6 +120,33 @@ describe('ChatView response integration', () => {
     await waitFor(() => expect(response.getAttribute('data-state')).toBe('complete'));
     expect(screen.getAllByText('这是正在输出的答案。')).toHaveLength(1);
   });
+  it('catches up received answer text before publishing file edits and the terminal state', async () => {
+    let deliver!: (event: ConversationTransientSubscriptionEvent) => void;
+    runtime.listConversationMessages.mockResolvedValue({ messages: [], hasMore: false });
+    runtime.subscribeConversationTransientStream.mockImplementation((_payload, listener) => {
+      deliver = listener;
+      return { ready: Promise.resolve({ subscriptionId: 'burst-response' }), unsubscribe: vi.fn(async () => undefined) };
+    });
+    renderChat();
+    await waitFor(() => expect(deliver).toBeTypeOf('function'));
+    const text = '这段正文已经到达前端，应该和执行结果同步展示。'.repeat(200);
+    const emit = (streamSequence: number, fields: Record<string, unknown>) => act(() => deliver({
+      type: 'frame', frame: { threadId: 'thread-response', runId: 'run-burst-response', streamSequence, occurredAt: '2026-10-03T00:00:00Z', ...fields },
+    } as ConversationTransientSubscriptionEvent));
+    emit(1, { kind: 'text', textDelta: text });
+    emit(2, { kind: 'process', process: {
+      runId: 'run-burst-response', steps: [], fileChanges: [{ path: 'qa-only.ts', action: 'edited' }],
+      running: true, doneCount: 0, errorCount: 0,
+    } });
+    expect(document.body.textContent).toContain(text);
+    const completedProcess = { runId: 'run-burst-response', steps: [], fileChanges: [{ path: 'qa-only.ts', action: 'edited' }], running: false, doneCount: 0, errorCount: 0 };
+    runtime.getConversationRunProcess.mockResolvedValue({ process: completedProcess });
+    emit(3, { kind: 'terminal', terminalState: 'completed', process: completedProcess });
+    expect(screen.getByRole('region', { name: '文件变更' })).toBeTruthy();
+    expect(document.body.textContent).toContain(text);
+    expect(screen.getByTestId('streaming-response').getAttribute('data-state')).toBe('complete');
+  });
+
   it('copies only the displayed answer instead of command commentary', async () => {
     renderChat();
     await screen.findByText(answer);
@@ -161,6 +191,85 @@ describe('ChatView response integration', () => {
   });
 });
 
+it.each(['model', 'agent', 'team'] as const)('keeps user bubbles and selects only the assistant surface for %s conversations', async track => {
+  runtime.listConversationMessages.mockResolvedValue({ messages: [
+    { id: 'user-presentation', threadId: 'thread-response', role: 'user', sequence: 1,
+      createdAt: '2026-09-24T12:00:00Z', blocks: [{ type: 'text', text: '对话样式测试' }] },
+    reply(),
+  ], hasMore: false });
+  renderChat(false, track);
+  await screen.findByText(answer);
+  const expected = track === 'model' ? 'plain' : 'bubble';
+  expect(screen.getByTestId('streaming-response').getAttribute('data-variant')).toBe(expected);
+  const user = screen.getByText('对话样式测试').closest('[data-message-surface]')!;
+  expect(user.getAttribute('data-message-surface')).toBe('bubble');
+  expect(user.classList.contains('shell-user-bubble')).toBe(true);
+});
+
+it('keeps the user bubble while a plain model answer streams and finishes', async () => {
+  let deliver!: (event: ConversationTransientSubscriptionEvent) => void;
+  runtime.listConversationMessages.mockResolvedValue({ messages: [
+    { id: 'user-live-presentation', threadId: 'thread-response', role: 'user', sequence: 1,
+      createdAt: '2026-09-24T12:00:00Z', blocks: [{ type: 'text', text: '用户气泡应一直保留' }] },
+  ], hasMore: false });
+  runtime.subscribeConversationTransientStream.mockImplementation((_payload, listener) => {
+    deliver = listener;
+    return { ready: Promise.resolve({ subscriptionId: 'surface-response' }), unsubscribe: vi.fn(async () => undefined) };
+  });
+  renderChat(false, 'model');
+  await screen.findByText('用户气泡应一直保留');
+  await waitFor(() => expect(deliver).toBeTypeOf('function'));
+  const expectUserBubble = () => {
+    const user = screen.getByText('用户气泡应一直保留').closest('[data-message-surface]')!;
+    expect(user.getAttribute('data-message-surface')).toBe('bubble');
+    expect(user.classList.contains('shell-user-bubble')).toBe(true);
+  };
+  const emit = (streamSequence: number, fields: Record<string, unknown>) => act(() => deliver({
+    type: 'frame', frame: { threadId: 'thread-response', runId: 'run-surface-response', streamSequence,
+      occurredAt: '2026-10-04T00:00:00Z', ...fields },
+  } as ConversationTransientSubscriptionEvent));
+  expectUserBubble();
+  emit(1, { kind: 'text', textDelta: '模型正文不使用气泡。' });
+  await screen.findByText('模型正文不使用气泡。');
+  const response = screen.getByTestId('streaming-response');
+  expect(response.getAttribute('data-state')).toBe('streaming');
+  expect(response.getAttribute('data-variant')).toBe('plain');
+  expectUserBubble();
+  emit(2, { kind: 'terminal', terminalState: 'completed', assistantTimeline: [
+    { id: 'answer', sequence: 1, kind: 'text', phase: 'final_answer', text: '模型正文不使用气泡。', status: 'completed' },
+  ] });
+  await waitFor(() => expect(response.getAttribute('data-state')).toBe('complete'));
+  expect(response.getAttribute('data-variant')).toBe('plain');
+  expectUserBubble();
+});
+
+it.each(['agent', 'team'] as const)('puts %s execution details in the response footer rather than above the bubble', async track => {
+  renderChat(true, track);
+  await screen.findByText(answer);
+  const response = screen.getByTestId('streaming-response');
+  const bubble = response.querySelector('.shell-response__content')!;
+  expect(response.getAttribute('data-variant')).toBe('bubble');
+  expect(bubble.textContent).toContain(answer);
+  expect(bubble.querySelector('button')).toBeNull();
+  expect(screen.queryByTestId('agent-execution-status')).toBeNull();
+  expect(screen.queryByRole('region', { name: '执行详情' })).toBeNull();
+  const control = within(response).getByRole('button', { name: /查看执行详情/ });
+  expect(control.closest('[data-testid="response-footer"]')).toBeTruthy();
+  expect(control.textContent).toBe('');
+  expect(control.getAttribute('aria-expanded')).toBe('false');
+  fireEvent.click(control);
+  const details = screen.getByRole('region', { name: '执行详情' });
+  expect(details.id).toBe(control.getAttribute('aria-controls'));
+  expect(details.closest('.shell-response__footer')).toBeNull();
+  expect(details.closest('.shell-response__content')).toBeNull();
+  expect(details.querySelector('[data-testid="process-panel"]')).toBeTruthy();
+  expect(control.getAttribute('aria-expanded')).toBe('true');
+  expect(response.querySelector('.shell-response__content')).toBe(bubble);
+  fireEvent.click(control);
+  expect(screen.queryByRole('region', { name: '执行详情' })).toBeNull();
+  expect(response.querySelector('.shell-response__content')).toBe(bubble);
+});
+
  it('keeps workspace execution compact during real reasoning frames and exposes the actual trace on demand', async () => {
     let deliver!: (event: ConversationTransientSubscriptionEvent) => void;
     runtime.listConversationMessages.mockResolvedValue({ messages: [], hasMore: false });
@@ -182,28 +291,53 @@ describe('ChatView response integration', () => {
     renderChat(agentWorkspace);
     await screen.findByText(answer);
     await waitFor(() => expect(runtime.getConversationRunProcess).toHaveBeenCalled());
-    if (agentWorkspace) expect(screen.queryByText(/编辑了 1 个文件/)).toBeNull();
-    else expect(await screen.findByText(/编辑了 1 个文件/)).toBeTruthy();
+    if (agentWorkspace) expect(screen.queryByRole('region', { name: '文件变更' })).toBeNull();
+    else expect(await screen.findByRole('region', { name: '文件变更' })).toBeTruthy();
   });
 
 it.each(['agent', 'team'] as const)('also hides file summaries in non-workspace %s chats', async track => {
   runtime.getConversationRunProcess.mockResolvedValue({ process: { runId: 'run-response', steps: [], fileChanges: [{ path: 'edited.html', action: 'edited' }], running: false, doneCount: 0, errorCount: 0 } });
   renderChat(false, track); await screen.findByText(answer);
   await waitFor(() => expect(runtime.getConversationRunProcess).toHaveBeenCalled());
-  expect(screen.queryByText(/编辑了 1 个文件/)).toBeNull();
+  expect(screen.queryByRole('region', { name: '文件变更' })).toBeNull();
 });
 
-it.each(['model', 'agent', 'team'] as const)('keeps user bubbles and selects only the assistant surface for %s conversations', async track => {
-  runtime.listConversationMessages.mockResolvedValue({ messages: [
-    { id: 'user-presentation', threadId: 'thread-response', role: 'user', sequence: 1,
-      createdAt: '2026-09-24T12:00:00Z', blocks: [{ type: 'text', text: '对话样式测试' }] },
-    reply(),
-  ], hasMore: false });
-  renderChat(false, track);
-  await screen.findByText(answer);
-  const expected = track === 'model' ? 'plain' : 'bubble';
-  expect(screen.getByTestId('streaming-response').getAttribute('data-variant')).toBe(expected);
-  const user = screen.getByText('对话样式测试').closest('[data-message-surface]')!;
-  expect(user.getAttribute('data-message-surface')).toBe('bubble');
-  expect(user.classList.contains('shell-user-bubble')).toBe(true);
+
+describe('immediate provider failure display', () => {
+  async function liveChat() {
+    let deliver!: (event: ConversationTransientSubscriptionEvent) => void;
+    runtime.listConversationMessages.mockResolvedValue({ messages: [], hasMore: false });
+    runtime.subscribeConversationTransientStream.mockImplementation((_payload, listener) => {
+      deliver = listener;
+      return { ready: Promise.resolve({ subscriptionId: 'timeout-stream' }), unsubscribe: vi.fn(async () => undefined) };
+    });
+    const view = renderChat();
+    await waitFor(() => expect(deliver).toBeTypeOf('function'));
+    act(() => deliver({ type: 'frame', frame: { kind: 'text', threadId: 'thread-response', runId: 'run-timeout', streamSequence: 1,
+      occurredAt: '2026-10-04T06:32:38Z', textDelta: '准备创建骑行动画文件。' } } as ConversationTransientSubscriptionEvent));
+    await screen.findByText('准备创建骑行动画文件。');
+    return view;
+  }
+  function failureEvent(type: string, payload: Record<string, unknown>): Event {
+    return { id: 'failure-event', runId: 'run-timeout', taskId: 'task-response', workspaceId: 'workspace-response', category: 'run', type,
+      sequence: 100, occurredAt: '2026-10-04T06:39:24Z', payload: { threadId: 'thread-response', failureClass: 'timeout', errorMessage: 'provider.timeout', ...payload } } as unknown as Event;
+  }
+
+  it('shows a paused timeout immediately without waiting for a healthy transient terminal frame or saved message', async () => {
+    const view = await liveChat();
+    view.updateEvents([failureEvent('run.paused', { reason: 'no_fallback_configured', providerModelId: 'model-a' })]);
+    const notice = await screen.findByTestId('assistant-terminal-paused');
+    expect(notice.textContent).toContain('provider.timeout');
+    expect(notice.textContent).toContain('模型请求超时');
+    expect(screen.getByTestId('streaming-response').getAttribute('data-state')).toBe('paused');
+    expect(screen.getByTestId('agent-activity-status').getAttribute('data-state')).toBe('paused');
+    expect(document.body.textContent).not.toContain('已完成');
+  });
+
+  it('announces the first timeout while model fallback is still in progress', async () => {
+    const view = await liveChat();
+    view.updateEvents([failureEvent('run.fallback.selected', { fromProviderModelId: 'model-a', toProviderModelId: 'model-b' })]);
+    await screen.findByText(/模型请求超时；正在切换备用模型：model-a → model-b/);
+    expect(screen.queryByTestId('assistant-terminal-paused')).toBeNull();
+  });
 });

@@ -15,6 +15,13 @@ describe('parseBrowserClickLocator', () => {
     expect(parseBrowserClickLocator(':has-text(\'Start\')')).toEqual({ text: 'Start' });
   });
 
+  it('supports exact text and repeated text conditions in selector lists', () => {
+    expect(parseBrowserClickLocator('button:text-is("继续"), [role="button"]:text-is("继续")')).toEqual({ css: 'button, [role="button"]', text: '继续', exact: true });
+    expect(parseBrowserClickLocator('main > button:text-is("Next, please")')).toEqual({ css: 'main > button', text: 'Next, please', exact: true });
+    expect(parseBrowserClickLocator('button[data-kind="a,b"]:has-text("go")')).toEqual({ css: 'button[data-kind="a,b"]', text: 'go' });
+    expect(parseBrowserClickLocator('text=Next, please')).toEqual({ text: 'Next, please' });
+  });
+
   it('accepts text= locators', () => {
     expect(parseBrowserClickLocator('text=Open game')).toEqual({ text: 'Open game' });
     expect(parseBrowserClickLocator('text="造梦西游"')).toEqual({ text: '造梦西游' });

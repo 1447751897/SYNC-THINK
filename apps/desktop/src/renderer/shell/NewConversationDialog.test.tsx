@@ -42,23 +42,25 @@ describe('NewConversationDialog collaboration selection', () => {
   it('returns all explicitly selected group agents', () => {
     const onPick = vi.fn();
     renderDialog(onPick);
-    fireEvent.click(screen.getByRole('button', { name: /智能体群聊/ }));
+    fireEvent.click(screen.getByRole('button', { name: /群聊/ }));
     fireEvent.click(screen.getByRole('button', { name: 'Agent B' }));
     fireEvent.click(screen.getByRole('button', { name: 'Agent C' }));
     const picker = screen.getByTestId('collaboration-picker');
     expect(picker.textContent).toContain('Agent B + Agent C');
-    fireEvent.click(screen.getByRole('button', { name: '开始群聊（2 位）' }));
+    fireEvent.click(screen.getByRole('button', { name: '创建群聊（2 位）' }));
     expect(onPick).toHaveBeenCalledWith('group', '', ['agent-b', 'agent-c']);
   });
 
   it('removes a member from its pill', () => {
     const onPick = vi.fn();
     renderDialog(onPick);
-    fireEvent.click(screen.getByRole('button', { name: /智能体群聊/ }));
+    fireEvent.click(screen.getByRole('button', { name: /群聊/ }));
     fireEvent.click(screen.getByRole('button', { name: 'Agent A' }));
     fireEvent.click(screen.getByRole('button', { name: 'Agent B' }));
     fireEvent.click(screen.getByRole('button', { name: '移除Agent A' }));
     expect(screen.queryByRole('button', { name: '移除Agent A' })).toBeNull();
-    expect((screen.getByRole('button', { name: '开始群聊' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: '创建群聊（1 位）' }) as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(screen.getByRole('button', { name: '移除Agent B' }));
+    expect((screen.getByRole('button', { name: '创建群聊' }) as HTMLButtonElement).disabled).toBe(true);
   });
 });

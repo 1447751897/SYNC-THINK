@@ -14,6 +14,10 @@
       "types": "./dist/node-paths.d.ts",
       "default": "./dist/node-paths.js"
     },
+    "./node-chat-message-images": {
+      "types": "./dist/node-chat-message-images.d.ts",
+      "default": "./dist/node-chat-message-images.js"
+    },
     "./node-image-validation": {
       "types": "./dist/node-image-validation.d.ts",
       "default": "./dist/node-image-validation.js"

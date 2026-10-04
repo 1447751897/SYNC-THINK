@@ -8,6 +8,7 @@ import {
   fileWorkbenchTab,
   findWorkbenchBrowser,
   findWorkbenchBrowserByUrl,
+  findWorkbenchBrowserByOwner,
   openOrFocusWorkbenchBrowser,
   openWorkbenchTab,
   parseWorkspaceWorkbenchLayouts,
@@ -28,6 +29,19 @@ import {
 } from './workspace-workbench.js';
 
 describe('workspace workbench state', () => {
+  it('keeps one conversation browser after a redirect and across restored turns', () => {
+    const opened = openOrFocusWorkbenchBrowser(createWorkspaceWorkbenchLayout(), 'first', 'https://example.test/login', 'right', 'thread-a');
+    const redirected = updateWorkbenchBrowserUrl(opened, 'right', 'first', 'https://example.test/onboarding');
+    const nextTurn = openOrFocusWorkbenchBrowser(redirected, 'new-id', 'https://example.test/login', 'right', 'thread-a');
+    expect(nextTurn.right.tabs).toHaveLength(1);
+    expect(findWorkbenchBrowserByOwner(nextTurn, 'thread-a')?.tab).toMatchObject({ browserId: 'first', url: 'https://example.test/onboarding' });
+    const restored = parseWorkspaceWorkbenchLayouts({ workspace: nextTurn }).workspace!;
+    expect(findWorkbenchBrowserByOwner(restored, 'thread-a')?.tab.browserId).toBe('first');
+    const other = openOrFocusWorkbenchBrowser(restored, 'second', 'https://example.test/onboarding', 'right', 'thread-b');
+    expect(other.right.tabs).toHaveLength(2);
+    expect(findWorkbenchBrowserByOwner(other, 'thread-a')?.tab.browserId).toBe('first');
+  });
+
   it('opens compact files and expands the right workbench for preview resources', () => {
     const initial = createWorkspaceWorkbenchLayout();
     const files = openWorkbenchTab(initial, 'right', workspaceFilesWorkbenchTab());

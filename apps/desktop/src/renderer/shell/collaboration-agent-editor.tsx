@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { AgentAppearanceEditor } from './AgentAppearanceEditor.js';
 import { botAvatarSeed } from './bot-avatar.js';
 import { resolveKernelDisplayName } from './brand-icons.js';
@@ -6,6 +6,7 @@ import type { ModelOption } from './NewConversationDialog.js';
 import type { CollaborationMember, GlobalAgent, KernelDetectionResult } from '@sync-think/shared';
 import { AgentAvatarView } from './AgentAvatarView.js';
 import { updateAgentPayload } from './agent-payload.js';
+import { REASONING_OPTIONS } from './reasoning-options.js';
 
 /** Reply languages; `auto` leaves the persona untouched. */
 export const REPLY_LANGUAGES = [['auto', '自动检测'], ['zh', '简体中文'], ['en', 'English'], ['ja', '日本語']] as const;
@@ -63,14 +64,42 @@ export function AgentEditorPanel({ member, agent, onSaved, workspace = false, cr
   const [persona, setPersona] = useState(agent?.persona ?? '');
   const [modelId, setModelId] = useState(agent?.defaultModelId ?? models[0]?.modelId ?? '');
   const [kernelId, setKernelId] = useState(agent?.defaultKernelId ?? 'native');
+  const [reasoningEffort, setReasoningEffort] = useState(agent?.reasoningEffort || 'auto');
   const [kernels, setKernels] = useState<readonly KernelDetectionResult[]>([]);
   const [language, setLanguage] = useState<ReplyLanguage>(personaLanguage(agent?.persona ?? ''));
   const [prefs, setPrefs] = useState(() => readAgentPrefs(member.agentId ?? member.id));
   const [status, setStatus] = useState('');
-  useEffect(() => { setAvatar(agent?.avatar ?? (creating ? botAvatarSeed('star', 'cyan') : member.avatar ?? '')); setName(creating ? '' : agent?.name ?? member.name); setPersona(agent?.persona ?? ''); setModelId(agent?.defaultModelId ?? ''); setKernelId(agent?.defaultKernelId ?? 'native'); setDescription(agent?.description ?? ''); setLanguage(personaLanguage(agent?.persona ?? '')); setPrefs(readAgentPrefs(member.agentId ?? member.id)); setStatus(''); }, [agent?.id, agent?.name, agent?.avatar, agent?.description, agent?.persona, member.id, member.name, member.avatar, member.agentId, agent?.defaultModelId, agent?.defaultKernelId, creating]);
+  const source = useMemo(() => ({
+    owner: `${creating ? 'create' : agent?.id ?? member.id}:${member.agentId ?? member.id}`,
+    avatar: agent?.avatar ?? (creating ? botAvatarSeed('star', 'cyan') : member.avatar ?? ''),
+    name: creating ? '' : agent?.name ?? member.name,
+    persona: agent?.persona ?? '',
+    modelId: agent?.defaultModelId ?? '',
+    kernelId: agent?.defaultKernelId ?? 'native',
+    reasoningEffort: agent?.reasoningEffort || 'auto',
+    description: agent?.description ?? '',
+    language: personaLanguage(agent?.persona ?? ''),
+  }), [agent?.id, agent?.name, agent?.avatar, agent?.description, agent?.persona, member.id, member.name, member.avatar, member.agentId, agent?.defaultModelId, agent?.defaultKernelId, agent?.reasoningEffort, creating]);
+  const previousSource = useRef(source);
+  useEffect(() => {
+    const previous = previousSource.current;
+    const sameOwner = source.owner === previous.owner;
+    // Reconcile only untouched fields. A roster refresh or a late save response
+    // must not replace a draft the user is still editing.
+    setAvatar(value => sameOwner && value !== previous.avatar ? value : source.avatar);
+    setName(value => sameOwner && value !== previous.name ? value : source.name);
+    setPersona(value => sameOwner && value !== previous.persona ? value : source.persona);
+    setModelId(value => sameOwner && value !== previous.modelId ? value : source.modelId);
+    setKernelId(value => sameOwner && value !== previous.kernelId ? value : source.kernelId);
+    setReasoningEffort(value => sameOwner && value !== previous.reasoningEffort ? value : source.reasoningEffort);
+    setDescription(value => sameOwner && value !== previous.description ? value : source.description);
+    setLanguage(value => sameOwner && value !== previous.language ? value : source.language);
+    if (!sameOwner) { setPrefs(readAgentPrefs(member.agentId ?? member.id)); setStatus(''); }
+    previousSource.current = source;
+  }, [source, member.agentId, member.id]);
   useEffect(() => { if (creating && !modelId && models[0]) setModelId(models[0].modelId); }, [creating, modelId, models]);
   useEffect(() => {
-    if (!creating && !agent) return;
+    if (!creating && !agent?.id) return;
     let cancelled = false;
     void window.syncThink?.runtime?.detectKernels?.().then((result) => {
       if (!cancelled && Array.isArray(result?.kernels)) setKernels(result.kernels);
@@ -90,7 +119,7 @@ export function AgentEditorPanel({ member, agent, onSaved, workspace = false, cr
     return options.length ? options : [{ kernelId: current, name: resolveKernelDisplayName(current) }];
   }, [kernels, kernelId]);
   const updatePrefs = (patch: Partial<AgentDevicePrefs>) => setPrefs((current) => { const next = { ...current, ...patch }; writeAgentPrefs(member.agentId ?? member.id, next); return next; });
-  const dirty = creating || Boolean(agent) && (avatar !== (agent!.avatar ?? '') || name.trim() !== agent!.name || description.trim() !== agent!.description || language !== personaLanguage(agent!.persona) || persona !== agent!.persona || modelId !== agent!.defaultModelId || kernelId !== (agent!.defaultKernelId ?? 'native'));
+  const dirty = creating || Boolean(agent) && (avatar !== (agent!.avatar ?? '') || name.trim() !== agent!.name || description.trim() !== agent!.description || language !== personaLanguage(agent!.persona) || persona !== agent!.persona || modelId !== agent!.defaultModelId || kernelId !== (agent!.defaultKernelId ?? 'native') || reasoningEffort !== (agent!.reasoningEffort || 'auto'));
   const save = async () => {
     const api = window.syncThink?.runtime;
     if (!name.trim() || status === '保存中…') return;
@@ -98,9 +127,9 @@ export function AgentEditorPanel({ member, agent, onSaved, workspace = false, cr
     if (!api || (creating ? !api.createGlobalAgent : !api.updateGlobalAgent)) { setStatus('智能体服务尚未连接，请稍后重试。'); return; }
     setStatus('保存中…');
     try {
-      const fields = { avatar, name: name.trim(), description: description.trim(), persona: withPersonaLanguage(persona, language), defaultModelId: modelId as GlobalAgent['defaultModelId'], defaultKernelId: kernelId as GlobalAgent['defaultKernelId'] };
+      const fields = { avatar, name: name.trim(), description: description.trim(), persona: withPersonaLanguage(persona, language), defaultModelId: modelId as GlobalAgent['defaultModelId'], defaultKernelId: kernelId as GlobalAgent['defaultKernelId'], reasoningEffort };
       if (creating) {
-        const result = await api.createGlobalAgent({ ...fields, availabilityScope: 'global', writePolicy: 'inherit', fallbackModelIds: [], skillIds: [], mcpServerIds: [], reasoningEffort: 'auto' });
+        const result = await api.createGlobalAgent({ ...fields, availabilityScope: 'global', writePolicy: 'inherit', fallbackModelIds: [], skillIds: [], mcpServerIds: [] });
         setStatus('已创建'); onCreated?.(result.agent);
       } else if (agent) {
         const result = await api.updateGlobalAgent(updateAgentPayload(agent, { ...fields, fallbackModelIds: agent.fallbackModelIds?.filter(id => id !== modelId) ?? [] }));
@@ -118,6 +147,7 @@ export function AgentEditorPanel({ member, agent, onSaved, workspace = false, cr
       <label className="collab-field">描述<textarea value={description} maxLength={400} onChange={(event) => setDescription(event.target.value)} /></label>
       {(creating || models.length > 0) && <label className="collab-field">默认模型<select aria-label="默认模型" value={modelId} onChange={event => setModelId(event.target.value)}><option value="" disabled>选择模型</option>{modelId && !models.some(model => model.modelId === modelId) && <option value={modelId}>{modelId}（当前绑定）</option>}{models.map(model => <option key={model.modelId} value={model.modelId}>{model.displayName} · {model.providerName}</option>)}</select></label>}
       <label className="collab-field">内核<select aria-label="内核" value={kernelId} onChange={event => setKernelId(event.target.value)}>{kernelOptions.map(kernel => <option key={kernel.kernelId} value={kernel.kernelId}>{kernel.name}</option>)}</select></label>
+      <label className="collab-field">推理强度<select aria-label="推理强度" value={reasoningEffort} onChange={event => setReasoningEffort(event.target.value)} title="保存后对这个智能体的后续对话生效；档位支持取决于模型和供应商">{!REASONING_OPTIONS.some(option => option.value === reasoningEffort) && <option value={reasoningEffort}>{reasoningEffort}（当前设置）</option>}{REASONING_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.title}</option>)}</select></label>
       {creating && !models.length && <p className="collab-muted">还没有配置模型。{onModelSettings && <button className="aw-text-button" onClick={onModelSettings}>去模型设置</button>}</p>}
       {workspace && <label className="collab-field">人设<textarea aria-label="人设" placeholder="这个智能体擅长什么，如何与你沟通？" value={persona.replace(LANGUAGE_LINE, '')} onChange={event => setPersona(event.target.value)} /></label>}
       <label className="collab-field">回复语言<select value={language} onChange={(event) => setLanguage(event.target.value as ReplyLanguage)}>{REPLY_LANGUAGES.map(([id, label]) => <option key={id} value={id}>{label}</option>)}</select></label>

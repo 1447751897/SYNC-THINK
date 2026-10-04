@@ -8,9 +8,12 @@ import {
   openSync,
   readFileSync,
   readSync,
+  realpathSync,
 } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, extname, isAbsolute, join, normalize, resolve } from 'node:path';
+import { resolveChatMessageImageDirectories } from '@sync-think/shared/node-chat-message-images';
+import { isPathWithinRoot } from '@sync-think/shared/node-paths';
+import { basename, extname, isAbsolute, join, normalize } from 'node:path';
 
 export interface StoredMessageImage {
   id: string;
@@ -20,25 +23,11 @@ export interface StoredMessageImage {
   stagingPath: string;
 }
 
-function dataRoot(env: NodeJS.ProcessEnv = process.env, homeDirectory: string = homedir()): string {
-  if (env.SYNC_THINK_DB_PATH) return resolve(join(env.SYNC_THINK_DB_PATH, '..'));
-  const candidates = [
-    resolve(join(process.cwd(), '.data', 'SYNC-THINK')),
-    resolve(join(process.cwd(), '..', '.data', 'SYNC-THINK')),
-    resolve(join(process.cwd(), '..', '..', '.data', 'SYNC-THINK')),
-  ];
-  return (
-    candidates.find((candidate) => existsSync(join(candidate, '..'))) ??
-    resolve(join(env.LOCALAPPDATA ?? homeDirectory, 'SYNC-THINK'))
-  );
-}
-
 export function resolveChatMessageImageDir(
   env: NodeJS.ProcessEnv = process.env,
   homeDirectory: string = homedir(),
 ): string {
-  if (env.SYNC_THINK_CHAT_MESSAGE_IMAGES) return resolve(env.SYNC_THINK_CHAT_MESSAGE_IMAGES);
-  return resolve(join(dataRoot(env, homeDirectory), 'message-images'));
+  return resolveChatMessageImageDirectories(env, process.cwd(), homeDirectory)[0]!;
 }
 
 function safeStorageRef(storageRef: string): string | undefined {
@@ -82,8 +71,14 @@ export function persistMessageImages(
 export function resolveMessageImagePath(storageRef: string): string | undefined {
   const safeRef = safeStorageRef(storageRef);
   if (!safeRef) return undefined;
-  const absolute = resolve(join(resolveChatMessageImageDir(), safeRef));
-  return existsSync(absolute) ? absolute : undefined;
+  for (const directory of resolveChatMessageImageDirectories()) {
+    try {
+      const root = realpathSync(directory);
+      const absolute = realpathSync(join(root, safeRef));
+      if (isPathWithinRoot(root, absolute)) return absolute;
+    } catch { /* Try the known legacy directory for pre-fix attachments. */ }
+  }
+  return undefined;
 }
 
 export function readMessageImage(

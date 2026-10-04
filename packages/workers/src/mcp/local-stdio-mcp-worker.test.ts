@@ -398,3 +398,22 @@ describe('LocalStdioMcpWorker list-tools (JSON-RPC tools/list)', () => {
     }
   });
 });
+
+describe('structured stdio configuration from Settings JSON import', () => {
+  it('preserves argument boundaries and environment values', () => {
+    expect(parseLocalStdioCommand(JSON.stringify({ command: 'node', args: ['path with spaces.mjs', 'quoted "argument"'], env: { MCP_MODE: 'qa' } }))).toEqual({ ok: true, command: 'node', args: ['path with spaces.mjs', 'quoted "argument"'], env: { MCP_MODE: 'qa' } });
+    expect(parseLocalStdioCommand('{"command":"node","args":[42]}').ok).toBe(false);
+    expect(parseLocalStdioCommand('{"command":"node","env":{"BAD KEY":"x"}}').ok).toBe(false);
+  });
+  it('actually spawns a structured command and applies its environment', async () => {
+    const events = await collect(new LocalStdioMcpWorker().exec({ workingDir: process.cwd(), endpoint: JSON.stringify({ command: 'node', args: ['-e', 'process.stdout.write(process.env.MCP_IMPORT_PROOF + ":" + process.argv[1])', 'argument with spaces'], env: { MCP_IMPORT_PROOF: 'ENV_OK' } }), transport: 'local-stdio', policy: { timeoutMs: 5000, maxOutputBytes: 4096, trusted: false }, action: { kind: 'spawn-probe' } }, { token: 'qa', allowedRoot: process.cwd(), timeoutMs: 5000 }));
+    const completed = events.find((event) => event.type === 'completed'); expect(completed).toBeTruthy();
+    if (completed?.type === 'completed') expect(completed.output).toMatchObject({ spawned: true, simulated: false, preview: expect.stringContaining('ENV_OK:argument with spaces') });
+  });
+  it('discovers real MCP tools using a structured command', async () => {
+    const fixture = fileURLToPath(new URL('./fixtures/mini-mcp-server.mjs', import.meta.url));
+    const events = await collect(new LocalStdioMcpWorker().exec({ workingDir: process.cwd(), endpoint: JSON.stringify({ command: 'node', args: [fixture] }), transport: 'local-stdio', policy: { timeoutMs: 5000, maxOutputBytes: 8192, trusted: false }, action: { kind: 'list-tools' } }, { token: 'qa', allowedRoot: process.cwd(), timeoutMs: 5000 }));
+    const completed = events.find((event) => event.type === 'completed'); expect(completed).toBeTruthy();
+    if (completed?.type === 'completed') expect(completed.output).toMatchObject({ spawned: true, simulated: false, toolCount: 3, tools: expect.arrayContaining([expect.objectContaining({ name: 'ping' })]) });
+  });
+});

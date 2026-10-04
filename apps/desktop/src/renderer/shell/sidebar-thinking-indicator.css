@@ -1,0 +1,35 @@
+.sidebar-thinking-indicator {
+  display: inline-flex;
+  flex: 0 0 24px;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 18px;
+  color: var(--color-text-secondary);
+  pointer-events: none;
+}
+
+.sidebar-thinking-indicator__shape {
+  flex: none;
+  width: 32px;
+  height: 16px;
+  margin: 0 -4px;
+  overflow: visible;
+}
+
+.sidebar-thinking-indicator__comet {
+  animation: sidebar-thinking-comet 1.2s linear infinite;
+}
+
+@keyframes sidebar-thinking-comet {
+  from { stroke-dashoffset: 0; }
+  to { stroke-dashoffset: -100; }
+}
+
+[data-reduced-motion] .sidebar-thinking-indicator__comet {
+  animation: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sidebar-thinking-indicator__comet { animation: none; }
+}

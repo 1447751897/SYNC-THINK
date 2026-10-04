@@ -1,3 +1,7 @@
+import './board-composer.css';
+import './conversation-attention.css';
+import type { ConversationActivityView } from '../../conversation-attention.js';
+import type { ConversationAttentionProjection } from './ConversationAttentionController.js';
 import { readSidebarMode, writeSidebarMode } from './agent-contacts.js';
 import { PROJECTLESS_SCOPE, runtimeConversation, runtimeWorkspaceId, projectConversationScopes, projectWorkspaceScopes } from './projectless-scope.js';
 import { repositoryKey } from './git-repository-events.js';
@@ -8,7 +12,7 @@ import { createBrowserCommandDispatcher } from './browser-command-dispatcher.js'
 // Sidebar top actions + three tracks with groups · workspace tabs (no 全部) ·
 // welcome empty state · settings modal.
 import { reviewViewKey, conversationReviewFromKey, type ReviewView } from './review-view.js';
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps } from 'react';
+import { lazy, Suspense, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
 import { X } from 'lucide-react';
 import {
@@ -40,19 +44,19 @@ import {
 import type { RunActivityAuthority } from '../run-activity-authority.js';
 import { Sidebar } from './Sidebar.js';
 import { TopBar } from './TopBar.js';
-import { ConversationTabs } from './ConversationTabs.js';
-import { WorkspacePaneHost } from './WorkspacePaneHost.js';
-import { WallpaperReadingLayers } from './WallpaperReadingLayers.js';
 import type { WorkbenchNewResource } from './WorkspaceWorkbench.js';
 import { emptyExcalidrawContent } from './ExcalidrawPreview.js';
 import { ChatView, type RuntimeConnectionNotice } from './ChatView.js';
 import { clearFilePaneSession, isFilePaneSessionDirty, type FileRevealTarget } from './FilePane.js';
 import { collectOpenFilePaths, createUntitledProjectFile } from './untitled-project-file.js';
 import { WorkspaceFileView } from './WorkspaceFileView.js';
-import { TerminalPane } from './TerminalPane.js';
+
 import { disposeTerminalSession } from './terminal-session-store.js';
-import { BrowserPanel } from './BrowserPanel.js';
-import { ReviewPanel, WorkspaceFilesPanel } from './RightDock.js';
+
+import { canonicalizeLocalWebPageUrl, isLocalWebPageUrl } from '../../local-web-page-contract.js';
+import { materializeWorkbenchScope, migrateConversationWorkbenches, parseWorkbenchScopeKey, workbenchScopeKey, workbenchesForWorkspace } from './conversation-workbench.js';
+import { migrateLocalPageBrowsersToWorkbench } from './local-page-workbench.js';
+
 import type { AbilityCenterInitialView } from './abilities/AbilityCenterPage.js';
 import { KeepAliveLayer } from './KeepAliveLayer.js';
 import { lazyPanel } from './lazy-panel.js';
@@ -79,6 +83,7 @@ import {
   ModelTrigger,
   PermissionMenu,
   PERMISSION_MODE_COLLAPSED_TOOLBAR_LEVEL,
+  SKILL_COLLAPSED_TOOLBAR_LEVEL,
   PermissionTrigger,
   REASONING_LABELS,
   useComposerToolbarCollapse,
@@ -125,6 +130,7 @@ import { loadSkillCatalog } from './skill-catalog-loader.js';
 import { loadConversationCatalog } from './conversation-catalog-loader.js';
 import { agentChatHistory } from './agent-contacts.js';
 import { isAgentConversation, type AgentWorkspaceNavigation } from './conversation-surface.js';
+import { isAgentTeamLibraryEvent } from './agent-team-library-events.js';
 import { ComposerEditor } from './ComposerEditor.js';
 import {
   PromptEnhancementAction,
@@ -167,7 +173,7 @@ import {
   hasShellBootSnapshot,
   readShellBootSnapshot,
 } from './shell-boot-snapshot.js';
-import type { HtmlBrowserOpenOptions } from './html-browser.js';
+import { htmlBrowserSourceMatches, INCOMPLETE_HTML_OPEN_ERROR, isDeferredHtmlPreview, type HtmlBrowserOpenOptions } from './html-browser.js';
 import {
   matchesShortcut,
   readAppearancePreferences,
@@ -278,6 +284,7 @@ import {
   createWorkspaceWorkbenchLayout,
   fileWorkbenchTab,
   findWorkbenchBrowserByUrl,
+  findWorkbenchBrowserByOwner,
   findWorkbenchConversation,
   MAX_TERMINAL_SESSIONS,
   openOrFocusWorkbenchBrowser,
@@ -299,7 +306,17 @@ import {
   type WorkspaceWorkbenchLayouts,
 } from './workspace-workbench.js';
 
+const ConversationTabs = lazyPanel<import('./ConversationTabs.js').ConversationTabsProps>(() => import('./ConversationTabs.js').then(module => ({ default: module.ConversationTabs })), '会话标签', 'ConversationTabs');
+const ConversationAttentionController = lazyPanel(() => import('./ConversationAttentionController.js'), '会话待处理', 'ConversationAttentionController');
 const TipsCarousel = lazyPanel<import('./TipsCarousel.js').TipsCarouselProps>(() => import('./TipsCarousel.js').then((module) => ({ default: module.TipsCarousel })), '使用提示', 'TipsCarousel');
+
+const WallpaperReadingLayers = lazy(() => import('./WallpaperReadingLayers.js').then(module => ({ default: module.WallpaperReadingLayers })));
+
+// Split-pane rendering is only needed once a conversation surface is shown.
+const WorkspacePaneHost = lazyPanel<ComponentProps<typeof import('./WorkspacePaneHost.js').WorkspacePaneHost>>(
+  async () => ({ default: (await import('./WorkspacePaneHost.js')).WorkspacePaneHost }),
+  '对话工作区',
+);
 
 const WorkspaceWorkbench = lazyPanel(
   async () => ({ default: (await import('./WorkspaceWorkbench.js')).WorkspaceWorkbench }),
@@ -328,6 +345,23 @@ const TeamLibrary = lazyPanel(
   async () => ({ default: (await import('./TeamLibrary.js')).TeamLibrary }),
   '团队',
   'TeamLibrary',
+);
+const ReviewPanel = lazyPanel<ComponentProps<typeof import('./RightDock.js').ReviewPanel>>(
+  async () => ({ default: (await import('./RightDock.js')).ReviewPanel }),
+  '文件变更',
+);
+const WorkspaceFilesPanel = lazyPanel<ComponentProps<typeof import('./RightDock.js').WorkspaceFilesPanel>>(
+  async () => ({ default: (await import('./RightDock.js')).WorkspaceFilesPanel }),
+  '工作区文件',
+);
+const TerminalPane = lazyPanel<ComponentProps<typeof import('./TerminalPane.js').TerminalPane>>(
+  async () => ({ default: (await import('./TerminalPane.js')).TerminalPane }),
+  '终端',
+  'TerminalPane',
+);
+const BrowserPanel = lazyPanel<ComponentProps<typeof import('./BrowserPanel.js').BrowserPanel>>(
+  async () => ({ default: (await import('./BrowserPanel.js')).BrowserPanel }),
+  '浏览器',
 );
 const BrowserStage = lazyPanel<{ onStartAiTask?(request: BrowserWorkflowAiTaskRequest): void; workspaces?: Array<{ workspaceId: string; name: string }>; activeWorkspaceId?: string; active?: boolean }>(
   async () => ({ default: (await import('./BrowserStage.js')).BrowserStage }),
@@ -364,7 +398,12 @@ const SettingsPage = lazyPanel(
  * memoised; see `sidebarCallbacks` below.
  */
 const SidebarSurface = memo(Sidebar);
-const AgentWorkspace = lazyPanel(() => import('./AgentWorkspace.js'), '智能体工作区', 'AgentWorkspace');
+const AgentWorkspace = lazyPanel(
+  () => import('./AgentWorkspace.js'),
+  '智能体工作区',
+  'AgentWorkspace',
+  props => props.embedded && props.sidebarVisible && !props.contentActive ? props.sidebarHost : null,
+);
 
 interface ShellData {
   conversations: Conversation[];
@@ -530,10 +569,11 @@ function persistPaneLayouts(layouts: WorkspacePaneLayouts): void {
   writeWorkspacePaneLayouts(layouts);
   const legacyTabs: Record<string, string[]> = {};
   const legacySelected: Record<string, string> = {};
+  const previousSelected = readSelectedConversationByWorkspace();
   for (const [workspaceId, layout] of Object.entries(layouts)) {
     const ids = paneConversationIds(layout);
     if (ids.length > 0) legacyTabs[workspaceId] = ids;
-    const selected = focusedConversationId(layout);
+    const selected = paneKeepAliveConversationId(layout.panes[layout.focusedPaneId], previousSelected[workspaceId]);
     if (selected) legacySelected[workspaceId] = selected;
   }
   writeOpenConversationTabs(legacyTabs);
@@ -617,9 +657,26 @@ export function ShellApp() {
 
 function ShellAppInner() {
   const dialog = useDialog();
-  const [agentWorkspaceOpen, setAgentWorkspaceOpen] = useState(() => readSidebarMode() === 'agents');
-  const enterAgentWorkspace = useCallback(() => { setAgentWorkspaceOpen(true); writeSidebarMode('agents'); }, []);
-  const exitAgentWorkspace = useCallback(() => { setAgentWorkspaceOpen(false); writeSidebarMode('conversations'); }, []);
+  const [nav, setNav] = useState<ShellNavState>(() => ({
+    ...INITIAL_NAV,
+    lastTrack: 'model',
+  }));
+  // Sidebar preference is independent of the conversation displayed on the right.
+  const [sidebarMode, setSidebarMode] = useState(readSidebarMode);
+  const changeSidebarMode = useCallback((mode: 'conversations' | 'agents') => {
+    setSidebarMode(mode);
+    writeSidebarMode(mode);
+  }, []);
+  const [agentSidebarHost, setAgentSidebarHost] = useState<HTMLDivElement | null>(null);
+  const [agentActionsHost, setAgentActionsHost] = useState<HTMLDivElement | null>(null);
+  const [agentWorkspaceOpen, setAgentWorkspaceOpen] = useState(false);
+  const enterAgentWorkspace = useCallback(() => {
+    setAgentWorkspaceOpen(true);
+    changeSidebarMode('agents');
+    const narrow = window.matchMedia?.('(max-width: 767px)')?.matches === true;
+    setNav(n => ({ ...selectStage(n, 'talk'), ...(narrow ? { sidebarCollapsed: true } : {}) }));
+  }, [changeSidebarMode]);
+  const exitAgentWorkspace = useCallback(() => { setAgentWorkspaceOpen(false); changeSidebarMode('conversations'); }, [changeSidebarMode]);
   const [agentNavigation, setAgentNavigation] = useState<AgentWorkspaceNavigation>();
   const agentNavigationNonce = useRef(0);
   const restoredConversationSurface = useRef(false);
@@ -627,10 +684,7 @@ function ShellAppInner() {
     setAgentNavigation({ ...target, nonce: ++agentNavigationNonce.current });
     enterAgentWorkspace();
   }, [enterAgentWorkspace]);
-  const [nav, setNav] = useState<ShellNavState>(() => ({
-    ...INITIAL_NAV,
-    lastTrack: 'model',
-  }));
+
   const ensureDefaultDraftRef = useRef<(workspaceId: string) => void>(() => {});
   const [data, setData] = useState<ShellData>(() => readShellBootSnapshot() ?? EMPTY);
   const [projectlessExecutionScopes, setProjectlessExecutionScopes] = useState<readonly string[]>([]);
@@ -724,22 +778,34 @@ function ShellAppInner() {
   );
   const [newConversationSending, setNewConversationSending] = useState(false);
   const [newConversationError, setNewConversationError] = useState<string | undefined>();
-  const [paneLayouts, setPaneLayouts] = useState<WorkspacePaneLayouts>(() =>
-    migrateLegacyPaneLayouts(
-      readWorkspacePaneLayouts(),
-      readOpenConversationTabs(),
-      readSelectedConversationByWorkspace(),
-    ),
-  );
+  const [initialLayouts] = useState(() => {
+    const selected = readSelectedConversationByWorkspace();
+    const local = migrateLocalPageBrowsersToWorkbench(
+      migrateLegacyPaneLayouts(readWorkspacePaneLayouts(), readOpenConversationTabs(), selected),
+      readWorkspaceWorkbenchLayouts(),
+    );
+    const scoped = migrateConversationWorkbenches(local.workbenches, local.panes, selected);
+    return { panes: local.panes, workbenches: scoped.layouts, migrated: local.migrated || scoped.migrated };
+  });
+  const [paneLayouts, setPaneLayouts] = useState<WorkspacePaneLayouts>(initialLayouts.panes);
   const initialPaneLayoutsRef = useRef(paneLayouts);
   const paneLayoutsRef = useRef(paneLayouts);
   paneLayoutsRef.current = paneLayouts;
-  const [workbenchLayouts, setWorkbenchLayouts] = useState<WorkspaceWorkbenchLayouts>(() =>
-    readWorkspaceWorkbenchLayouts(),
-  );
+  const [workbenchLayouts, setWorkbenchLayouts] = useState<WorkspaceWorkbenchLayouts>(initialLayouts.workbenches);
+  const initialWorkbenchMigrationRef = useRef(initialLayouts.migrated ? initialLayouts.workbenches : null);
   const [workspaceChromeFocus, setWorkspaceChromeFocus] = useState<WorkspaceChromeFocus>('primary');
   const workbenchLayoutsRef = useRef(workbenchLayouts);
   workbenchLayoutsRef.current = workbenchLayouts;
+  const workbenchPane = activeWorkspaceId ? paneLayouts[activeWorkspaceId] : undefined;
+  const workbenchConversationId = nav.selectedConversationId ?? (workbenchPane
+    ? paneKeepAliveConversationId(workbenchPane.panes[workbenchPane.focusedPaneId], readSelectedConversationByWorkspace()[activeWorkspaceId!]) : undefined);
+  const activeWorkbenchKey = activeWorkspaceId ? workbenchScopeKey(activeWorkspaceId, workbenchConversationId) : undefined;
+  // Mount only visited scopes (plus explicitly opened background tasks). Hidden
+  // guests keep their DOM/history while the active scope owns the visible tabs.
+  const [retainedWorkbenchKeys, setRetainedWorkbenchKeys] = useState(() => new Set(activeWorkbenchKey ? [activeWorkbenchKey] : []));
+  useEffect(() => {
+    if (activeWorkbenchKey) setRetainedWorkbenchKeys(keys => keys.has(activeWorkbenchKey) ? keys : new Set([...keys, activeWorkbenchKey]));
+  }, [activeWorkbenchKey]);
   const [dirtyFileTabs, setDirtyFileTabs] = useState<Set<string>>(() => new Set());
   const [fileRevealTargets, setFileRevealTargets] = useState<Map<string, FileRevealTarget>>(
     () => new Map(),
@@ -802,6 +868,9 @@ function ShellAppInner() {
   const [tabDragResource, setTabDragResource] = useState<PaneResourceRef | null>(null);
   const [paneDropTarget, setPaneDropTarget] = useState<PaneDropTarget | null>(null);
   /** 各对话「用户最后查看到的事件 sequence」——完成后未查看即未读。 */
+  const [attentionHost, setAttentionHost] = useState<HTMLSpanElement | null>(null);
+  const [attentionProjection, setAttentionProjection] = useState<ConversationAttentionProjection>(() => ({ requests: new Map(), failedIds: new Set() }));
+  const conversationAttention = attentionProjection.requests;
   const [conversationLastSeen, setConversationLastSeen] = useState(() =>
     readConversationLastSeen(),
   );
@@ -870,7 +939,12 @@ function ShellAppInner() {
   );
 
   useEffect(() => {
-    // Persist a one-time migration from the former openTabs/selected keys.
+    // Write the destination first: an interrupted migration can leave duplicates,
+    // but never lose a local preview before its original pane tab is removed.
+    if (initialWorkbenchMigrationRef.current) {
+      persistWorkbenchLayouts(initialWorkbenchMigrationRef.current);
+    }
+    // Persist migrations from the former openTabs/selected and local-browser routes.
     persistPaneLayouts(initialPaneLayoutsRef.current);
     // The initial snapshot is intentionally written once; later writes happen
     // at reducer commit points so divider drags do not churn localStorage.
@@ -899,17 +973,17 @@ function ShellAppInner() {
 
   const commitWorkbenchLayout = useCallback(
     (
-      workspaceId: string,
+      scopeKey: string,
       update: (currentLayout: WorkspaceWorkbenchLayout) => WorkspaceWorkbenchLayout,
       persist = true,
     ) => {
       // Same reasoning as commitPaneLayout: keep the updater pure and the
       // localStorage write on the caller's side, exactly once.
       const current = workbenchLayoutsRef.current;
-      const currentLayout = current[workspaceId] ?? createWorkspaceWorkbenchLayout();
+      const currentLayout = current[scopeKey] ?? createWorkspaceWorkbenchLayout();
       const layout = update(currentLayout);
       if (layout === currentLayout) return;
-      const next = { ...current, [workspaceId]: layout };
+      const next = { ...current, [scopeKey]: layout };
       workbenchLayoutsRef.current = next;
       setWorkbenchLayouts(next);
       if (persist) persistWorkbenchLayouts(next);
@@ -928,11 +1002,11 @@ function ShellAppInner() {
       exitAgentWorkspace();
       if (ws) {
         const found = findWorkbenchConversation(
-          workbenchLayoutsRef.current[ws] ?? createWorkspaceWorkbenchLayout(),
+          workbenchLayoutsRef.current[workbenchScopeKey(ws, conversationId)] ?? createWorkspaceWorkbenchLayout(),
           conversationId,
         );
         if (found) {
-          commitWorkbenchLayout(ws, (current) =>
+          commitWorkbenchLayout(workbenchScopeKey(ws, conversationId), (current) =>
             activateWorkbenchTab(current, found.placement, found.tab.id),
           );
         } else {
@@ -1009,12 +1083,12 @@ function ShellAppInner() {
           return next;
         });
       }
-      commitWorkbenchLayout(activeWorkspaceId, (current) => {
+      commitWorkbenchLayout(activeWorkbenchKey!, (current) => {
         const opened = openWorkbenchTab(current, placement, fileWorkbenchTab(path));
         return placement === 'right' ? setWorkbenchFileBrowserOpen(opened, 'right', true) : opened;
       });
     },
-    [currentDataFolder, activeWorkspaceId, commitWorkbenchLayout],
+    [currentDataFolder, activeWorkspaceId, activeWorkbenchKey, commitWorkbenchLayout],
   );
 
   const handleOpenFileInSplit = useCallback(
@@ -1028,11 +1102,11 @@ function ShellAppInner() {
   const handleOpenGit = useCallback((root: string, section: GitPanelSection) => {
     if (!activeWorkspaceId) return;
     setGitRequest(current => ({ root, section, revision: (current?.revision ?? 0) + 1 }));
-    commitWorkbenchLayout(activeWorkspaceId, current => {
+    commitWorkbenchLayout(activeWorkbenchKey!, current => {
       const next = openWorkbenchTab(current, 'right', gitWorkbenchTab(root));
       return { ...next, right: { ...next.right, size: current.right.open ? Math.max(current.right.size, 400) : 520 } };
     });
-  }, [activeWorkspaceId, commitWorkbenchLayout]);
+  }, [activeWorkspaceId, activeWorkbenchKey, commitWorkbenchLayout]);
 
   const handleOpenReviewInWorkbench = useCallback(
     (placement: WorkbenchPlacement, view: ReviewView) => {
@@ -1043,11 +1117,11 @@ function ShellAppInner() {
         next.set(runId, view);
         return next;
       });
-      commitWorkbenchLayout(activeWorkspaceId, (current) =>
+      commitWorkbenchLayout(activeWorkbenchKey!, (current) =>
         openWorkbenchTab(current, placement, reviewWorkbenchTab(runId)),
       );
     },
-    [activeWorkspaceId, commitWorkbenchLayout],
+    [activeWorkspaceId, activeWorkbenchKey, commitWorkbenchLayout],
   );
 
   const handleOpenReviewInSplit = useCallback(
@@ -1063,9 +1137,8 @@ function ShellAppInner() {
         (count, pane) => count + pane.tabs.filter((tab) => tab.type === 'terminal').length,
         0,
       );
-      const workbench = workbenchLayouts[workspaceId];
-      const workbenchCount = (workbench?.right.tabs ?? [])
-        .concat(workbench?.bottom.tabs ?? [])
+      const workbenchCount = workbenchesForWorkspace(workbenchLayouts, workspaceId)
+        .flatMap(([, layout]) => [...layout.right.tabs, ...layout.bottom.tabs])
         .filter((tab) => tab.type === 'terminal').length;
       return paneCount + workbenchCount;
     },
@@ -1088,11 +1161,17 @@ function ShellAppInner() {
     (paneId?: string, url = 'about:blank') => {
       if (!activeWorkspaceId) return;
       const browserId = createBrowserId();
+      if (isLocalWebPageUrl(url)) {
+        commitWorkbenchLayout(activeWorkbenchKey!, (current) =>
+          openWorkbenchTab(current, 'right', browserWorkbenchTab(browserId, canonicalizeLocalWebPageUrl(url))),
+        );
+        return;
+      }
       commitPaneLayout(activeWorkspaceId, (current) =>
         openBrowserInPane(current, browserId, url, paneId ?? current.focusedPaneId),
       );
     },
-    [activeWorkspaceId, commitPaneLayout],
+    [activeWorkspaceId, activeWorkbenchKey, commitPaneLayout, commitWorkbenchLayout],
   );
 
   const openUntitledProjectFile = useCallback(
@@ -1109,10 +1188,10 @@ function ShellAppInner() {
         );
         return;
       }
-      const workbench = workbenchLayouts[activeWorkspaceId];
       const openPaths = collectOpenFilePaths({
         panes: Object.values(paneLayouts[activeWorkspaceId]?.panes ?? {}),
-        workbenchTabs: [...(workbench?.right.tabs ?? []), ...(workbench?.bottom.tabs ?? [])],
+        workbenchTabs: workbenchesForWorkspace(workbenchLayouts, activeWorkspaceId)
+          .flatMap(([, layout]) => [...layout.right.tabs, ...layout.bottom.tabs]),
       });
       const api = window.syncThink?.runtime;
       if (!api?.writeProjectFile) {
@@ -1144,7 +1223,7 @@ function ShellAppInner() {
           return;
         }
         if (openIn.type === 'workbench') {
-          commitWorkbenchLayout(activeWorkspaceId, (current) =>
+          commitWorkbenchLayout(activeWorkbenchKey!, (current) =>
             openWorkbenchTab(current, openIn.placement, fileWorkbenchTab(created.path)),
           );
           return;
@@ -1154,6 +1233,7 @@ function ShellAppInner() {
     },
     [currentDataFolder,
       activeWorkspaceId,
+      activeWorkbenchKey,
       commitWorkbenchLayout,
       data.workspaces,
       handleOpenFileInPane,
@@ -1179,11 +1259,11 @@ function ShellAppInner() {
   const handleOpenBrowserInWorkbench = useCallback(
     (placement: WorkbenchPlacement, url = 'about:blank') => {
       if (!activeWorkspaceId) return;
-      commitWorkbenchLayout(activeWorkspaceId, (current) =>
+      commitWorkbenchLayout(activeWorkbenchKey!, (current) =>
         openWorkbenchTab(current, placement, browserWorkbenchTab(createBrowserId(), url)),
       );
     },
-    [activeWorkspaceId, commitWorkbenchLayout],
+    [activeWorkspaceId, activeWorkbenchKey, commitWorkbenchLayout],
   );
 
   const handleOpenHtmlInBrowser = useCallback(
@@ -1193,25 +1273,54 @@ function ShellAppInner() {
       const api = bridge();
       const projectFolder = currentDataFolder();
 
-      // A conversation can be created before a local project is selected. Keep
-      // that existing path usable while project-backed previews use the same
-      // tokenized local-page URL as NewMax.
+      const browserId = createBrowserId();
+      const incomplete = isDeferredHtmlPreview(html);
+      // Projectless snippets still open beside the chat, never in the OS browser.
       if (!projectFolder) {
-        if (!api?.openHtmlInBrowser) throw new Error('当前对话没有绑定项目，无法打开浏览器预览');
-        const result = await api.openHtmlInBrowser(html);
-        if (!result.ok) throw new Error(result.error ?? '打开失败');
+        if (incomplete) throw new Error(INCOMPLETE_HTML_OPEN_ERROR);
+        const url = `data:text/html;charset=utf-8,${encodeURIComponent(html)}`;
+        commitWorkbenchLayout(activeWorkbenchKey!, (current) =>
+          openWorkbenchTab(current, 'right', browserWorkbenchTab(browserId, url)),
+        );
         return;
       }
 
-      const browserId = createBrowserId();
       const partition = `pane-browser-${browserId}`;
-      const relativePath = options.relativePath?.trim() || `designs/ai-preview-${browserId}.html`;
+      let relativePath = options.relativePath?.trim();
+      let persist = options.persist !== false;
+      let verifiedSource = false;
+      // A Markdown path is only a hint: verify the disk source before reusing it.
+      // Never overwrite a file based on prose, or open an unrelated stale document.
+      const sourcePath = incomplete && relativePath && !persist
+        ? relativePath
+        : options.sourcePath?.trim();
+      if (
+        (!relativePath || (incomplete && !persist)) &&
+        sourcePath &&
+        isSafeProjectRelativePath(sourcePath) &&
+        api?.readProjectFile
+      ) {
+        const source = await api.readProjectFile({ root: projectFolder, path: sourcePath });
+        if (
+          !source.error &&
+          typeof source.content === 'string' &&
+          htmlBrowserSourceMatches(html, source.content)
+        ) {
+          relativePath = sourcePath;
+          persist = false;
+          verifiedSource = true;
+        }
+      }
+      // History projections can stop inside <style>, leaving a background-only page.
+      // A verified source file is safe to open; the truncated excerpt is never persisted.
+      if (incomplete && !verifiedSource) throw new Error(INCOMPLETE_HTML_OPEN_ERROR);
+      relativePath ||= `designs/ai-preview-${browserId}.html`;
       if (!isSafeProjectRelativePath(relativePath)) {
         throw new Error('浏览器预览路径必须是项目内的 HTML 文件');
       }
       const absolutePath = resolveProjectRelativePath(projectFolder, relativePath);
 
-      if (options.persist !== false) {
+      if (persist) {
         if (!api?.readProjectFile || !api.writeProjectFile) {
           throw new Error('当前环境不支持保存浏览器预览文件');
         }
@@ -1240,11 +1349,11 @@ function ShellAppInner() {
       if (!localPage.ok || !localPage.url) {
         throw new Error(localPage.error ?? '本地浏览器页面创建失败');
       }
-      commitPaneLayout(activeWorkspaceId, (current) =>
-        openBrowserInPane(current, browserId, localPage.url!, current.focusedPaneId),
+      commitWorkbenchLayout(activeWorkbenchKey!, (current) =>
+        openWorkbenchTab(current, 'right', browserWorkbenchTab(browserId, localPage.url!)),
       );
     },
-    [currentDataFolder, activeWorkspaceId, commitPaneLayout, data.workspaces],
+    [currentDataFolder, activeWorkspaceId, activeWorkbenchKey, commitWorkbenchLayout],
   );
 
   const handleActivateBrowserTab = useCallback(
@@ -1259,36 +1368,34 @@ function ShellAppInner() {
 
   /** Conversation browser tools open beside the chat on the right workbench. */
   const handleAiBrowserOpen = useCallback(
-    (url: string) => {
-      if (!activeWorkspaceId) return;
-      const currentWorkbench =
-        workbenchLayoutsRef.current[activeWorkspaceId] ?? createWorkspaceWorkbenchLayout();
-      const existingSame = findWorkbenchBrowserByUrl(currentWorkbench, url);
+    (url: string, ownerId?: string, workspaceId = activeWorkspaceId) => {
+      if (!workspaceId) return;
+      const scopeKey = ownerId ? workbenchScopeKey(workspaceId, ownerId) :
+        (workspaceId === activeWorkspaceId ? activeWorkbenchKey! : workbenchScopeKey(workspaceId));
+      setRetainedWorkbenchKeys(keys => keys.has(scopeKey) ? keys : new Set([...keys, scopeKey]));
+      const currentWorkbench = workbenchLayoutsRef.current[scopeKey] ?? createWorkspaceWorkbenchLayout();
+      const existingSame = (ownerId ? findWorkbenchBrowserByOwner(currentWorkbench, ownerId) : null) ?? findWorkbenchBrowserByUrl(currentWorkbench, url, ownerId);
       const browserId = existingSame?.tab.browserId ?? createBrowserId();
-      setAiBrowserNav((current) => ({
-        browserId,
-        url,
-        seq: existingSame ? (current?.seq ?? 0) + 1 : 1,
-      }));
-      commitWorkbenchLayout(activeWorkspaceId, (current) =>
-        openOrFocusWorkbenchBrowser(current, browserId, url),
+      setAiBrowserNav((current) => ({ browserId, url, seq: (current?.seq ?? 0) + 1 }));
+      commitWorkbenchLayout(scopeKey, (current) =>
+        openOrFocusWorkbenchBrowser(current, browserId, url, 'right', ownerId),
       );
     },
-    [activeWorkspaceId, commitWorkbenchLayout],
+    [activeWorkspaceId, activeWorkbenchKey, commitWorkbenchLayout],
   );
 
   // AI browser_open tool.completed → open or focus a matching workbench browser.
   // First pass only registers historical events (no auto-navigation on reopen);
-  // afterwards each fresh browser_open result opens a new tab when the URL is new.
+  // Live renderer commands own their tab; only external completions use this fallback.
   const seenBrowserOpenIdsRef = useRef<Set<string>>(new Set());
   const browserNavPrimedRef = useRef(false);
-  const browserCommandContextRef = useRef({ data, handleAiBrowserOpen, activeWorkspaceId, projectlessExecutionScopes, currentDataFolder });
-  browserCommandContextRef.current = { data, handleAiBrowserOpen, activeWorkspaceId, projectlessExecutionScopes, currentDataFolder };
+  const browserCommandContextRef = useRef({ data, handleAiBrowserOpen, activeWorkspaceId, projectlessExecutionScopes, projectlessFolders, currentDataFolder });
+  browserCommandContextRef.current = { data, handleAiBrowserOpen, activeWorkspaceId, projectlessExecutionScopes, projectlessFolders, currentDataFolder };
 
   useEffect(() => {
     const priming = !browserNavPrimedRef.current;
     browserNavPrimedRef.current = true;
-    const pending: { id: string; url: string }[] = [];
+    const pending: { id: string; url: string; ownerId?: string; workspaceId: string }[] = [];
     for (const event of eventHistory) {
       if (event.type !== 'tool.completed' && event.type !== 'execution.tool.completed') continue;
       const payload = event.payload as {
@@ -1317,7 +1424,12 @@ function ShellAppInner() {
       try {
         const parsed = JSON.parse(String(payload.result ?? '')) as { ok?: boolean; url?: string };
         if (parsed.ok === true && typeof parsed.url === 'string') {
-          pending.push({ id: eventKey, url: parsed.url });
+          const ownerId = typeof event.payload.ownerId === 'string' ? event.payload.ownerId :
+            typeof event.payload.threadId === 'string' ? event.payload.threadId :
+            typeof event.payload.conversationId === 'string' ? event.payload.conversationId :
+            event.taskId ? data.conversations.find(conversation => conversation.taskId === event.taskId)?.id : undefined;
+          const workspaceId = projectlessExecutionScopes.includes(String(event.workspaceId)) ? PROJECTLESS_SCOPE : String(event.workspaceId);
+          pending.push({ id: eventKey, url: parsed.url, ownerId, workspaceId });
         } else {
           seenBrowserOpenIdsRef.current.add(eventKey);
         }
@@ -1327,9 +1439,9 @@ function ShellAppInner() {
     }
     for (const item of pending) {
       seenBrowserOpenIdsRef.current.add(item.id);
-      handleAiBrowserOpen(item.url);
+      handleAiBrowserOpen(item.url, item.ownerId, item.workspaceId);
     }
-  }, [eventHistory, handleAiBrowserOpen]);
+  }, [eventHistory, handleAiBrowserOpen, projectlessExecutionScopes, data.conversations]);
 
   const chatBrowserSettingSnapshotsRef = useRef<Map<string, Promise<boolean>>>(new Map());
   const handledChatBrowserRunsRef = useRef<Set<string>>(new Set());
@@ -1454,15 +1566,15 @@ function ShellAppInner() {
 
   const handleToggleWorkspaceFilesWorkbench = useCallback(() => {
     if (!activeWorkspaceId) return;
-    commitWorkbenchLayout(activeWorkspaceId, (current) =>
+    commitWorkbenchLayout(activeWorkbenchKey!, (current) =>
       toggleWorkspaceFilesWorkbench(current, 'right'),
     );
-  }, [activeWorkspaceId, commitWorkbenchLayout]);
+  }, [activeWorkspaceId, activeWorkbenchKey, commitWorkbenchLayout]);
 
   const handleToggleWorkbench = useCallback(
     (placement: WorkbenchPlacement) => {
       if (!activeWorkspaceId) return;
-      commitWorkbenchLayout(activeWorkspaceId, (current) => {
+      commitWorkbenchLayout(activeWorkbenchKey!, (current) => {
         const scope = current[placement];
         if (scope.open) return setWorkbenchOpen(current, placement, false);
         if (scope.tabs.length > 0) return setWorkbenchOpen(current, placement, true);
@@ -1473,7 +1585,7 @@ function ShellAppInner() {
         return openWorkbenchTab(current, placement, terminalWorkbenchTab(createTerminalId()));
       });
     },
-    [activeWorkspaceId, commitWorkbenchLayout, countOpenTerminals],
+    [activeWorkspaceId, activeWorkbenchKey, commitWorkbenchLayout, countOpenTerminals],
   );
 
   const handleNewWorkbenchResource = useCallback(
@@ -1481,14 +1593,14 @@ function ShellAppInner() {
       if (!activeWorkspaceId) return;
       if (resource === 'conversation') return;
       if (resource === 'files') {
-        commitWorkbenchLayout(activeWorkspaceId, (current) =>
+        commitWorkbenchLayout(activeWorkbenchKey!, (current) =>
           toggleWorkspaceFilesWorkbench(current, 'right'),
         );
         return;
       }
       if (resource === 'terminal') {
         if (countOpenTerminals(activeWorkspaceId) >= MAX_TERMINAL_SESSIONS) return;
-        commitWorkbenchLayout(activeWorkspaceId, (current) =>
+        commitWorkbenchLayout(activeWorkbenchKey!, (current) =>
           openWorkbenchTab(current, placement, terminalWorkbenchTab(createTerminalId())),
         );
         return;
@@ -1498,48 +1610,48 @@ function ShellAppInner() {
         return;
       }
       if (resource === 'git') {
-        commitWorkbenchLayout(activeWorkspaceId, (current) =>
+        commitWorkbenchLayout(activeWorkbenchKey!, (current) =>
           openWorkbenchTab(current, placement, gitWorkbenchTab(data.workspaces.find(workspace => workspace.workspaceId === activeWorkspaceId)?.folderPath || undefined)),
         );
         return;
       }
-      commitWorkbenchLayout(activeWorkspaceId, (current) =>
+      commitWorkbenchLayout(activeWorkbenchKey!, (current) =>
         openWorkbenchTab(current, placement, browserWorkbenchTab(createBrowserId(), 'about:blank')),
       );
     },
-    [activeWorkspaceId, data.workspaces, commitWorkbenchLayout, countOpenTerminals, openUntitledProjectFile],
+    [activeWorkspaceId, activeWorkbenchKey, data.workspaces, commitWorkbenchLayout, countOpenTerminals, openUntitledProjectFile],
   );
 
   const handleActivateWorkbenchTab = useCallback(
     (placement: WorkbenchPlacement, tabId: string) => {
       if (!activeWorkspaceId) return;
-      commitWorkbenchLayout(activeWorkspaceId, (current) =>
+      commitWorkbenchLayout(activeWorkbenchKey!, (current) =>
         activateWorkbenchTab(current, placement, tabId),
       );
     },
-    [activeWorkspaceId, commitWorkbenchLayout],
+    [activeWorkspaceId, activeWorkbenchKey, commitWorkbenchLayout],
   );
 
   const handleCloseWorkbench = useCallback(
     (placement: WorkbenchPlacement) => {
       if (!activeWorkspaceId) return;
-      commitWorkbenchLayout(activeWorkspaceId, (current) =>
+      commitWorkbenchLayout(activeWorkbenchKey!, (current) =>
         setWorkbenchOpen(current, placement, false),
       );
     },
-    [activeWorkspaceId, commitWorkbenchLayout],
+    [activeWorkspaceId, activeWorkbenchKey, commitWorkbenchLayout],
   );
 
   const handleWorkbenchSizeChange = useCallback(
     (placement: WorkbenchPlacement, size: number, commit: boolean) => {
       if (!activeWorkspaceId) return;
       commitWorkbenchLayout(
-        activeWorkspaceId,
+        activeWorkbenchKey!,
         (current) => setWorkbenchSize(current, placement, size),
         commit,
       );
     },
-    [activeWorkspaceId, commitWorkbenchLayout],
+    [activeWorkspaceId, activeWorkbenchKey, commitWorkbenchLayout],
   );
 
   const handleCloseWorkbenchTab = useCallback(
@@ -1583,11 +1695,11 @@ function ShellAppInner() {
         writeNewConversationDraft('');
         setNewConversationError(undefined);
       }
-      commitWorkbenchLayout(activeWorkspaceId, (current) =>
+      commitWorkbenchLayout(activeWorkbenchKey!, (current) =>
         closeWorkbenchTab(current, placement, tab.id),
       );
     },
-    [currentDataFolder, activeWorkspaceId, commitWorkbenchLayout, data.workspaces, dialog, setDraftSession],
+    [currentDataFolder, activeWorkspaceId, activeWorkbenchKey, commitWorkbenchLayout, data.workspaces, dialog, setDraftSession],
   );
 
   const handleFileDirtyChange = useCallback((workspaceId: string, path: string, dirty: boolean) => {
@@ -1768,17 +1880,6 @@ function ShellAppInner() {
     (workspaceId: string) => {
       const draft = draftSessionRef.current;
       if (draft && draft.workspaceId !== workspaceId) {
-        const currentLayouts = paneLayoutsRef.current;
-        const layout = currentLayouts[draft.workspaceId];
-        if (layout) {
-          const next = {
-            ...currentLayouts,
-            [draft.workspaceId]: closeConversationInLayout(layout, draft.id),
-          };
-          paneLayoutsRef.current = next;
-          setPaneLayouts(next);
-          persistPaneLayouts(next);
-        }
         pendingFirstMessageRef.current = null;
         setDraftSession(null);
         setNewConversationDraft('');
@@ -1922,9 +2023,10 @@ function ShellAppInner() {
         scopedWorkspaces.map((workspace) => String(workspace.workspaceId)),
       );
       const prunedWorkbench: WorkspaceWorkbenchLayouts = Object.fromEntries(
-        Object.entries(workbenchLayoutsRef.current).filter(([workspaceId]) =>
-          validWorkspaceIds.has(workspaceId),
-        ).map(([workspaceId, layout]) => {
+        Object.entries(workbenchLayoutsRef.current).filter(([key]) =>
+          validWorkspaceIds.has(parseWorkbenchScopeKey(key)?.workspaceId ?? '') || parseWorkbenchScopeKey(key)?.workspaceId === PROJECTLESS_SCOPE,
+        ).map(([key, layout]) => {
+          const workspaceId = parseWorkbenchScopeKey(key)!.workspaceId;
           const validIds = new Set(scopedConversations.filter(c => c.workspaceId === workspaceId && !isAgentConversation(c)).map(c => String(c.id)));
           const draft = draftSessionRef.current;
           if (draft?.workspaceId === workspaceId && draft.track === 'model') validIds.add(draft.id);
@@ -1934,7 +2036,7 @@ function ShellAppInner() {
               if (tab.type === 'conversation' && !tab.conversationId.startsWith('draft:') && !validIds.has(tab.conversationId)) next = closeWorkbenchConversation(next, tab.conversationId);
             }
           }
-          return [workspaceId, next];
+          return [key, next];
         }),
       );
       workbenchLayoutsRef.current = prunedWorkbench;
@@ -2031,33 +2133,20 @@ function ShellAppInner() {
       pendingEvents = [];
       if (batch.length === 0 || cancelled) return;
       setEventHistory((prev) => mergeEventHistory(prev, batch));
-      // 全局智能体库随事件即时刷新：AI 通过 create_agent / update_agent /
-      // archive_agent 工具变更智能体时发布 globalAgent.* 事件，不在此刷新则
-      // 智能体库列表要等手动刷新/切页才更新。
-      if (
-        batch.some(
-          (event) =>
-            event.type === 'globalAgent.created' ||
-            event.type === 'globalAgent.updated' ||
-            event.type === 'globalAgent.deleted' ||
-            event.type === 'globalAgent.activationChanged',
-        )
-      ) {
-        void refresh();
-      }
+      // Chat tools save real agent/team configurations; refresh the library and
+      // pickers on those events, without refetching on every task/message step.
+      if (batch.some(event => isAgentTeamLibraryEvent(event.type))) void refresh();
     };
     const dispatchBrowserCommand = createBrowserCommandDispatcher({
-      open: (url, workspaceId) => {
+      open: (url, workspaceId, ownerId) => {
         const context = browserCommandContextRef.current;
-        if (workspaceId !== context.activeWorkspaceId && !(context.activeWorkspaceId === PROJECTLESS_SCOPE && context.projectlessExecutionScopes.includes(workspaceId))) {
-          throw new Error('请切回此任务的工作区后重新打开浏览器页面。');
-        }
-        context.handleAiBrowserOpen(url);
+        const targetWorkspace = context.projectlessExecutionScopes.includes(workspaceId) ? PROJECTLESS_SCOPE : workspaceId;
+        context.handleAiBrowserOpen(url, ownerId, targetWorkspace);
       },
-      projectFolder: (workspaceId) => {
+      projectFolder: (workspaceId, ownerId) => {
         const context = browserCommandContextRef.current;
         return context.projectlessExecutionScopes.includes(workspaceId)
-          ? context.currentDataFolder()
+          ? (ownerId ? context.projectlessFolders[ownerId] : context.currentDataFolder())
           : context.data.workspaces.find(workspace => String(workspace.workspaceId) === workspaceId)?.folderPath?.trim();
       },
       submit: (result) => api.submitBrowserResult(result),
@@ -2070,6 +2159,9 @@ function ShellAppInner() {
       // when the window is hidden. Never execute commands from connect snapshots.
       for (const event of events) {
         if (event.type === 'browser.command_requested') {
+          // A live embedded open already owns navigation. Its durable completion
+          // may contain a redirect URL; replaying it would create a second guest.
+          if (event.payload.toolName === 'browser_open' && typeof event.payload.toolCallId === 'string') seenBrowserOpenIdsRef.current.add(event.payload.toolCallId);
           void dispatchBrowserCommand(event).catch(() => {
             console.warn('[desktop] browser result delivery failed');
           });
@@ -2281,12 +2373,12 @@ function ShellAppInner() {
       const placeDraft = (draftId: string) => {
         if (workbenchPlacement) {
           commitPaneLayout(workspaceId, (current) => closeConversationInLayout(current, draftId));
-          commitWorkbenchLayout(workspaceId, (current) =>
+          commitWorkbenchLayout(workbenchScopeKey(workspaceId, draftId), (current) =>
             openWorkbenchTab(current, workbenchPlacement, conversationWorkbenchTab(draftId)),
           );
           return;
         }
-        commitWorkbenchLayout(workspaceId, (current) =>
+        commitWorkbenchLayout(workbenchScopeKey(workspaceId, draftId), (current) =>
           closeWorkbenchConversation(current, draftId),
         );
         commitPaneLayout(workspaceId, (current) =>
@@ -2310,6 +2402,12 @@ function ShellAppInner() {
         createdAt,
       };
       setDraftSession(draft);
+      const assigned = materializeWorkbenchScope(workbenchLayoutsRef.current, workspaceId, undefined, draft.id);
+      if (assigned !== workbenchLayoutsRef.current) {
+        workbenchLayoutsRef.current = assigned;
+        setWorkbenchLayouts(assigned);
+        persistWorkbenchLayouts(assigned);
+      }
       placeDraft(draft.id);
       setNav((current) => openConversation({ ...current, stage: 'talk' }, draft.id));
       return draft;
@@ -2318,7 +2416,19 @@ function ShellAppInner() {
   );
 
   ensureDefaultDraftRef.current = (workspaceId: string) => {
-    if (layoutHasOpenTabs(paneLayoutsRef.current[workspaceId])) return;
+    const pane = paneLayoutsRef.current[workspaceId];
+    const focused = pane ? focusedConversationId(pane) : undefined;
+    const docked = workbenchesForWorkspace(workbenchLayoutsRef.current, workspaceId)
+      .flatMap(([, layout]) => [...layout.right.tabs, ...layout.bottom.tabs])
+      .find(tab => tab.type === 'conversation' && tab.conversationId.startsWith('draft:'));
+    const draftId = focused?.startsWith('draft:') ? focused :
+      !layoutHasOpenTabs(pane) && docked?.type === 'conversation' ? docked.conversationId : undefined;
+    if (draftId) {
+      setDraftSession({ id: draftId, workspaceId, track: 'model', createdAt: new Date().toISOString() });
+      setNav(current => openConversation(current, draftId));
+      return;
+    }
+    if (layoutHasOpenTabs(pane)) return;
     beginDraftConversation('model', undefined, undefined, workspaceId);
   };
 
@@ -2459,9 +2569,13 @@ function ShellAppInner() {
         commitPaneLayout(workspaceId, (current) =>
           replaceConversationInPane(current, materializedDraft.id, createdConversationId),
         );
-        commitWorkbenchLayout(workspaceId, (current) =>
+        commitWorkbenchLayout(workbenchScopeKey(workspaceId, materializedDraft.id), (current) =>
           replaceWorkbenchConversation(current, materializedDraft.id, createdConversationId),
         );
+        const nextWorkbenches = materializeWorkbenchScope(workbenchLayoutsRef.current, workspaceId, materializedDraft.id, createdConversationId);
+        workbenchLayoutsRef.current = nextWorkbenches;
+        setWorkbenchLayouts(nextWorkbenches);
+        persistWorkbenchLayouts(nextWorkbenches);
         setDraftSession(null);
         setNav((current) => openConversation(current, createdConversationId));
       }
@@ -3124,9 +3238,9 @@ function ShellAppInner() {
   const activeWorkbenchLayout = useMemo(
     () =>
       activeWorkspaceId
-        ? (workbenchLayouts[activeWorkspaceId] ?? createWorkspaceWorkbenchLayout())
+        ? (workbenchLayouts[activeWorkbenchKey!] ?? createWorkspaceWorkbenchLayout())
         : undefined,
-    [activeWorkspaceId, workbenchLayouts],
+    [activeWorkspaceId, activeWorkbenchKey, workbenchLayouts],
   );
   const handleWorkbenchNewResource = useCallback(
     (placement: WorkbenchPlacement, resource: WorkbenchNewResource) => {
@@ -3142,12 +3256,12 @@ function ShellAppInner() {
     (width: number, commit: boolean) => {
       if (!activeWorkspaceId) return;
       commitWorkbenchLayout(
-        activeWorkspaceId,
+        activeWorkbenchKey!,
         (current) => setWorkbenchFileBrowserWidth(current, 'right', width),
         commit,
       );
     },
-    [activeWorkspaceId, commitWorkbenchLayout],
+    [activeWorkspaceId, activeWorkbenchKey, commitWorkbenchLayout],
   );
 
   useEffect(() => {
@@ -3163,7 +3277,7 @@ function ShellAppInner() {
 
       if (shortcuts.newChat.enabled && matchesShortcut(event, shortcuts.newChat.accelerator)) {
         event.preventDefault();
-        if (agentWorkspaceOpen) window.dispatchEvent(new CustomEvent('shell-new-agent-chat'));
+        if (sidebarMode === 'agents') window.dispatchEvent(new CustomEvent('shell-new-agent-chat'));
         else handleNewConversation();
         return;
       }
@@ -3281,7 +3395,7 @@ function ShellAppInner() {
       window.removeEventListener('keyup', handleShortcutRelease);
     };
   }, [
-    agentWorkspaceOpen,
+    sidebarMode,
     activePaneLayout,
     data.workspaces,
     handleCloseBrowserTab,
@@ -3338,16 +3452,19 @@ function ShellAppInner() {
 
   useEffect(() => {
     if (nav.stage !== 'talk') return;
-    const selectedConversationId = activePaneLayout
-      ? focusedConversationId(activePaneLayout)
-      : undefined;
     setNav((current) => {
+      const selectedConversationId = activePaneLayout
+        ? paneKeepAliveConversationId(activePaneLayout.panes[activePaneLayout.focusedPaneId], current.selectedConversationId)
+        : undefined;
+      const selectedWorkbench = current.selectedConversationId && activeWorkspaceId
+        ? workbenchLayoutsRef.current[workbenchScopeKey(activeWorkspaceId, current.selectedConversationId)] : undefined;
+      if (selectedWorkbench && findWorkbenchConversation(selectedWorkbench, current.selectedConversationId!)) return current;
       if (current.stage !== 'talk' || current.selectedConversationId === selectedConversationId) {
         return current;
       }
       return { ...current, selectedConversationId };
     });
-  }, [activePaneLayout, nav.stage]);
+  }, [activePaneLayout, activeWorkspaceId, nav.stage]);
 
   const resolveTargetName = useCallback(
     (conversation: Conversation) =>
@@ -3364,8 +3481,15 @@ function ShellAppInner() {
 
   /** 各对话运行/完成状态（由全局事件流按 taskId 投影）。 */
   const conversationActivity = useMemo(
-    () => buildConversationActivity(eventHistory, data.conversations, runActivityAuthority),
-    [eventHistory, data.conversations, runActivityAuthority],
+    () => {
+      const activity = buildConversationActivity(eventHistory, data.conversations, runActivityAuthority);
+      for (const [id, requests] of conversationAttention) {
+        const entry = activity.get(id);
+        if (entry && requests.length) activity.set(id, { ...entry, running: false });
+      }
+      return activity;
+    },
+    [eventHistory, data.conversations, runActivityAuthority, conversationAttention],
   );
   const acknowledgeAgentResults = useCallback((id: string, runIds: readonly string[]) => {
     if (!agentWorkspaceOpen || settingsOpen || !runIds.length) return;
@@ -3382,23 +3506,42 @@ function ShellAppInner() {
   }, [agentWorkspaceOpen, settingsOpen, eventHistory]);
   /** 对话级 running/unread map（对话 tab 与侧栏用）。 */
   const conversationActivityView = useMemo(() => {
-    const map = new Map<string, { running: boolean; unread: boolean }>();
+    const map = new Map<string, ConversationActivityView>();
     for (const conversation of data.conversations) {
       const id = String(conversation.id);
       const activity = conversationActivity.get(id);
       if (!activity) continue;
       map.set(id, {
         running: activity.running,
-        unread: isConversationUnread(activity, conversationLastSeen, id),
+        unread: !conversationAttention.get(id)?.length && isConversationUnread(activity, conversationLastSeen, id),
+        attention: conversationAttention.get(id)?.[0]?.kind,
+        failed: !conversationAttention.get(id)?.length && !activity.running && isConversationUnread(activity, conversationLastSeen, id) &&
+          attentionProjection.failedIds.has(id),
       });
     }
     return map;
-  }, [data.conversations, conversationActivity, conversationLastSeen]);
+  }, [data.conversations, conversationActivity, conversationLastSeen, conversationAttention, attentionProjection.failedIds]);
   /** 工作区级聚合（顶部工作区 tab 用）。 */
   const workspaceActivity = useMemo(
-    () => buildWorkspaceActivity(data.conversations, conversationActivity, conversationLastSeen),
-    [data.conversations, conversationActivity, conversationLastSeen],
+    () => {
+      const aggregate = buildWorkspaceActivity(data.conversations, conversationActivity, conversationLastSeen) as Map<string, ConversationActivityView>;
+      for (const conversation of data.conversations) {
+        const id = String(conversation.id);
+        const workspaceId = conversation.workspaceId ?? PROJECTLESS_SCOPE;
+        const attention = conversationAttention.get(id)?.[0]?.kind;
+        if (attention && aggregate.get(workspaceId)?.attention !== 'answer') aggregate.set(workspaceId, { ...(aggregate.get(workspaceId) ?? { running: false, unread: false }), attention });
+      }
+      return aggregate;
+    },
+    [data.conversations, conversationActivity, conversationLastSeen, conversationAttention],
   );
+  const visibleNoticeConversationIds = useMemo(() => {
+    if (settingsOpen || agentWorkspaceOpen || nav.stage !== 'talk') return new Set<string>();
+    return new Set(activePaneLayout ? Object.values(activePaneLayout.panes)
+      .filter(pane => mountedConversationPaneIds.has(pane.id))
+      .map(pane => pane.tabs.find(tab => tab.id === pane.activeTabId))
+      .filter(tab => tab?.type === 'conversation').map(tab => tab.conversationId) : []);
+  }, [activePaneLayout, mountedConversationPaneIds, settingsOpen, agentWorkspaceOpen, nav.stage]);
   // Only mounted talk-stage Runtime conversations count as viewed. Draft tabs
   // are ignored, while other visible panes can still clear their unread state.
   useEffect(() => {
@@ -3412,16 +3555,26 @@ function ShellAppInner() {
           .filter((id) => id !== draftSession?.id)
       : [];
     if (watched.length === 0) return;
-    setConversationLastSeen((current) => {
-      let next = current;
-      for (const id of watched) {
-        const activity = conversationActivity.get(id);
-        if (activity?.lastFinishedSequence == null) continue;
-        next = markConversationSeen(next, id, activity.lastFinishedSequence);
-      }
-      if (next !== current) writeConversationLastSeen(next);
-      return next;
-    });
+    const acknowledge = () => {
+      if (document.visibilityState === 'hidden' || !document.hasFocus()) return;
+      setConversationLastSeen((current) => {
+        let next = current;
+        for (const id of watched) {
+          const activity = conversationActivity.get(id);
+          if (activity?.lastFinishedSequence == null) continue;
+          next = markConversationSeen(next, id, activity.lastFinishedSequence);
+        }
+        if (next !== current) writeConversationLastSeen(next);
+        return next;
+      });
+    };
+    acknowledge();
+    window.addEventListener('focus', acknowledge);
+    document.addEventListener('visibilitychange', acknowledge);
+    return () => {
+      window.removeEventListener('focus', acknowledge);
+      document.removeEventListener('visibilitychange', acknowledge);
+    };
   }, [
     activePaneLayout,
     agentWorkspaceOpen,
@@ -3483,6 +3636,7 @@ function ShellAppInner() {
         return;
       }
       if (stage === 'abilities') setAbilityNavigation(undefined);
+      setAgentWorkspaceOpen(false);
       setNav((n) => selectStage(n, stage));
     },
     [nextNavigationRequestKey],
@@ -3661,6 +3815,21 @@ function ShellAppInner() {
     />
   );
 
+  const workbenchBrowserContexts = new Map<string, { scopeKey: string; workspaceId: string; conversationId?: string; placement: WorkbenchPlacement }>();
+  const retainedWorkbenchBrowsers: Record<WorkbenchPlacement, WorkbenchTab[]> = { right: [], bottom: [] };
+  for (const [scopeKey, layout] of Object.entries(workbenchLayouts)) {
+    if (scopeKey !== activeWorkbenchKey && !retainedWorkbenchKeys.has(scopeKey)) continue;
+    const owner = parseWorkbenchScopeKey(scopeKey);
+    if (!owner) continue;
+    for (const placement of ['right', 'bottom'] as const) {
+      for (const tab of layout[placement].tabs) {
+        if (tab.type !== 'browser') continue;
+        workbenchBrowserContexts.set(tab.browserId, { scopeKey, ...owner, placement });
+        retainedWorkbenchBrowsers[placement].push(tab);
+      }
+    }
+  }
+
   const renderWorkbenchContent = (placement: WorkbenchPlacement, tab: WorkbenchTab) => {
     if (tab.type === 'conversation') {
       const isDraft =
@@ -3785,7 +3954,7 @@ function ShellAppInner() {
           title="Terminal"
           onCwdChange={(cwd) => {
             if (!activeWorkspaceId) return;
-            commitWorkbenchLayout(activeWorkspaceId, (current) =>
+            commitWorkbenchLayout(activeWorkbenchKey!, (current) =>
               openWorkbenchTab(current, placement, terminalWorkbenchTab(tab.terminalId, cwd)),
             );
           }}
@@ -3806,25 +3975,31 @@ function ShellAppInner() {
       }
       return <GitPanel key={gitRoot} projectFolder={gitRoot} request={gitRequest?.root === gitRoot ? gitRequest : undefined} />;
     }
+    const owner = workbenchBrowserContexts.get(tab.browserId);
+    const scopeKey = owner?.scopeKey ?? activeWorkbenchKey!;
+    const browserFolder = owner?.workspaceId === PROJECTLESS_SCOPE
+      ? (owner.conversationId ? projectlessFolders[owner.conversationId] : undefined)
+      : data.workspaces.find(workspace => String(workspace.workspaceId) === owner?.workspaceId)?.folderPath;
     return (
       <BrowserPanel
         key={tab.browserId}
+        automationOwnerId={tab.ownerId ?? owner?.conversationId}
         initialUrl={tab.url}
         navigateUrl={aiBrowserNav?.browserId === tab.browserId ? aiBrowserNav.url : undefined}
         navigateSeq={aiBrowserNav?.browserId === tab.browserId ? aiBrowserNav.seq : undefined}
-        onClose={() => void handleCloseWorkbenchTab(placement, tab)}
-        onNewTab={(url) => handleOpenBrowserInWorkbench(placement, url)}
+        onClose={() => commitWorkbenchLayout(scopeKey, current => closeWorkbenchTab(current, placement, tab.id))}
+        onNewTab={(url = 'about:blank') => commitWorkbenchLayout(scopeKey, current =>
+          openWorkbenchTab(current, placement, browserWorkbenchTab(createBrowserId(), url)))}
         onPageMeta={(meta) => {
           handleBrowserPageMeta(tab.browserId, meta);
-          if (!activeWorkspaceId) return;
-          commitWorkbenchLayout(activeWorkspaceId, (current) =>
+          commitWorkbenchLayout(scopeKey, (current) =>
             updateWorkbenchBrowserUrl(current, placement, tab.browserId, meta.url),
           );
         }}
-        projectFolder={activeProjectFolder}
-        partition={`workbench-browser-${tab.browserId}`}
+        projectFolder={browserFolder}
+        partition={isLocalWebPageUrl(tab.url) ? `pane-browser-${tab.browserId}` : undefined}
         registerForAutomation
-        automationActive={activeWorkbenchLayout?.[placement].activeTabId === tab.id}
+        automationActive={scopeKey === activeWorkbenchKey && activeWorkbenchLayout?.[placement].open === true && activeWorkbenchLayout[placement].activeTabId === tab.id}
       />
     );
   };
@@ -3939,16 +4114,22 @@ function ShellAppInner() {
             onToggleBottomWorkbench={() => handleToggleWorkbench('bottom')}
             onToggleRightWorkbench={() => handleToggleWorkbench('right')}
             workspaceActivity={workspaceActivity}
+            attentionCenter={<span ref={setAttentionHost} className="flex shrink-0" data-testid="conversation-attention-host" />}
           />
   );
 
   return (
     <div className="shell-app-root flex h-full flex-col bg-page">
-      <KeepAliveLayer active={!agentWorkspaceOpen} className="shell-normal-workspace">
+      <ConversationAttentionController api={bridge()} conversations={data.conversations} portalHost={attentionHost}
+        workspaces={data.workspaces} events={eventHistory} authority={runActivityAuthority}
+        connectionRevision={runtimeConnectionRevision} lastSeen={conversationLastSeen}
+        visibleIds={visibleNoticeConversationIds} titleFor={resolveTargetName}
+        onOpenConversation={id => void openConversationById(id)} onProjection={setAttentionProjection} />
+      <div className="shell-normal-workspace">
       <div className="shell-boards flex min-h-0 flex-1 bg-page">
         {/* Keep sidebar mounted so width can animate on collapse/expand. */}
         <SidebarSurface
-          nav={nav}
+          nav={agentWorkspaceOpen ? { ...nav, selectedConversationId: undefined } : nav}
           width={sidebarWidth || SIDEBAR_WIDTH_DEFAULT}
           collapsed={nav.sidebarCollapsed}
           settingsOpen={settingsOpen}
@@ -3964,7 +4145,10 @@ function ShellAppInner() {
           bootError={bootError}
           activeWorkspaceId={activeWorkspaceId}
           workspaces={data.workspaces}
-          onEnterAgentWorkspace={enterAgentWorkspace}
+          sidebarMode={sidebarMode}
+          onSidebarModeChange={changeSidebarMode}
+          onAgentSidebarMount={setAgentSidebarHost}
+          onAgentActionsMount={setAgentActionsHost}
           onSelectWorkspace={selectWorkspace}
           workspaceActivity={workspaceActivity}
           onAgentChat={handleAgentChat}
@@ -3997,6 +4181,7 @@ function ShellAppInner() {
           />
         )}
 
+        <KeepAliveLayer active={!agentWorkspaceOpen} className="shell-workbench-surface">
         <main
           className={`shell-board flex min-w-0 flex-1 flex-col overflow-hidden bg-panel${nav.stage === 'talk' ? ' shell-stage--talk' : ''}`}
           data-testid="shell-stage"
@@ -4022,7 +4207,7 @@ function ShellAppInner() {
                     onPointerDownCapture={() => setWorkspaceChromeFocus('primary')}
                   >
                     {nav.stage === 'talk' ? workspaceHeader : null}
-                    {shouldRenderWallpaperReadingLayers ? <WallpaperReadingLayers /> : null}
+                    {shouldRenderWallpaperReadingLayers ? <Suspense fallback={null}><WallpaperReadingLayers /></Suspense> : null}
                     {activePaneLayout && hasOpenPaneTabs ? (
                       <WorkspacePaneHost
                         layout={activePaneLayout}
@@ -4373,7 +4558,7 @@ function ShellAppInner() {
                                                 }
                                                 onOpenHtmlInBrowser={handleOpenHtmlInBrowser}
                                                 onOpenWebUrl={(url) =>
-                                                  handleOpenBrowserInPane(pane.id, url)
+                                                  handleOpenBrowserInWorkbench('right', url)
                                                 }
                                                 onOpenGit={handleOpenGit}
       gitNavigation={composerGitNavigation}
@@ -4402,6 +4587,7 @@ function ShellAppInner() {
                                       data-testid={`pane-surface-browser-${tab.browserId}`}
                                     >
                                       <BrowserPanel
+                                        automationOwnerId={tab.ownerId}
                                         initialUrl={tab.url}
                                         navigateUrl={
                                           aiBrowserNav?.browserId === tab.browserId
@@ -4421,7 +4607,7 @@ function ShellAppInner() {
                                           handleBrowserPageMeta(tab.browserId, meta)
                                         }
                                         projectFolder={activeProjectFolder}
-                                        partition={`pane-browser-${tab.browserId}`}
+                                        partition={isLocalWebPageUrl(tab.url) ? `pane-browser-${tab.browserId}` : undefined}
                                         registerForAutomation
                                         automationActive={
                                           focused && keepAliveBrowserId === tab.browserId
@@ -4560,13 +4746,14 @@ function ShellAppInner() {
                   </div>
                   {activeWorkbenchLayout &&
                   (activeWorkbenchLayout.right.open ||
-                    activeWorkbenchLayout.right.tabs.length > 0) ? (
+                    activeWorkbenchLayout.right.tabs.length > 0 || retainedWorkbenchBrowsers.right.length > 0) ? (
                     <WorkspaceWorkbench
                       placement="right"
                       chatLayout
                       open={activeWorkbenchLayout.right.open}
                       focused={workspaceChromeFocus === 'right'}
                       scope={activeWorkbenchLayout.right}
+                      retainedBrowserTabs={retainedWorkbenchBrowsers.right}
                       canOpenTerminal={Boolean(activeProjectFolder)}
                       renderContent={(tab) => renderWorkbenchContent('right', tab)}
                       browserPageMeta={browserPageMeta}
@@ -4606,12 +4793,13 @@ function ShellAppInner() {
                 </div>
                 {activeWorkbenchLayout &&
                 (activeWorkbenchLayout.bottom.open ||
-                  activeWorkbenchLayout.bottom.tabs.length > 0) ? (
+                  activeWorkbenchLayout.bottom.tabs.length > 0 || retainedWorkbenchBrowsers.bottom.length > 0) ? (
                   <WorkspaceWorkbench
                     placement="bottom"
                     open={activeWorkbenchLayout.bottom.open}
                     focused={workspaceChromeFocus === 'bottom'}
                     scope={activeWorkbenchLayout.bottom}
+                    retainedBrowserTabs={retainedWorkbenchBrowsers.bottom}
                     canOpenTerminal={Boolean(activeProjectFolder)}
                     renderContent={(tab) => renderWorkbenchContent('bottom', tab)}
                     browserPageMeta={browserPageMeta}
@@ -4734,10 +4922,17 @@ function ShellAppInner() {
             </KeepAliveLayer>
           </div>
         </main>
-      </div>
-      </KeepAliveLayer>
-      <KeepAliveLayer active={agentWorkspaceOpen} className="shell-agent-chat-mode">
+        </KeepAliveLayer>
+      <div className="shell-agent-chat-mode shell-board" hidden={!agentWorkspaceOpen}>
+      <KeepAliveLayer active={sidebarMode === 'agents' || agentWorkspaceOpen} className="shell-agent-content-host">
         <AgentWorkspace
+          embedded
+          sidebarHost={agentSidebarHost}
+          actionsHost={agentActionsHost}
+          sidebarVisible={sidebarMode === 'agents'}
+          contentActive={agentWorkspaceOpen}
+          onContentSelected={enterAgentWorkspace}
+          onOpenSidebar={() => { changeSidebarMode('agents'); setNav(n => ({ ...n, sidebarCollapsed: false })); }}
           key={activeWorkspaceId ?? PROJECTLESS_SCOPE}
           workspaceId={activeWorkspaceId ?? PROJECTLESS_SCOPE}
           workspaces={data.workspaces}
@@ -4794,6 +4989,9 @@ function ShellAppInner() {
           />}
         />
       </KeepAliveLayer>
+      </div>
+      </div>
+      </div>
 
       <Dialog.Root
         open={Boolean(pendingChatBrowserWorkflow)}
@@ -5835,10 +6033,11 @@ export function EmptyTalk(props: {
       />
     ) : undefined;
 
-  // Same runtime controls, split between the compact input and its status bar.
+  // Existing runtime controls, arranged in the attachment composer footer.
   const pillAttachControl = (
     <ComposerAddControl
       variant="empty"
+      showReferenceTrigger={draftTrack !== 'model'}
       open={composerAddOpen}
       inputRef={inputRef}
       composerRef={composeRef}
@@ -5909,6 +6108,7 @@ export function EmptyTalk(props: {
         ref={composerToolbar.permissionRef}
         className="shell-compose__tool-wrap"
         data-testid="empty-compose-permission-control"
+        hidden={composerToolbar.collapseLevel >= PERMISSION_MODE_COLLAPSED_TOOLBAR_LEVEL}
       >
         <PermissionTrigger
           ref={permissionButtonRef}
@@ -5927,7 +6127,7 @@ export function EmptyTalk(props: {
           onChange={setPermissionMode}
         />
       </div>
-      <div className="shell-compose__tool-wrap" data-testid="empty-compose-skill-control">
+      <div className="shell-compose__tool-wrap" data-testid="empty-compose-skill-control" hidden={composerToolbar.collapseLevel >= SKILL_COLLAPSED_TOOLBAR_LEVEL}>
         <TurnSkillControl
           owner={skillOwner}
           workspaceId={props.workspaceId}
@@ -6019,9 +6219,9 @@ export function EmptyTalk(props: {
         <div className="shell-chat-content shell-chat-content--composer mx-auto">
           <NewMaxComposerFrame
             variant="empty"
-            presentation="pill"
-            leadingAction={<div ref={composerToolbar.leftRef}>{pillAttachControl}</div>}
-            statusBar={<div className="shell-ai-composer-status"><div className="shell-ai-composer-status__controls">{pillStatusControls}</div><div className="shell-ai-composer-status__identity">{pillIdentityStatus}{pillKernelStatus}</div></div>}
+            presentation="attachments"
+
+
             contextBar={
               props.workspaceFolder && props.onOpenGit ? (
                 <ComposerGitBar
@@ -6032,7 +6232,7 @@ export function EmptyTalk(props: {
               ) : null
             }
             modeBanner={emptyModeBanner}
-            innerRef={(element) => { composeRef.current = element; composerToolbar.outerRef.current = element; }}
+            innerRef={composeRef}
             className={`relative ${dragOver ? 'is-dragover' : ''}`}
             data-testid="empty-compose"
             data-layout="tall"
@@ -6104,15 +6304,15 @@ export function EmptyTalk(props: {
                     selectedSkillVersionIds.filter((selected) => selected !== skillVersionId),
                   )
                 }
-                onChange={(value) => {
+                onChange={(value, selection) => {
                   props.onDraftChange(value);
                   setComposeNotice(undefined);
-                  if (composerAddOpen) {
+                  const caret = selection.start;
+                  if (composerAddOpen && !detectSlashQuery(value, caret)) {
                     setSlash(null);
                     setSlashIndex(-1);
                     return;
                   }
-                  const caret = inputRef.current?.selectionStart ?? value.length;
                   updatePickersFromCaret(value, caret);
                 }}
                 onKeyDown={(event) => {
@@ -6162,8 +6362,9 @@ export function EmptyTalk(props: {
                 onSubmit={() => void submit()}
                 onPaste={handlePaste}
                 onSelectionChange={({ start }) => {
-                  if (composerAddOpen) return;
-                  updatePickersFromCaret(inputRef.current?.value ?? props.draft, start);
+                  const value = inputRef.current?.value ?? props.draft;
+                  if (composerAddOpen && !detectSlashQuery(value, start)) return;
+                  updatePickersFromCaret(value, start);
                 }}
                 enhancing={promptEnhancement.busy}
                 trailingAction={
@@ -6186,9 +6387,13 @@ export function EmptyTalk(props: {
               onChange={handleImageInputChange}
               tabIndex={-1}
             />
-            <div  className="shell-compose__bar">
+            <div ref={composerToolbar.outerRef} className="shell-compose__bar" data-testid="empty-compose-toolbar">
+              <div ref={composerToolbar.leftRef} className="shell-compose__bar-left">
+                {pillAttachControl}{pillStatusControls}
+              </div>
 
               <div ref={composerToolbar.rightRef} className="shell-compose__bar-right">
+                {pillIdentityStatus}{pillKernelStatus}
 
                 <div className="shell-compose__tool-wrap">
                   <ModelPickerMenu

@@ -4,11 +4,14 @@ import {
   buildVisualizationDocument,
   type InlineVisualizationSegment,
 } from './inline-visualization.js';
+import { hasBoardDataMarkup } from '../visualization/data-html.js';
+import { loadBoardDataFont } from '../visualization/board-data-font-loader.js';
 import { visualizationReduceMotion, visualizationTheme } from '../visualization/design-system.js';
 import {
   VISUALIZATION_WEBVIEW_PREFERENCES,
   useVisualizationGuest,
 } from '../visualization/use-visualization-guest.js';
+import { HtmlSandbox } from './HtmlSandbox.js';
 import type { OpenHtmlInBrowser } from './html-browser.js';
 
 const MAX_VISUALIZATION_BYTES = 2 * 1024 * 1024;
@@ -32,6 +35,7 @@ export function InlineVisualizationPreview({
   file,
   projectFolder,
   conversationId,
+  onOpenInBrowser,
 }: InlineVisualizationPreviewProps) {
   const [source, setSource] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -77,6 +81,9 @@ export function InlineVisualizationPreview({
         setError('可视化文件超过 2MB 限制');
         return;
       }
+      if (hasBoardDataMarkup(result.content) || /<table(?:\s|>)/i.test(result.content))
+        await loadBoardDataFont();
+      if (requestId !== requestRef.current) return;
       setSource(result.content);
     } catch (readError) {
       if (requestId === requestRef.current)
@@ -93,22 +100,38 @@ export function InlineVisualizationPreview({
     };
   }, [load, conversationId]);
 
+  const handleOpenInBrowser = useMemo<OpenHtmlInBrowser | undefined>(() => {
+    // Data documents need the portable renderer injected by HtmlSandbox; opening
+    // their inert JSON source directly would lose the interactive data components.
+    if (!onOpenInBrowser || (source !== null && hasBoardDataMarkup(source))) {
+      return onOpenInBrowser;
+    }
+    return (html) => onOpenInBrowser(html, { relativePath: file, persist: false });
+  }, [file, onOpenInBrowser, source]);
+
+  const dataOnly =
+    source !== null &&
+    hasBoardDataMarkup(source) &&
+    !new DOMParser()
+      .parseFromString(source, 'text/html')
+      .querySelector('[data-boardui-layout="custom"]');
   const documentUrl = useMemo(
     () =>
-      source === null
+      source === null || dataOnly
         ? null
         : buildVisualizationDocument(source, {
             theme: visualizationTheme(),
             reduceMotion: visualizationReduceMotion(),
           }),
-    [source],
+    [source, dataOnly],
   );
   const guest = useVisualizationGuest({
     src: documentUrl,
-    active: source !== null && !loading && !error,
+    active: source !== null && !dataOnly && !loading && !error,
     initialHeight: DEFAULT_HEIGHT,
     minHeight: MIN_HEIGHT,
     maxHeight: MAX_HEIGHT,
+    readyTimeoutMs: 15_000,
     resolveReportedHeight,
   });
   const failed = !loading && (error !== null || guest.status === 'error');
@@ -118,7 +141,7 @@ export function InlineVisualizationPreview({
   // Keep a width-based floor without resetting the guest handshake on resize.
   useLayoutEffect(() => {
     const stage = stageRef.current;
-    if (!stage || !hasVideoPlayer || failed) return;
+    if (!stage || !hasVideoPlayer || dataOnly || failed) return;
     const resize = () => {
       const width = stage.clientWidth - SHADOW_GUTTER * 2;
       if (width > 0) setStageWidth(width);
@@ -131,14 +154,17 @@ export function InlineVisualizationPreview({
       observer?.disconnect();
       window.removeEventListener('resize', resize);
     };
-  }, [hasVideoPlayer, failed]);
+  }, [hasVideoPlayer, dataOnly, failed]);
 
   const setGuestHeight = guest.setHeight;
   useLayoutEffect(() => {
-    if (hasVideoPlayer && !failed) {
+    if (hasVideoPlayer && !dataOnly && !failed) {
       setGuestHeight(resolveReportedHeight(reportedHeightRef.current));
     }
-  }, [hasVideoPlayer, failed, resolveReportedHeight, setGuestHeight]);
+  }, [hasVideoPlayer, dataOnly, failed, resolveReportedHeight, setGuestHeight]);
+
+  if (dataOnly && source !== null && !loading && !error)
+    return <HtmlSandbox code={source} onOpenInBrowser={handleOpenInBrowser} />;
 
   if (failed) {
     return (
@@ -156,6 +182,11 @@ export function InlineVisualizationPreview({
             重试
           </button>
         </div>
+        {source !== null && <details className="shell-inline-vis__fallback">
+          <summary>查看静态预览与源码</summary>
+          <p className="shell-inline-vis__fallback-note">静态预览保留页面内容；交互功能请用“浏览器打开”。</p>
+          <HtmlSandbox code={source} onOpenInBrowser={handleOpenInBrowser} />
+        </details>}
       </div>
     );
   }

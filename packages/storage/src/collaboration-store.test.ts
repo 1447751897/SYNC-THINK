@@ -139,6 +139,22 @@ describe('SqliteCollaborationStore', () => {
     expect(reopened.store.read('missing')).toBeUndefined();
   });
 
+  it('restores a pending staged assignment without inventing an assignment or delivery', async () => {
+    const { store, raw, path } = await openStore();
+    const original = snapshot();
+    original.tasks[0]!.pendingAssignment = {
+      senderMemberId: 'agent:leader', correlationId: 'staged', causationMessageId: 'message-1', hopCount: 2,
+    };
+    original.attempts[0]!.status = 'queued';
+    original.attempts[0]!.waitReason = 'dependency';
+    delete original.attempts[0]!.startedAt;
+    original.deliveries = [];
+    store.save(original);
+    raw.close();
+    const reopened = await connect(path);
+    expect(reopened.store.read(original.conversation.id)).toEqual(original);
+  });
+
   it('rolls back all conversations when an outer immediate transaction fails', async () => {
     const { store } = await openStore();
     store.save(snapshot());

@@ -1,4 +1,7 @@
+import { rendererSourceFingerprint, stampRendererAssetUrls } from './renderer-build-freshness.mjs';
+import { shellRasterAssets } from './shell-raster-assets.mjs';
 import { embedShellReleaseHistory } from './shell-release-history.mjs';
+import { assertShellStylesheet } from './shell-stylesheet-contract.mjs';
 import { buildDesignPreviews } from './build-design-previews.mjs';
 import { execFileSync } from 'node:child_process';
 import {
@@ -16,6 +19,7 @@ import { fileURLToPath } from 'node:url';
 import * as esbuild from 'esbuild';
 import {
   SHELL_BUDGET,
+  SHELL_ASSET_LOADERS,
   assertGeneratedPath,
   assertShellBudget,
   removeGeneratedDirectory,
@@ -35,6 +39,8 @@ generateDesignCatalog();
 const require = createRequire(import.meta.url);
 const desktopRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 const shellSrc = join(desktopRoot, 'src/renderer/shell');
+const devSourceFingerprint = rendererSourceFingerprint(join(desktopRoot, '..', '..'));
+const buildStartedAt = new Date().toISOString();
 const options = shellBuildOptions(process.argv.slice(2), desktopRoot);
 const { mode, optimized, outdir, outputRoot } = options;
 mkdirSync(dirname(outdir), { recursive: true });
@@ -106,13 +112,18 @@ try {
     chunkNames: 'chunks/[name]-[hash]',
     metafile: true,
     jsx: 'automatic',
-    loader: { '.tsx': 'tsx', '.ts': 'ts', '.png': 'dataurl', '.svg': 'dataurl', '.jpg': 'file' },
+    // Keep raster assets as files, not base64 JavaScript; the existing img-src 'self'
+    // policy and hashed asset paths work offline in both the shell and lazy panels.
+    loader: SHELL_ASSET_LOADERS,
     assetNames: 'assets/[name]-[hash]',
+    plugins: [shellRasterAssets()],
   });
   const summary = summarizeShellBuild(shell.metafile, desktopRoot, staging);
   const chunkMap = Object.fromEntries(
     summary.files
-      .filter((file) => file.entryPoint && !file.initial)
+      // Retry URLs target React panels only; utility/vendor imports have no
+      // matching panel export and need not inflate the startup manifest.
+      .filter((file) => file.entryPoint?.endsWith('.tsx') && !file.initial)
       .map((file) => [basename(file.entryPoint, '.tsx'), './' + file.path]),
   );
   const chunkBootstrap = `window.__syncThinkShellChunks=Object.freeze(${JSON.stringify(chunkMap)});\n`;
@@ -178,8 +189,9 @@ try {
     ],
     { stdio: 'inherit' },
   );
-  writeFileSync(join(staging, 'index.html'), embedShellReleaseHistory(
-    readFileSync(join(shellSrc, 'index.html'), 'utf8'), releaseHistory,
+  assertShellStylesheet(readFileSync(join(staging, 'shell.css'), 'utf8'));
+  writeFileSync(join(staging, 'index.html'), stampRendererAssetUrls(
+    embedShellReleaseHistory(readFileSync(join(shellSrc, 'index.html'), 'utf8'), releaseHistory), devSourceFingerprint,
   ));
   // The avatar library is bundled, so ship its MIT notice with the renderer.
   copyFileSync(
@@ -193,6 +205,8 @@ try {
       {
         schemaVersion: 1,
         mode,
+        devSourceFingerprint,
+        buildStartedAt,
         shell: summary,
         budget: SHELL_BUDGET,
       },

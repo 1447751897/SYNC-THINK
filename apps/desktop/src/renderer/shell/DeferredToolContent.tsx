@@ -221,8 +221,8 @@ function ContentSession({
               {autoAssemble
                 ? reading
                   ? displayed?.truncated
-                    ? '输出（已按长度截断展示）'
-                    : '输出'
+                    ? `${label}（已按长度截断展示）`
+                    : label
                   : '预览'
                 : reading
                   ? `${presentation === 'prose' ? '原文分段' : '分段阅读'} · 第 ${history.length + 1} 段`

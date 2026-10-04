@@ -1,0 +1,151 @@
+{
+  "assets": [
+    {
+      "id": "github",
+      "file": "github.brand.svg",
+      "source": "https://raw.githubusercontent.com/pheralb/svgl/ecb9adaafe41c578742e94fce90e6cc03c48a574/static/library/github_light.svg",
+      "license": "MIT",
+      "upstream": "pheralb/svgl",
+      "commit": "ecb9adaafe41c578742e94fce90e6cc03c48a574"
+    },
+    {
+      "id": "gitlab",
+      "file": "gitlab.brand.svg",
+      "source": "https://raw.githubusercontent.com/pheralb/svgl/ecb9adaafe41c578742e94fce90e6cc03c48a574/static/library/gitlab.svg",
+      "license": "MIT",
+      "upstream": "pheralb/svgl",
+      "commit": "ecb9adaafe41c578742e94fce90e6cc03c48a574"
+    },
+    {
+      "id": "linear",
+      "file": "linear.brand.svg",
+      "source": "https://raw.githubusercontent.com/pheralb/svgl/ecb9adaafe41c578742e94fce90e6cc03c48a574/static/library/linear.svg",
+      "license": "MIT",
+      "upstream": "pheralb/svgl",
+      "commit": "ecb9adaafe41c578742e94fce90e6cc03c48a574"
+    },
+    {
+      "id": "notion",
+      "file": "notion.brand.svg",
+      "source": "https://raw.githubusercontent.com/pheralb/svgl/ecb9adaafe41c578742e94fce90e6cc03c48a574/static/library/notion.svg",
+      "license": "MIT",
+      "upstream": "pheralb/svgl",
+      "commit": "ecb9adaafe41c578742e94fce90e6cc03c48a574"
+    },
+    {
+      "id": "google-drive",
+      "file": "google-drive.brand.svg",
+      "source": "https://raw.githubusercontent.com/pheralb/svgl/ecb9adaafe41c578742e94fce90e6cc03c48a574/static/library/drive.svg",
+      "license": "MIT",
+      "upstream": "pheralb/svgl",
+      "commit": "ecb9adaafe41c578742e94fce90e6cc03c48a574"
+    },
+    {
+      "id": "slack",
+      "file": "slack.brand.svg",
+      "source": "https://raw.githubusercontent.com/pheralb/svgl/ecb9adaafe41c578742e94fce90e6cc03c48a574/static/library/slack.svg",
+      "license": "MIT",
+      "upstream": "pheralb/svgl",
+      "commit": "ecb9adaafe41c578742e94fce90e6cc03c48a574"
+    },
+    {
+      "id": "discord",
+      "file": "discord.brand.svg",
+      "source": "https://raw.githubusercontent.com/pheralb/svgl/ecb9adaafe41c578742e94fce90e6cc03c48a574/static/library/discord.svg",
+      "license": "MIT",
+      "upstream": "pheralb/svgl",
+      "commit": "ecb9adaafe41c578742e94fce90e6cc03c48a574"
+    },
+    {
+      "id": "microsoft-teams",
+      "file": "microsoft-teams.brand.svg",
+      "source": "https://raw.githubusercontent.com/pheralb/svgl/ecb9adaafe41c578742e94fce90e6cc03c48a574/static/library/microsoft-teams.svg",
+      "license": "MIT",
+      "upstream": "pheralb/svgl",
+      "commit": "ecb9adaafe41c578742e94fce90e6cc03c48a574"
+    },
+    {
+      "id": "figma",
+      "file": "figma.brand.svg",
+      "source": "https://raw.githubusercontent.com/pheralb/svgl/ecb9adaafe41c578742e94fce90e6cc03c48a574/static/library/figma.svg",
+      "license": "MIT",
+      "upstream": "pheralb/svgl",
+      "commit": "ecb9adaafe41c578742e94fce90e6cc03c48a574"
+    },
+    {
+      "id": "vercel",
+      "file": "vercel.brand.svg",
+      "source": "https://raw.githubusercontent.com/pheralb/svgl/ecb9adaafe41c578742e94fce90e6cc03c48a574/static/library/vercel.svg",
+      "license": "MIT",
+      "upstream": "pheralb/svgl",
+      "commit": "ecb9adaafe41c578742e94fce90e6cc03c48a574"
+    },
+    {
+      "id": "sentry",
+      "file": "sentry.brand.svg",
+      "source": "https://raw.githubusercontent.com/pheralb/svgl/ecb9adaafe41c578742e94fce90e6cc03c48a574/static/library/sentry.svg",
+      "license": "MIT",
+      "upstream": "pheralb/svgl",
+      "commit": "ecb9adaafe41c578742e94fce90e6cc03c48a574"
+    },
+    {
+      "id": "datadog",
+      "file": "datadog.brand.svg",
+      "source": "https://raw.githubusercontent.com/pheralb/svgl/ecb9adaafe41c578742e94fce90e6cc03c48a574/static/library/datadog.svg",
+      "license": "MIT",
+      "upstream": "pheralb/svgl",
+      "commit": "ecb9adaafe41c578742e94fce90e6cc03c48a574"
+    },
+    {
+      "id": "gmail",
+      "file": "gmail.brand.svg",
+      "source": "https://raw.githubusercontent.com/pheralb/svgl/ecb9adaafe41c578742e94fce90e6cc03c48a574/static/library/gmail.svg",
+      "license": "MIT",
+      "upstream": "pheralb/svgl",
+      "commit": "ecb9adaafe41c578742e94fce90e6cc03c48a574"
+    },
+    {
+      "id": "google-calendar",
+      "file": "google-calendar.brand.svg",
+      "source": "https://raw.githubusercontent.com/pheralb/svgl/ecb9adaafe41c578742e94fce90e6cc03c48a574/static/library/google-calendar.svg",
+      "license": "MIT",
+      "upstream": "pheralb/svgl",
+      "commit": "ecb9adaafe41c578742e94fce90e6cc03c48a574"
+    },
+    {
+      "id": "clickup",
+      "file": "clickup.brand.svg",
+      "source": "https://raw.githubusercontent.com/pheralb/svgl/ecb9adaafe41c578742e94fce90e6cc03c48a574/static/library/clickup.svg",
+      "license": "MIT",
+      "upstream": "pheralb/svgl",
+      "commit": "ecb9adaafe41c578742e94fce90e6cc03c48a574"
+    },
+    {
+      "id": "gitee",
+      "file": "gitee.brand.svg",
+      "source": "https://raw.githubusercontent.com/simple-icons/simple-icons/1089fb7d2bf0e323f834c205ab76265005a6d5e8/icons/gitee.svg",
+      "license": "CC0-1.0",
+      "upstream": "simple-icons/simple-icons",
+      "commit": "1089fb7d2bf0e323f834c205ab76265005a6d5e8",
+      "brandSource": "https://gitee.com/about_us"
+    },
+    {
+      "id": "jira",
+      "file": "jira.brand.svg",
+      "source": "https://raw.githubusercontent.com/simple-icons/simple-icons/1089fb7d2bf0e323f834c205ab76265005a6d5e8/icons/jira.svg",
+      "license": "CC0-1.0",
+      "upstream": "simple-icons/simple-icons",
+      "commit": "1089fb7d2bf0e323f834c205ab76265005a6d5e8",
+      "brandSource": "https://atlassian.design/resources/logo-library"
+    },
+    {
+      "id": "google-docs",
+      "file": "google-docs.brand.svg",
+      "source": "https://raw.githubusercontent.com/simple-icons/simple-icons/1089fb7d2bf0e323f834c205ab76265005a6d5e8/icons/googledocs.svg",
+      "license": "CC0-1.0",
+      "upstream": "simple-icons/simple-icons",
+      "commit": "1089fb7d2bf0e323f834c205ab76265005a6d5e8",
+      "brandSource": "https://www.google.com/docs/about"
+    }
+  ]
+}

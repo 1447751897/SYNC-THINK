@@ -1,0 +1,13 @@
+.shell-browser-profile { position: relative; flex: 0 0 auto; }
+.shell-browser-profile__trigger { display: flex; align-items: center; gap: 6px; padding: 5px 9px; border: 1px solid var(--color-border); border-radius: 999px; background: var(--color-hover); color: var(--color-text-secondary); font-size: 11px; cursor: pointer; white-space: nowrap; }
+.shell-browser-profile__trigger:hover { color: var(--color-text); }
+.shell-browser-profile__card { position: fixed; z-index: 10030; width: min(360px, calc(100vw - 28px)); padding: 18px; border: 1px solid var(--color-border); border-radius: 14px; background: var(--color-overlay); color: var(--color-text); box-shadow: 0 12px 36px #0003; text-align: left; overflow-y: auto; }
+.shell-browser-profile__card strong { font-size: 14px; }
+.shell-browser-profile__card p { margin: 10px 0 14px; color: var(--color-text-secondary); font-size: 12px; line-height: 1.7; }
+.shell-browser-profile__label { display: block; margin-bottom: 6px; font-size: 11px; color: var(--color-text-faint); }
+.shell-browser-profile__card code { display: block; padding: 10px; border-radius: 8px; background: var(--color-hover); overflow-wrap: anywhere; white-space: normal; font-size: 11px; line-height: 1.6; user-select: text; }
+.shell-browser-profile__card small { display: block; margin-top: 12px; font-size: 11px; color: var(--color-text-faint); line-height: 1.7; }
+.shell-browser-profile__preference { display: flex; flex-direction: column; gap: 7px; margin-top: 15px; font-size: 12px; }
+.shell-browser-profile__preference select { width: 100%; padding: 7px 9px; border: 1px solid var(--color-border); border-radius: 8px; background: var(--color-overlay); color: var(--color-text); font: inherit; }
+.shell-browser-profile__card button { margin-top: 12px; padding: 6px 10px; border: 1px solid var(--color-border); border-radius: 7px; background: transparent; color: var(--color-text); font-size: 12px; cursor: pointer; }
+@container (max-width: 400px) { .shell-browser-profile__trigger span { display: none; } }

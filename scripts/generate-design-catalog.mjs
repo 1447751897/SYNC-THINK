@@ -146,7 +146,12 @@ export function generateDesignCatalog() {
   if (process.argv.includes('--check')) {
     if (readFileSync(output, 'utf8') !== content)
       throw new Error('Design catalog is stale. Run pnpm design:catalog.');
-  } else writeFileSync(output, content);
+  } else {
+    // Preserve mtime and avoid rewriting a file held by a TS watcher when unchanged.
+    let previous;
+    try { previous = readFileSync(output, 'utf8'); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    if (previous !== content) writeFileSync(output, content);
+  }
   console.log(
     `Design catalog: ${tokens.length} desktop tokens; ${components.length} component source files (${components.filter((c) => c.live).length} live fixtures).`,
   );

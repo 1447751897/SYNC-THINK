@@ -100,11 +100,19 @@ export function BrowserHandoffCard({
   );
 }
 
-export function BrowserHandoffQueryError(props: { busy: boolean; onRetry(): void }) {
+export function BrowserHandoffQueryError(props: { busy: boolean; error?: string; onRetry(): void }) {
   return (
     <div className="shell-browser-handoff-query-error" role="alert">
       <AlertCircle size={14} />
-      <span>无法读取浏览器接管状态，请检查 Runtime 连接后重试。</span>
+      <span>{props.error
+        ? '浏览器接管状态读取失败，请查看失败详情或重试。'
+        : '无法读取浏览器接管状态，请检查 Runtime 连接后重试。'}</span>
+      {props.error ? (
+        <details>
+          <summary>失败详情</summary>
+          <p>{props.error}</p>
+        </details>
+      ) : null}
       <button type="button" disabled={props.busy} onClick={props.onRetry}>
         {props.busy ? <LoaderCircle size={13} className="shell-process-spin" /> : null}
         重试

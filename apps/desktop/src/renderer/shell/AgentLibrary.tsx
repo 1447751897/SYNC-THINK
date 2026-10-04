@@ -1,3 +1,7 @@
+import { REASONING_OPTIONS } from './reasoning-options.js';
+import { WorkbenchPageHeader } from './WorkbenchPageHeader.js';
+import { AgentAppearanceEditor } from './AgentAppearanceEditor.js';
+import { resolveWorkspaceAvatar } from './workspace-avatar-profile.js';
 // P2 · Global Agent Library
 // Management console aligned with the Ability Center: the ability page's own
 // hub shell (back · title · sibling link · sliding scope tabs · stat strip ·
@@ -72,12 +76,7 @@ import {
   readAvatarImage,
 } from './AgentAvatarView.js';
 import {
-  BOT_AVATAR_COLORS,
-  BOT_AVATAR_SHAPES,
-  BOT_AVATAR_LABELS,
-  botAvatarColor,
   botAvatarSeed,
-  parseBotAvatarSeed,
   resolveBotAvatarFace,
 } from './bot-avatar.js';
 import { avatarColor } from './avatar-color.js';
@@ -169,14 +168,6 @@ const EMPTY_DRAFT: DraftAgent = {
   writePolicy: 'inherit',
 };
 
-const REASONING_OPTIONS = [
-  { value: 'auto', label: '自动', title: '自动（默认开启思考）' },
-  { value: 'off', label: '关', title: '关闭' },
-  { value: 'low', label: '低', title: '低' },
-  { value: 'medium', label: '中', title: '中' },
-  { value: 'high', label: '高', title: '高' },
-] as const;
-
 const AGENT_DRAWER_TABS: Array<{ id: DrawerTab; label: string }> = [
   { id: 'overview', label: '资料' },
   { id: 'abilities', label: '能力' },
@@ -261,8 +252,8 @@ function ProviderMark({ model, size = 16 }: { model?: ModelOption; size?: number
  * every card gets a halo, never a bare edge.
  */
 function avatarGlowStyle(avatar: string | undefined, name: string, id: string): CSSProperties {
-  const face = resolveBotAvatarFace(avatar, id);
-  const glow = isImageAvatar(avatar) ? avatarColor(name) : botAvatarColor(face);
+  const face = resolveWorkspaceAvatar(avatar, id);
+  const glow = isImageAvatar(avatar) ? avatarColor(name) : face.color;
   return { ['--avatar-glow' as string]: glow } as CSSProperties;
 }
 
@@ -403,7 +394,7 @@ export function AgentLibrary({
     const api = bridge();
     if (!api) return;
     const targets = active.filter(
-      (agent) => !isImageAvatar(agent.avatar) && !parseBotAvatarSeed(agent.avatar),
+      (agent) => !isImageAvatar(agent.avatar) && !isGeneratedAvatar(agent.avatar),
     );
     if (targets.length === 0) {
       await dialog.alert({
@@ -901,13 +892,12 @@ export function AgentLibrary({
 
   // Escape dismisses the topmost layer first. When the model picker is open,
   // keep the agent draft intact and only close that picker; a second Escape
-  // closes the dialog itself. (Radix's dismissable-layer stack covers the same
-  // ordering for real keyboard input; this handler keeps jsdom-driven Escapes
-  // working too.)
+  // closes the dialog itself. The picker owns handled keyboard events; this
+  // fallback also supports a direct Escape dispatched on window.
   useEffect(() => {
     if (!dialogOpen) return;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return;
+      if (event.key !== 'Escape' || event.defaultPrevented) return;
       if (modelMenuOpen) {
         setModelMenuOpen(false);
         return;
@@ -994,9 +984,12 @@ export function AgentLibrary({
   );
 
   return (
-    <main className="agent-hub ability-hub" data-testid="agent-library-page">
+    <main className="agent-hub ability-hub" data-workbench-page="agents" data-testid="agent-library-page">
       {/* ── Topbar — same shape as the ability page: back · h1 · sibling link ── */}
-      <header className="ability-hub__topbar">
+      <WorkbenchPageHeader
+          className="ability-hub__topbar"
+          heading={<>
+
         <div className="ability-hub__title-block">
           {onBack ? (
             <button
@@ -1009,7 +1002,7 @@ export function AgentLibrary({
               <ArrowLeft size={17} />
             </button>
           ) : null}
-          <h1>智能体库</h1>
+          <div><h1>智能体库</h1><p>管理智能体、默认模型与工作区访问范围</p></div>
           {onGoToAbilities ? (
             <button
               type="button"
@@ -1023,7 +1016,10 @@ export function AgentLibrary({
             </button>
           ) : null}
         </div>
-        <div className="ability-hub__actions">
+
+          </>}
+          actions={<>
+<div className="ability-hub__actions">
           <button
             type="button"
             className="ability-hub__ghost-action"
@@ -1076,7 +1072,9 @@ export function AgentLibrary({
             ) : null}
           </div>
         </div>
-      </header>
+
+          </>}
+        />
 
       <div className="ability-hub__body">
         {/* ── Stat strip — NewMaxStat cards + write-policy meter ─────────── */}
@@ -1344,12 +1342,11 @@ export function AgentLibrary({
           className="agent-dialog agent-detail-editor"
           data-testid="agent-detail-drawer"
           aria-label={isNew ? '新建智能体' : `编辑智能体${draft.name ? ` · ${draft.name}` : ''}`}
+          onEscapeKeyDown={(event) => {
+            // Let the model panel dismiss its own topmost menu, not this draft.
+            if (modelMenuOpen) event.preventDefault();
+          }}
         >
-          {/* The Radix model picker portals to <body> with z-index auto, which
-                would paint below this z-51 dialog. Radix popper mirrors the
-                content's computed z-index onto its wrapper, so lift the menu
-                panels above the dialog while it is open. */}
-          <style>{'.shell-menu--model-providers,.shell-menu--model-flyout{z-index:60}'}</style>
 
           <header className="agent-dialog__header">
             <div className="agent-dialog__identity" data-testid="agent-identity-card">
@@ -1834,72 +1831,9 @@ export function AgentLibrary({
 
                   <div className="agent-avatar-picker-block">
                     <div className="agent-avatar-picker-head">
-                      <label className="agent-meta__label">3D 专属头像 · 18 种造型</label>
-                      <button
-                        type="button"
-                        className="agent-text-link"
-                        onClick={() => void handleRegenerateAllAvatars()}
-                      >
-                        升级旧头像
-                      </button>
+                      <label className="agent-meta__label">经典头像 · 24 种轮廓 · 自由搭配配饰</label>
                     </div>
-                    <div className="avatar-picker" role="group" aria-label="头像造型">
-                      {BOT_AVATAR_SHAPES.map((shape) => {
-                        const isActiveShape =
-                          isGeneratedAvatar(draft.avatar) && avatarFace.shape === shape;
-                        return (
-                          <button
-                            key={shape}
-                            type="button"
-                            title={BOT_AVATAR_LABELS[shape]}
-                            aria-label={`造型 ${BOT_AVATAR_LABELS[shape]}`}
-                            aria-pressed={isActiveShape}
-                            className={clsx('avatar-shape', isActiveShape && 'is-active')}
-                            onClick={() =>
-                              setDraft((d) => ({
-                                ...d,
-                                avatar: botAvatarSeed(shape, avatarFace.color),
-                              }))
-                            }
-                          >
-                            <span aria-hidden="true">
-                              <AgentAvatarView
-                                name={BOT_AVATAR_LABELS[shape]}
-                                avatar={botAvatarSeed(shape, avatarFace.color)}
-                                size={30}
-                              />
-                            </span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                    <div className="avatar-picker" role="group" aria-label="头像颜色">
-                      {BOT_AVATAR_COLORS.map((color) => {
-                        const isActiveColor =
-                          isGeneratedAvatar(draft.avatar) && avatarFace.color === color;
-                        return (
-                          <button
-                            key={color}
-                            type="button"
-                            title={color === 'preset' ? '默认配色' : color}
-                            aria-label={`颜色 ${color === 'preset' ? '默认配色' : color}`}
-                            aria-pressed={isActiveColor}
-                            className={clsx('avatar-swatch', isActiveColor && 'is-active')}
-                            style={{
-                              background: botAvatarColor({ shape: avatarFace.shape, color }),
-                            }}
-                            onClick={() =>
-                              setDraft((d) => ({
-                                ...d,
-                                avatar: botAvatarSeed(avatarFace.shape, color),
-                              }))
-                            }
-                          >
-                            {color === 'preset' ? <span aria-hidden="true">↺</span> : null}
-                          </button>
-                        );
-                      })}
-                    </div>
+                    <AgentAppearanceEditor name={draft.name || '智能体'} avatar={draft.avatar} onChange={avatar => setDraft(current => ({ ...current, avatar }))} />
                   </div>
 
                 </div>
@@ -2099,7 +2033,7 @@ export function AgentLibrary({
                         <button
                           key={option.value}
                           type="button"
-                          aria-label={option.label}
+                          aria-label={option.title}
                           aria-pressed={draft.reasoningEffort === option.value}
                           className={
                             draft.reasoningEffort === option.value ? 'is-active' : undefined
@@ -2113,7 +2047,7 @@ export function AgentLibrary({
                           }
                         >
                           <Brain size={13} aria-hidden="true" />
-                          <span>{option.label}</span>
+                          <span>{option.title}</span>
                         </button>
                       ))}
                     </div>

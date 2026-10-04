@@ -1,6 +1,6 @@
 import type { ExecutionProcessStep, RunProcessView } from '@sync-think/protocol';
 import type { Event } from '@sync-think/shared';
-import { unresolvedToolTerminalError } from '@sync-think/protocol/events';
+import { formatRunPauseTerminalMessage, unresolvedToolTerminalError } from '@sync-think/protocol/events';
 
 const RUN_TERMINAL_EVENT_TYPES = new Set([
   'run.completed',
@@ -25,17 +25,39 @@ export function collectRunProcessIds(input: {
  * reconnecting renderer's transient `streaming` bit. Keep the draft visible,
  * but settle it so clocks, spinners, and composer controls stop immediately.
  */
-export function reconcileStreamingMessageProcessTerminal<
-  T extends { runId?: string; streaming?: boolean },
->(message: T | null, process: RunProcessView | undefined): T | null {
-  if (
-    !message?.streaming ||
-    !message.runId ||
-    !process?.completedAt ||
-    String(process.runId) !== String(message.runId)
-  ) {
-    return message;
+type ProcessTerminalMessage = {
+  runId?: string;
+  streaming?: boolean;
+  terminalState?: 'failed' | 'cancelled' | 'paused';
+  terminalError?: string;
+};
+
+export function reconcileStreamingMessageProcessTerminal<T extends ProcessTerminalMessage>(
+  message: T | null,
+  process: RunProcessView | undefined,
+  terminal?: Event,
+): (T & ProcessTerminalMessage) | null {
+  if (!message?.runId) return message;
+  if (terminal && String(terminal.runId) === message.runId && RUN_TERMINAL_EVENT_TYPES.has(terminal.type)) {
+    const payload = terminal.payload ?? {};
+    const terminalState = terminal.type === 'run.paused' ? 'paused'
+      : terminal.type === 'run.failed' ? 'failed'
+        : terminal.type === 'run.cancelled' ? 'cancelled' : undefined;
+    const terminalError = terminalState === 'paused'
+      ? formatRunPauseTerminalMessage({
+          reason: typeof payload.reason === 'string' ? payload.reason : undefined,
+          failureClass: typeof payload.failureClass === 'string' ? payload.failureClass : undefined,
+          providerModelId: typeof payload.providerModelId === 'string' ? payload.providerModelId : process?.providerModelId,
+          errorMessage: typeof payload.errorMessage === 'string' ? payload.errorMessage : undefined,
+          resolutionSource: typeof payload.resolutionSource === 'string' ? payload.resolutionSource : undefined,
+          fallbackModelCount: typeof payload.fallbackModelCount === 'number' ? payload.fallbackModelCount : undefined,
+        })
+      : terminalState && typeof payload.errorMessage === 'string' ? payload.errorMessage : undefined;
+    // The durable failure must remain visible even when the transient terminal
+    // is late/lost, or a process snapshot already stopped the spinner.
+    return { ...message, streaming: false, terminalState, terminalError };
   }
+  if (!message.streaming || !process?.completedAt || String(process.runId) !== message.runId) return message;
   return { ...message, streaming: false };
 }
 

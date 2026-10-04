@@ -1,0 +1,87 @@
+{
+  "_description": "Stable avatar-art pigments, not application UI colors. Intentionally unchanged by light/dark theme to preserve agent identity.",
+  "body": [
+    [
+      "#e4d5b9",
+      "奶油米"
+    ],
+    [
+      "#d8a174",
+      "杏子橙"
+    ],
+    [
+      "#9dad86",
+      "鼠尾草绿"
+    ],
+    [
+      "#85b2c5",
+      "雾霭蓝"
+    ],
+    [
+      "#b8a0df",
+      "雾紫"
+    ],
+    [
+      "#dba2b2",
+      "灰粉"
+    ],
+    [
+      "#3589ff",
+      "蓝色"
+    ],
+    [
+      "#39aaa5",
+      "青色"
+    ],
+    [
+      "#9a76e8",
+      "紫色"
+    ],
+    [
+      "#ee639d",
+      "粉色"
+    ],
+    [
+      "#ef5960",
+      "红色"
+    ],
+    [
+      "#ed9260",
+      "橙色"
+    ],
+    [
+      "#55bed6",
+      "天蓝色"
+    ],
+    [
+      "#a7cc59",
+      "青柠色"
+    ],
+    [
+      "#60c77a",
+      "绿色"
+    ]
+  ],
+  "accessories": {
+    "beretLight": "#555760",
+    "beretDark": "#20212a",
+    "detectiveLight": "#997a61",
+    "capLight": "#647988",
+    "detectiveDark": "#574638",
+    "capDark": "#344758",
+    "sproutStem": "#4c7352",
+    "sproutLight": "#a0b886",
+    "sproutDark": "#476548",
+    "headphoneBand": "#384556",
+    "headphoneLight": "#647589",
+    "headphoneDark": "#263345",
+    "headphonePad": "#8496a5",
+    "glassesFrame": "#4e4743",
+    "monocleChain": "#9e8865",
+    "bowLight": "#e9d9b7",
+    "bowDark": "#b4a386",
+    "bowCenter": "#c7b896",
+    "scarfLight": "#64778d",
+    "scarfDark": "#34485c"
+  }
+}

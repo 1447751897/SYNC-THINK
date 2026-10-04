@@ -19,8 +19,8 @@ function toTool(
     inputSchema: schema.inputSchema,
     // Execution is scoped by Runtime to the originating reply/task. Document
     // delivery and team scheduling do not grant workspace write permission.
-    approval: ['collaboration_start_workflow', 'collaboration_submit_artifact'].includes(schema.name) ? 'never' : 'outside-full-access',
-    planningDenied: ['collaboration_start_workflow', 'collaboration_submit_artifact', 'collaboration_dispatch_tasks'].includes(schema.name),
+    approval: ['collaboration_read_context', 'collaboration_send_message', 'collaboration_dispatch_tasks', 'collaboration_handoff', 'collaboration_start_workflow', 'collaboration_submit_artifact', 'collaboration_report_blocker', 'collaboration_request_login'].includes(schema.name) ? 'never' : 'outside-full-access',
+    planningDenied: ['collaboration_start_workflow', 'collaboration_submit_artifact', 'collaboration_dispatch_tasks', 'collaboration_handoff', 'collaboration_report_blocker', 'collaboration_request_login'].includes(schema.name),
   };
 }
 

@@ -70,10 +70,10 @@ describe('deriveCurrentActivity', () => {
       [{ kind: 'reasoning', text: '在想', status: 'streaming' }],
       { streaming: true },
     );
-    expect(activity).toMatchObject({ kind: 'thinking', label: '在想' });
+    expect(activity).toMatchObject({ kind: 'thinking', label: '正在思考中' });
   });
 
-  it('uses the latest Think line instead of a generic 思考中 label', () => {
+  it('uses a stable thinking label instead of the latest reasoning line', () => {
     const activity = deriveCurrentActivity(
       [
         {
@@ -86,11 +86,11 @@ describe('deriveCurrentActivity', () => {
     );
     expect(activity).toMatchObject({
       kind: 'thinking',
-      label: 'Inspecting task plan tool metadata',
+      label: '正在思考中',
     });
   });
 
-  it('keeps the latest Think line while waiting for the next model step', () => {
+  it('keeps a generic thinking label while waiting for the next model step', () => {
     const activity = deriveCurrentActivity(
       [
         completedRead,
@@ -100,8 +100,19 @@ describe('deriveCurrentActivity', () => {
     );
     expect(activity).toMatchObject({
       kind: 'thinking',
-      label: 'Planning task tool discovery',
+      label: '正在思考中',
     });
+  });
+
+  it.each(['', '中文推理细节', '**Planning**\nCoordinates x=415 and y=805', 'x=464, with a radius of 92.'])('keeps reasoning content out of the activity label: %s', text => {
+    expect(deriveCurrentActivity([{ kind: 'reasoning', text, status: 'streaming' }], { streaming: true }))
+      .toMatchObject({ kind: 'thinking', label: '正在思考中' });
+  });
+
+  it('uses the same generic label when reasoning resumes after a tool completes', () => {
+    expect(deriveCurrentActivity([
+      { kind: 'reasoning', text: 'Coordinates x=415 and y=805', status: 'completed' }, completedRead,
+    ], { streaming: true })).toMatchObject({ kind: 'thinking', label: '正在思考中' });
   });
 
   it('reports answering while text streams', () => {
@@ -486,7 +497,7 @@ describe('summarizeProcessActions', () => {
 });
 
 describe('groupConsecutiveProcessTools', () => {
-  it('keeps a single tool inline and folds only consecutive runs', () => {
+  it('groups single calls as well as consecutive tool runs', () => {
     const commentary: InlineProcessItem = { kind: 'commentary', text: '先看环境' };
     const thinking: InlineProcessItem = {
       kind: 'reasoning',
@@ -508,7 +519,40 @@ describe('groupConsecutiveProcessTools', () => {
       summary: '探索了 2 个文件',
     });
     expect(blocks[2]).toMatchObject({ kind: 'item', item: thinking });
-    expect(blocks[3]).toMatchObject({ kind: 'item', item: runningCommand });
+    expect(blocks[3]).toMatchObject({
+      kind: 'tools',
+      entries: [{ index: 4, item: runningCommand }],
+    });
+  });
+
+  it('keeps isolated single-call groups in order around narrative, Think and status rows', () => {
+    const narrative: InlineProcessItem = { kind: 'commentary', text: '检查现有流程' };
+    const thinking: InlineProcessItem = { kind: 'reasoning', text: '检查调度', status: 'completed' };
+    const status: InlineProcessItem = {
+      kind: 'status', statusType: 'compaction', label: '正在压缩上下文',
+    };
+    const tools = [completedRead, runningCommand, {
+      ...completedRead, toolCallId: 'read-after-status', argumentsJson: '{"path":"b.txt"}',
+    }];
+    const blocks = groupConsecutiveProcessTools([
+      narrative, tools[0], thinking, tools[1], status, tools[2],
+    ]);
+
+    expect(blocks.map((block) => block.kind)).toEqual([
+      'item', 'tools', 'item', 'tools', 'item', 'tools',
+    ]);
+    [1, 3, 5].forEach((index, toolIndex) => {
+      expect(blocks[index]).toMatchObject({ entries: [{ index, item: tools[toolIndex] }] });
+    });
+    expect(blocks[1]).toMatchObject({ summary: '探索了 1 个文件' });
+  });
+
+  it('keeps the group key stable when a second tool arrives after a single call', () => {
+    const single = groupConsecutiveProcessTools([completedRead]);
+    const extended = groupConsecutiveProcessTools([completedRead, runningCommand]);
+
+    expect(single[0]).toMatchObject({ kind: 'tools', key: 'tool-run:tool-read' });
+    expect(extended[0]).toMatchObject({ kind: 'tools', key: 'tool-run:tool-read' });
   });
 
   it('splits consecutive runs when a status row sits between tools', () => {
@@ -552,3 +596,5 @@ describe('approval wait activity', () => {
     ).toEqual({ level: 'active', idleMs: 600000 });
   });
 });
+
+it("groups web research separately without reordering intervening file tools or chat",()=>{const search={kind:"tool" as const,name:"web_search",toolCallId:"search",argumentsJson:'{"query":"today"}',status:"completed" as const};const blocks=groupConsecutiveProcessTools([search,{...search,name:"web_fetch",toolCallId:"fetch"},completedRead,{kind:"commentary",text:"continue"}, {...search,name:"open",argumentsJson:'{"path":"story.md"}',toolCallId:"file"},search]);expect(blocks.map(b=>b.kind)).toEqual(["web","tools","item","tools","web"]);expect(blocks[0]).toMatchObject({entries:[{item:{toolCallId:"search"}},{item:{toolCallId:"fetch"}}]});});

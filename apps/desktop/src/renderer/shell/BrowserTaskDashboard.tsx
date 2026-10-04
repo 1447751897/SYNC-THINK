@@ -1,3 +1,5 @@
+import { WorkbenchPageHeader } from './WorkbenchPageHeader.js';
+import { TaskSelect } from './TaskSelect.js';
 import * as Dialog from '@radix-ui/react-dialog';
 import { BrowserTaskInfo } from './BrowserTaskInfo.js';
 import { useBrowserTaskExecution } from './useBrowserTaskExecution.js';
@@ -204,15 +206,21 @@ export function BrowserTaskDashboard(
     );
 
   return (
-    <div className="browser-dashboard" data-testid="browser-stage">
-      <header className="browser-dashboard__chrome">
-        <div>
-          <Globe2 size={16} />
-          <span>浏览器</span>
-        </div>
-        <label>
+    <div className="browser-dashboard" data-workbench-page="browser" data-testid="browser-stage">
+      <WorkbenchPageHeader
+        heading={<><h1>浏览器</h1><p>管理浏览器任务，实时查看执行页面</p></>}
+        actions={<><div className="workbench-browser__actions"><button
+            type="button"
+            className="task-experience-inline"
+            onClick={() => {
+              setRecording(undefined);
+              setManager(true);
+            }}
+          >
+            账号管理
+          </button><label>
           浏览器环境
-          <select
+          <TaskSelect
             aria-label="浏览器环境 Profile"
             value={createProfileId}
             disabled={!profiles.length}
@@ -230,9 +238,10 @@ export function BrowserTaskDashboard(
                 </option>
               ))
             )}
-          </select>
+          </TaskSelect>
         </label>
-      </header>
+      </div></>}
+      />
       <div className="browser-dashboard__body">
         <aside className="browser-dashboard__tasks">
           <header className="browser-dashboard__task-header">
@@ -240,7 +249,7 @@ export function BrowserTaskDashboard(
               <h1>浏览器任务</h1>
               <span>{visibleTasks.length}</span>
             </div>
-            <select
+            <TaskSelect
               aria-label="筛选工作区"
               value={workspace}
               onChange={(event) => {
@@ -255,7 +264,7 @@ export function BrowserTaskDashboard(
                 </option>
               ))}
               <option value="unassigned">未分配工作区</option>
-            </select>
+            </TaskSelect>
             <label className="browser-dashboard__search">
               <Search size={14} />
               <input
@@ -456,7 +465,7 @@ export function BrowserTaskDashboard(
             <div className="browser-dashboard__create-context">
               <label>
                 所属工作区
-                <select
+                <TaskSelect
                   aria-label="新任务所属工作区"
                   value={createWorkspaceId}
                   onChange={(event) => setCreateWorkspaceId(event.target.value)}
@@ -467,7 +476,7 @@ export function BrowserTaskDashboard(
                       {item.name}
                     </option>
                   ))}
-                </select>
+                </TaskSelect>
               </label>
               <div className="browser-dashboard__create-profile">
                 浏览器环境<strong>{createProfile.name}</strong>

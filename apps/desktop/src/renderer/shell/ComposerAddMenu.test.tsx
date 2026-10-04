@@ -24,11 +24,13 @@ function Harness({
   variant = 'conversation',
   workspaceFolder = 'D:\\workspace',
   showPermissionItems = false,
+  showReferenceTrigger = true,
   rewriteValueOnPlan = false,
 }: {
   variant?: 'empty' | 'conversation';
   workspaceFolder?: string;
   showPermissionItems?: boolean;
+  showReferenceTrigger?: boolean;
   rewriteValueOnPlan?: boolean;
 }) {
   const [value, setValue] = useState('');
@@ -61,6 +63,7 @@ function Harness({
         networkEnabled={networkEnabled}
         permissionMode={permissionMode}
         showPermissionItems={showPermissionItems}
+        showReferenceTrigger={showReferenceTrigger}
         onAttach={actionLog.attach}
         onPlan={() => {
           actionLog.plan();
@@ -356,4 +359,25 @@ describe('ComposerAddControl', () => {
     fireEvent.click(within(menu).getByRole('option', { name: /规划模式/ }));
     expect(screen.queryByTestId('conversation-add-menu')).toBeNull();
   });
+});
+
+it('restores the dedicated @ file picker without showing unrelated actions', async () => {
+  runtime.listProjectFiles.mockResolvedValue({ files: [{ path: 'assets/song.mp3', name: 'song.mp3', kind: 'file' }] });
+  render(<Harness />);
+  fireEvent.click(screen.getByRole('button', { name: '引用工作区文件' }));
+  expect(await screen.findByText('song.mp3')).toBeTruthy();
+  expect(screen.queryByText('规划模式')).toBeNull();
+  fireEvent.click(screen.getByText('song.mp3'));
+  expect(actionLog.file).toHaveBeenCalledWith(expect.objectContaining({ path: 'assets/song.mp3' }));
+});
+
+
+it('keeps file selection under + when the duplicate @ trigger is hidden', async () => {
+  runtime.listProjectFiles.mockResolvedValue({ files: [{ path: 'src/notes.ts', name: 'notes.ts', kind: 'file' }] });
+  render(<Harness showReferenceTrigger={false} />);
+  expect(screen.queryByRole('button', { name: '引用工作区文件' })).toBeNull();
+  fireEvent.click(screen.getByTestId('conversation-add-trigger'));
+  const menu = await screen.findByTestId('conversation-add-menu');
+  fireEvent.click(await within(menu).findByText('notes.ts'));
+  expect(actionLog.file).toHaveBeenCalledWith({ path: 'src/notes.ts', name: 'notes.ts', kind: 'file' });
 });

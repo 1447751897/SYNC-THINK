@@ -25,7 +25,10 @@ import {
 
 export interface StreamOpenAIResponsesOptions {
   fetchImpl?: typeof fetch;
-  timeoutMs?: number;
+  /** Optional total deadline; omitted/null means no total limit. */
+  timeoutMs?: number | null;
+  /** Per-read idle budget; defaults to five minutes. null disables it. */
+  streamIdleTimeoutMs?: number | null;
 }
 
 interface ResponsesParseState {
@@ -932,14 +935,26 @@ function parseResponseEvent(
     const usage = usageEvent(response);
     if (usage) events.push(usage);
     state.finished = true;
+    const incompleteDetails = response && typeof response === 'object'
+      ? (response as { incomplete_details?: { reason?: unknown } | null }).incomplete_details
+      : undefined;
+    const incompleteReason = incompleteDetails?.reason;
+    if (root.type === 'response.incomplete' && typeof incompleteReason === 'string' &&
+      incompleteReason && !['max_output_tokens', 'max_tokens', 'length'].includes(incompleteReason)) {
+      events.push({
+        type: 'error',
+        failureClass: incompleteReason === 'content_filter' ? 'permission' : 'protocol',
+        message: scrubSecrets('模型响应未完成（' + incompleteReason + '），已有内容已保留。', [apiKey]),
+      });
+      return events;
+    }
     events.push({
       type: 'finished',
-      reason:
-        state.emittedToolCallIds.size > 0
-          ? 'tool-requests'
-          : root.type === 'response.incomplete'
-            ? 'length'
-            : 'stop',
+      // An incomplete response is not permission to execute its partial tool arguments.
+      // Missing details retain compatibility with Responses-shaped gateways.
+      reason: root.type === 'response.incomplete'
+        ? 'length'
+        : state.emittedToolCallIds.size > 0 ? 'tool-requests' : 'stop',
     });
     return events;
   }
@@ -1038,7 +1053,7 @@ export async function* streamOpenAIResponses(
     return;
   }
 
-  const control = createProviderCallControl(request.signal, options.timeoutMs ?? 120_000);
+  const control = createProviderCallControl(request.signal, options.timeoutMs, options.streamIdleTimeoutMs);
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   const instructions = resolveInstructions(request);
   const input = toResponsesInput(request);
@@ -1053,14 +1068,12 @@ export async function* streamOpenAIResponses(
   if (request.temperature !== undefined) body.temperature = request.temperature;
   // Responses API uses nested `reasoning` config (o-series / gpt-5); the flat
   // chat-completions style `reasoning_effort` / `enable_thinking` is rejected.
-  {
-    const level = normalizeReasoningEffort(request.reasoningEffort);
-    if (level && !shouldOmitReasoningEffort(level)) {
-      body.reasoning = {
-        effort: wireReasoningEffort(level),
-        summary: 'auto',
-      };
-    }
+  const effortLevel = normalizeReasoningEffort(request.reasoningEffort);
+  if (effortLevel && !shouldOmitReasoningEffort(effortLevel)) {
+    body.reasoning = {
+      effort: wireReasoningEffort(effortLevel),
+      summary: 'auto',
+    };
   }
   const tools: Array<Record<string, unknown>> = [];
   if (request.hostedTools?.length) {
@@ -1091,7 +1104,7 @@ export async function* streamOpenAIResponses(
   try {
     let response: Response;
     const attemptFetch = (payload: Record<string, unknown>): Promise<Response> =>
-      fetchImpl(joinResponsesUrl(request.baseUrl), {
+      control.waitFor(() => fetchImpl(joinResponsesUrl(request.baseUrl), {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${apiKey}`,
@@ -1101,7 +1114,7 @@ export async function* streamOpenAIResponses(
         },
         body: JSON.stringify(payload),
         signal: control.signal,
-      });
+      }));
     try {
       response = await attemptFetch(body);
     } catch (error) {
@@ -1118,22 +1131,30 @@ export async function* streamOpenAIResponses(
       return;
     }
 
+    let failureBody: string | undefined;
     if (!response.ok) {
-      const text = await response.text().catch(() => '');
+      failureBody = await control.waitFor(() => response.text()).catch((error) => {
+        if (control.signal.aborted) throw error;
+        return '';
+      });
+      const text = failureBody;
       const snippetRaw = scrubSecrets(text.slice(0, 240), [apiKey]);
       // Some relays reject optional compatibility params with a 400
       // "Unsupported parameter(s)". Degrade once, like stream-chat does
       // (audit #13): drop only the rejected optional fields and retry.
+      // Explicit effort is a user choice, not an optional hint to discard.
+      // Only automatic mode may retry without the reasoning configuration.
       const rejectedOptionalParameters = pickDegradableParameters(
         snippetRaw,
         body,
         RESPONSES_DEGRADABLE_PARAMETERS,
-      );
+      ).filter((parameter) => parameter !== 'reasoning' || effortLevel === 'auto');
       if (!degradedForGateway && response.status === 400 && rejectedOptionalParameters.length > 0) {
         degradedForGateway = true;
         body = degradeRequestBody(body, rejectedOptionalParameters);
         try {
           response = await attemptFetch(body);
+          failureBody = undefined; // The retry owns a different response body.
         } catch (error) {
           if (error instanceof Error && error.name === 'AbortError') {
             yield providerAbortEvent(control, 'Provider Responses call');
@@ -1151,7 +1172,10 @@ export async function* streamOpenAIResponses(
     }
 
     if (!response.ok) {
-      const text = await response.text().catch(() => '');
+      const text = failureBody ?? await control.waitFor(() => response.text()).catch((error) => {
+        if (control.signal.aborted) throw error;
+        return '';
+      });
       const scrubbed = scrubSecrets(text.slice(0, 240), [apiKey]);
       const snippet = scrubbed ? ` - ${scrubbed}` : '';
       const error = classifyHttpFailure(response.status, snippet);
@@ -1161,12 +1185,12 @@ export async function* streamOpenAIResponses(
 
     const contentType = response.headers?.get?.('content-type') ?? '';
     if (contentType.includes('application/json') && !contentType.includes('text/event-stream')) {
-      yield* emitFromJsonResponse(await response.text(), apiKey);
+      yield* emitFromJsonResponse(await control.waitFor(() => response.text()), apiKey);
       return;
     }
 
     if (!response.body) {
-      const text = await response.text();
+      const text = await control.waitFor(() => response.text());
       if (!text.includes('data:')) {
         yield* emitFromJsonResponse(text, apiKey);
         return;
@@ -1195,7 +1219,7 @@ export async function* streamOpenAIResponses(
       let done: boolean;
       let value: Uint8Array | undefined;
       try {
-        ({ done, value } = await reader.read());
+        ({ done, value } = await control.waitFor(() => reader!.read()));
       } catch (error) {
         if (error instanceof Error && error.name === 'AbortError') {
           yield providerAbortEvent(control, 'Provider Responses call');
@@ -1239,6 +1263,12 @@ export async function* streamOpenAIResponses(
       }
     }
     if (!state.finished) yield { type: 'finished', reason: 'stop' };
+  } catch (error) {
+    if (control.signal.aborted) {
+      yield providerAbortEvent(control, 'Provider Responses call');
+      return;
+    }
+    throw error;
   } finally {
     control.cleanup();
     await closeResponseReader(reader);

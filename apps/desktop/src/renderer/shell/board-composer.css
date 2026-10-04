@@ -1,0 +1,319 @@
+/* BoardUI public-preview inspired composer. All upload and run behavior stays
+   in the existing editor/Host. No BoardUI Pro source or simulated uploads. */
+.shell-newmax-composer-frame[data-presentation='attachments'] {
+  width: 100%;
+  min-width: 0;
+  container-type: inline-size;
+}
+.shell-newmax-composer-frame[data-presentation='attachments'] .shell-newmax-composer,
+form.collab-composer[data-composer-style='attachments'] {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 0;
+  padding: 0;
+  overflow: visible;
+  border: 1px solid var(--composer-border, var(--color-border));
+  border-radius: 22px;
+  background: var(--composer-surface, var(--color-surface));
+  color: var(--composer-text, var(--color-text));
+  box-shadow: 0 2px 6px rgb(0 0 0 / 3%);
+  transition: border-color 160ms ease, box-shadow 160ms ease;
+}
+.shell-newmax-composer-frame[data-presentation='attachments'] .shell-newmax-composer:focus-within,
+form.collab-composer[data-composer-style='attachments']:focus-within {
+  border-color: var(--composer-border-strong, var(--color-border-strong));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-accent) 10%, transparent);
+}
+/* Inset backplate behind the rounded input, matching the reference's small top frame. */
+.shell-newmax-composer-frame[data-presentation='attachments'] .shell-composer-git {
+  min-height: 36px;
+  margin: 0 24px -1px;
+  padding: 2px 6px;
+  border: 1px solid var(--composer-border, var(--color-border));
+  border-bottom: 0;
+  border-radius: 16px 16px 0 0;
+  background: color-mix(in srgb, var(--composer-text) 8%, var(--composer-surface));
+}
+.shell-newmax-composer-frame[data-presentation='attachments'] .shell-composer-git button {
+  min-height: 28px;
+  padding-block: 4px;
+}
+.shell-newmax-composer-frame[data-presentation='attachments'] .shell-newmax-composer__editor,
+.shell-newmax-composer-frame[data-presentation='attachments'] .shell-compose__input-wrap {
+  width: 100%;
+  min-width: 0;
+  padding: 0;
+}
+.shell-newmax-composer-frame[data-presentation='attachments'] .shell-composer-editor,
+form.collab-composer[data-composer-style='attachments'] .shell-composer-editor {
+  min-width: 0;
+  width: 100%;
+  padding: 14px 16px 0;
+  border: 0;
+  background: transparent;
+  border-radius: 0;
+}
+.shell-newmax-composer-frame[data-presentation='attachments'] .shell-composer-editor__surface,
+form.collab-composer[data-composer-style='attachments'] .shell-composer-editor__surface {
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+.shell-newmax-composer-frame[data-presentation='attachments'] .cm-content,
+form.collab-composer[data-composer-style='attachments'] .cm-content {
+  min-height: 56px;
+  padding: 4px 0 8px;
+  /* Typography belongs to ComposerEditor: keep the content, line and caret
+     on the same chatFontSize/line-height instead of overriding only content. */
+}
+.shell-newmax-composer-frame[data-presentation='attachments'] .shell-attachment-region,
+form.collab-composer[data-composer-style='attachments'] .shell-attachment-region {
+  margin-inline: -2px;
+}
+.shell-newmax-composer-frame[data-presentation='attachments'] .shell-attachment-strip {
+  gap: 8px;
+  padding: 2px 2px 8px;
+}
+.shell-newmax-composer-frame[data-presentation='attachments'] .shell-attachment-tile__file-icon svg {
+  width: 24px;
+  height: 24px;
+}
+.shell-newmax-composer-frame[data-presentation='attachments'] .shell-compose__bar {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+  height: auto;
+  min-height: 48px;
+  gap: 6px 12px;
+  margin: 0;
+  padding: 4px 10px 10px;
+  border: 0;
+}
+.shell-newmax-composer-frame[data-presentation='attachments'] .shell-compose__bar-left,
+.shell-newmax-composer-frame[data-presentation='attachments'] .shell-compose__bar-right {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 4px;
+  overflow: visible;
+}
+.shell-newmax-composer-frame[data-presentation='attachments'] .shell-compose__bar-left {
+  flex: 1 1 auto;
+}
+.shell-newmax-composer-frame[data-presentation='attachments'] .shell-compose__bar-right {
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  max-width: 100%;
+  margin-inline-start: auto;
+  justify-content: flex-end;
+}
+.shell-newmax-composer-frame[data-presentation='attachments'] .shell-compose__tool,
+.shell-newmax-composer-frame[data-presentation='attachments'] .shell-compose__model-btn {
+  min-height: 32px;
+  height: 32px;
+  max-width: 220px;
+  padding-inline: 8px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--composer-text-secondary, var(--color-text-secondary));
+  font-size: 12px;
+}
+.shell-newmax-composer-frame[data-presentation='attachments'] .shell-compose__model-btn {
+  gap: 6px;
+  overflow: hidden;
+}
+.shell-newmax-composer-frame[data-presentation='attachments'] .shell-compose__model-btn > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.shell-newmax-composer-frame[data-presentation='attachments'] .shell-compose__tool:hover:not(:disabled),
+.shell-newmax-composer-frame[data-presentation='attachments'] .shell-compose__model-btn:hover:not(:disabled) {
+  background: var(--composer-hover, var(--color-hover));
+  color: var(--composer-text, var(--color-text));
+}
+.shell-newmax-composer-frame[data-presentation='attachments'] .shell-composer-add__trigger,
+.shell-newmax-composer-frame[data-presentation='attachments'] .shell-compose__send,
+.shell-newmax-composer-frame[data-presentation='attachments'] .shell-compose__voice,
+.shell-newmax-composer-frame[data-presentation='attachments'] .shell-compose__icon-tool {
+  flex: 0 0 34px;
+  width: 34px;
+  min-width: 34px;
+  min-height: 34px;
+  height: 34px;
+  padding: 0;
+  border-radius: 50%;
+}
+.shell-newmax-composer-frame[data-presentation='attachments'] .shell-composer-add__trigger {
+  background: var(--composer-hover, var(--color-hover));
+}
+.shell-newmax-composer-frame[data-presentation='attachments'] .shell-compose__send:not(.is-voice) {
+  color: var(--color-accent-contrast, #fff);
+  background: var(--color-accent);
+}
+.shell-newmax-composer-frame[data-presentation='attachments'] .shell-compose__send:disabled {
+  opacity: .4;
+  cursor: not-allowed;
+}
+.shell-newmax-composer-frame[data-presentation='attachments'] .shell-compose__send:hover:not(:disabled) {
+  filter: brightness(1.08);
+  transform: none;
+}
+.shell-newmax-composer-frame[data-presentation='attachments'] button:focus-visible,
+form.collab-composer[data-composer-style='attachments'] button:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+form.collab-composer[data-composer-style='attachments'] {
+  width: calc(100% - 24px);
+  max-width: 940px;
+  margin: 0 auto 12px;
+  padding: 0;
+  container-type: inline-size;
+}
+form.collab-composer[data-composer-style='attachments'] .collab-composer__toolbar {
+  gap: 6px;
+  min-height: 48px;
+  margin-top: 0;
+  padding: 4px 10px 10px;
+  border: 0;
+}
+form.collab-composer[data-composer-style='attachments'] .task-room-intent {
+  gap: 4px;
+  margin: 0;
+  padding: 8px 12px 0;
+  border: 0;
+}
+form.collab-composer[data-composer-style='attachments'] .task-room-intent small {
+  display: none;
+}
+form.collab-composer[data-composer-style='attachments'] .collab-pill {
+  font-size: 12px;
+  min-height: 28px;
+  padding: 4px 8px;
+  color: var(--composer-text-secondary, var(--color-text-secondary));
+  border-color: transparent;
+  background: transparent;
+}
+form.collab-composer[data-composer-style='attachments'] .collab-pill:hover {
+  background: var(--composer-hover, var(--color-hover));
+  color: var(--composer-text, var(--color-text));
+}
+form.collab-composer[data-composer-style='attachments'] .collab-composer__add {
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border-radius: 50%;
+  background: var(--composer-hover, var(--color-hover));
+}
+form.collab-composer[data-composer-style='attachments'] .collab-send {
+  flex: 0 0 34px;
+  width: 34px;
+  height: 34px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--color-accent);
+  color: var(--color-accent-contrast, #fff);
+}
+form.collab-composer[data-composer-style='attachments'] .collab-send:disabled {
+  opacity: .4;
+}
+@container (max-width: 560px) {
+  .shell-newmax-composer-frame[data-presentation='attachments'] .shell-composer-git {
+    flex-wrap: wrap;
+    column-gap: 8px;
+    row-gap: 2px;
+    margin-inline: 16px;
+  }
+  .shell-newmax-composer-frame[data-presentation='attachments'] .shell-compose__bar-right {
+    max-width: 100%;
+  }
+  .shell-newmax-composer-frame[data-presentation='attachments'] .shell-compose__model-btn {
+    max-width: 160px;
+  }
+  form.collab-composer[data-composer-style='attachments'] .collab-composer__hint {
+    display: none;
+  }
+}
+@container (max-width: 380px) {
+  .shell-newmax-composer-frame[data-presentation='attachments'] .shell-compose__identity {
+    flex: 0 0 28px;
+    max-width: 28px;
+    width: 28px;
+    padding: 0;
+    justify-content: center;
+  }
+  .shell-newmax-composer-frame[data-presentation='attachments'] .shell-compose__identity-label,
+  .shell-newmax-composer-frame[data-presentation='attachments'] .shell-kernel-chip {
+    display: none;
+  }
+  .shell-newmax-composer-frame[data-presentation='attachments'] .shell-compose__model-btn {
+    max-width: 128px;
+  }
+  .shell-newmax-composer-frame[data-presentation='attachments'] .shell-compose__bar-left {
+    flex: 0 0 auto;
+  }
+  .shell-newmax-composer-frame[data-presentation='attachments'] .shell-compose__bar-right {
+    flex-wrap: nowrap;
+    max-width: calc(100% - 46px);
+  }
+  .shell-newmax-composer-frame[data-presentation='attachments'] .shell-compose__identity,
+  .shell-newmax-composer-frame[data-presentation='attachments'] .shell-context-percent {
+    display: none;
+  }
+  .shell-newmax-composer-frame[data-presentation='attachments'] .shell-compose__model-btn {
+    max-width: 112px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .shell-newmax-composer-frame[data-presentation='attachments'] .shell-newmax-composer,
+  form.collab-composer[data-composer-style='attachments'] { transition: none; }
+}
+
+/* Hidden toolbar controls remain available in the + action sheet. */
+.shell-newmax-composer-frame[data-presentation='attachments'] [hidden] { display: none; }
+form.collab-composer[data-composer-style='attachments'] .task-room-intent .collab-pill[aria-pressed='true'] {
+  background: var(--color-accent-soft, var(--composer-hover));
+  color: var(--composer-text, var(--color-text));
+  font-weight: 500;
+}
+
+.shell-newmax-composer-frame[data-presentation='attachments'] .shell-newmax-composer .shell-compose__tool.shell-compose__permission {
+  height: 32px;
+  min-height: 32px;
+  padding-inline: 8px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--composer-text-secondary, var(--color-text-secondary));
+}
+.shell-newmax-composer-frame[data-presentation='attachments'] .shell-newmax-composer .shell-compose__permission:hover:not(:disabled),
+.shell-newmax-composer-frame[data-presentation='attachments'] .shell-newmax-composer .shell-compose__permission[data-open='1'] {
+  background: var(--composer-hover, var(--color-hover));
+}
+
+form.collab-composer[data-composer-style='attachments'] .collab-send {
+  margin-inline-start: auto;
+}
+.shell-newmax-composer-frame[data-presentation='attachments'] .cm-placeholder,
+form.collab-composer[data-composer-style='attachments'] .cm-placeholder {
+  color: var(--composer-text-secondary, var(--color-text-secondary));
+}
+
+/* Approval/mode cards must not peek over and obscure the separate context backplate. */
+.shell-chat-content--composer:has(.shell-newmax-composer-frame[data-presentation='attachments']) {
+  --composer-banner-overlap: 0px;
+}
+.shell-chat-content--composer:has(.shell-newmax-composer-frame[data-presentation='attachments']) .shell-composer-peek-surface,
+.shell-newmax-composer-frame[data-presentation='attachments'] > .shell-newmax-composer-frame__mode {
+  margin-bottom: 8px;
+}
+.shell-chat-content--composer:has(.shell-newmax-composer-frame[data-presentation='attachments']) .shell-composer-peek-surface.is-exiting,
+.shell-newmax-composer-frame[data-presentation='attachments'] > .shell-newmax-composer-frame__mode.is-exiting {
+  margin-bottom: 0;
+}

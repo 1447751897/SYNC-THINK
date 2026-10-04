@@ -125,74 +125,77 @@ button.shell-attachment-tile__body {
 }
 .shell-attachment-tile__progress {
   position: absolute;
-  top: 2px;
-  right: 2px;
+  bottom: 3px;
+  left: 3px;
   pointer-events: none;
-  color: var(--color-accent-text);
+  padding: 0 4px;
+  border-radius: 4px;
+  color: var(--color-text);
+  background: var(--color-overlay);
   font-size: 9px;
   line-height: 16px;
   font-weight: 500;
   font-variant-numeric: tabular-nums;
   opacity: 0;
-  filter: blur(3px);
-  transition:
-    opacity 300ms ease-out,
-    filter 300ms ease-out;
+  transition: opacity 150ms ease-out;
 }
+/* Compact corner badge on hover/focus; keep the larger invisible hit target.
+   The opaque themed badge stays legible even over a white screenshot. */
 .shell-attachment-tile__remove {
   position: absolute;
-  top: 2px;
-  right: 2px;
+  top: -6px;
+  right: -6px;
+  z-index: 2;
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 16px;
-  height: 16px;
+  box-sizing: border-box;
+  width: 24px;
+  height: 24px;
   padding: 0;
   border: 0;
   border-radius: 50%;
   cursor: pointer;
-  color: var(--color-text-secondary);
-  background: color-mix(in srgb, var(--color-text) 6%, transparent);
+  color: var(--color-text);
+  background: transparent;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease-out;
+}
+.shell-attachment-tile__remove::before {
+  content: '';
+  position: absolute;
+  inset: 3px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 50%;
+  background: var(--color-overlay);
+  box-shadow: 0 1px 2px var(--color-modal-shadow);
+  pointer-events: none;
+  transition: background 120ms ease-out;
+}
+.shell-attachment-tile__remove svg {
+  position: relative;
+  z-index: 1;
+  pointer-events: none;
+}
+.shell-attachment-tile:hover .shell-attachment-tile__remove,
+.shell-attachment-tile:has(:focus-visible) .shell-attachment-tile__remove {
   opacity: 1;
-  filter: blur(0);
-  transition:
-    opacity 300ms ease-out,
-    filter 300ms ease-out,
-    background 150ms ease-out;
-}
-.shell-attachment-tile[data-image] .shell-attachment-tile__remove {
-  color: #fff;
-  background: rgb(255 255 255 / 50%);
-  backdrop-filter: blur(2px);
-}
-.shell-attachment-tile[data-image] .shell-attachment-tile__progress {
-  color: #fff;
-  text-shadow: 0 1px 3px rgb(0 0 0 / 55%);
+  pointer-events: auto;
 }
 .shell-attachment-tile[data-pending] .shell-attachment-tile__ring,
 .shell-attachment-tile[data-pending] .shell-attachment-tile__progress {
   opacity: 1;
-  filter: blur(0);
 }
-/* Keep cancellation accessible without competing with the percentage at rest. */
-.shell-attachment-tile[data-pending] .shell-attachment-tile__remove {
-  opacity: 0;
-  filter: blur(3px);
+.shell-attachment-tile__remove:hover:not(:disabled)::before {
+  background: color-mix(in srgb, var(--color-text) 8%, var(--color-overlay));
 }
-.shell-attachment-tile[data-pending]:hover .shell-attachment-tile__remove,
-.shell-attachment-tile[data-pending]:focus-within .shell-attachment-tile__remove {
-  opacity: 1;
-  filter: blur(0);
-}
-.shell-attachment-tile[data-pending]:hover .shell-attachment-tile__progress,
-.shell-attachment-tile[data-pending]:focus-within .shell-attachment-tile__progress {
-  opacity: 0;
-  filter: blur(3px);
-}
-.shell-attachment-tile__remove:hover {
-  background: color-mix(in srgb, var(--color-text) 14%, var(--color-overlay));
-  color: var(--color-text);
+/* Touch users have no hover; cancellation must still be discoverable. */
+@media (hover: none), (pointer: coarse) {
+  .shell-attachment-tile__remove {
+    opacity: 1;
+    pointer-events: auto;
+  }
 }
 .shell-attachment-tile__body:focus-visible,
 .shell-attachment-tile__remove:focus-visible {
