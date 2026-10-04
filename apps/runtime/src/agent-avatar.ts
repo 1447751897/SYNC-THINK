@@ -63,4 +63,3 @@ export const resolveAgentAvatar = (
   }
   return { ok: true, avatar: trimmed };
 };
-

@@ -83,4 +83,3 @@ export default function GroupChatFolders({ scope, contacts, searchTerm, onCreate
     </Dialog.Content></Dialog.Portal></Dialog.Root>
   </section>;
 }
-

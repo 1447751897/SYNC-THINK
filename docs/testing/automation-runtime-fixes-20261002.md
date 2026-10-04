@@ -87,4 +87,3 @@
 - D:/projects/SYNC-THINK/apps/runtime/src/automation/prompt-compiler.ts
 - D:/projects/SYNC-THINK/apps/runtime/src/scheduled-task-history-summary.ts
 - 对应的 executor、login、context、prompt 和 summary 回归测试。
-

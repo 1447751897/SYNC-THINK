@@ -189,4 +189,3 @@ Model/Agent/Team 只改变执行者解析与可见能力，不改变任务状态
 
 官方源文件的固定版本地址可由以下前缀与 manifest 的 file 字段拼接复核：
 `https://raw.githubusercontent.com/deepseek-ai/deepseek-harness/639ed015397290b3745d163aafe02ffee4aa3f84/`
-

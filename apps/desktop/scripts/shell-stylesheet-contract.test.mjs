@@ -35,7 +35,8 @@ test('production stylesheet rejects omitted component styles', () => {
     '.shell-changes-card__name-extension',
     '.shell-changes-card__file-meta',
     '.shell-changes-card__open-file',
-    '.shell-changes-card__review',    '.conversation-attention-trigger',
+    '.shell-changes-card__review',
+    '.conversation-attention-trigger',
     '.conversation-attention-dialog',
     '.shell-activity-dot--attention',
   ]) {

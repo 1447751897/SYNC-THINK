@@ -598,4 +598,3 @@ compaction/end      → log-only，释放锁（可带 error）
 - `.dsh-research/dsh-compaction.md`：DSH 压缩机制 + 伪算法 + 21 项未知
 - `.dsh-research/sync-think-current.md`：SYNC-THINK 现状 + 15 项缺口 + 18 个测试文件清单
 - `.tmp-dsh-extract/REPORT.md`：asar 结构与 grep 配方、可手工执行的无依赖解包脚本
-
