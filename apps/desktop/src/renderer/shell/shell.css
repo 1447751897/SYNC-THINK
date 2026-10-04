@@ -15791,7 +15791,7 @@ body {
   text-align: center;
 }
 
-/* Interactive HTML sandbox (data: URL webview, see HtmlSandbox.tsx) */
+/* Isolated HTML preview with adaptive iframe sizing (see HtmlSandbox.tsx). */
 .shell-html {
   margin: 0 0 0.95em;
   overflow: hidden;
@@ -15821,12 +15821,24 @@ body {
   background: var(--color-chat);
 }
 
+.shell-html__content--adaptive {
+  position: relative;
+}
+
+.shell-html__content--adaptive > iframe {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  transform-origin: top center;
+}
+
 .shell-html:hover {
   border-color: color-mix(in srgb, var(--color-border-strong) 82%, transparent);
 }
 
 .shell-html__bar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
@@ -15838,6 +15850,7 @@ body {
 
 .shell-html__bar-left {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 6px;
   min-width: 0;

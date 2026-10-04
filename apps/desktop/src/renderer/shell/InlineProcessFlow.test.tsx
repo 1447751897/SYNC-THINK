@@ -94,16 +94,31 @@ describe('InlineProcessFlow', () => {
     expect(screen.getByTestId('inline-process-tool-details')).toBeTruthy();
   });
 
-  it('keeps failed details readable after completion, while allowing a manual fold', () => {
+  it('keeps failed details folded after completion, with a red summary and manual reveal', () => {
     render(<InlineProcessFlow items={[toolItem, failedToolItem]} answerStarted />);
-    expect(screen.getByTestId('process-panel-toggle').getAttribute('aria-expanded')).toBe('true');
-    expect(screen.getByTestId('inline-process-tool-result').textContent).toContain('boom');
-    expect(screen.getByRole('button', { name: '复制错误' })).toBeTruthy();
+    expect(screen.getByTestId('process-panel-toggle').getAttribute('aria-expanded')).toBe('false');
+    fireEvent.click(screen.getByTestId('process-panel-toggle'));
+    expect(screen.queryByTestId('inline-process-tool-result')).toBeNull();
+    expect(screen.getByTestId('inline-process-tool-error-summary').textContent).toContain('boom');
     const failedToggle = screen.getAllByTestId('inline-process-tool').at(-1)!.querySelector('.shell-inline-process__tool-toggle')!;
     fireEvent.click(failedToggle);
-    expect(screen.queryByTestId('inline-process-tool-result')).toBeNull();
-    fireEvent.click(failedToggle);
     expect(screen.getByTestId('inline-process-tool-result').textContent).toContain('boom');
+    expect(screen.getByRole('button', { name: '复制错误' })).toBeTruthy();
+    fireEvent.click(failedToggle);
+    expect(screen.queryByTestId('inline-process-tool-result')).toBeNull();
+  });
+
+  it('folds automatically opened running output on failure, but preserves a manual reveal', () => {
+    const live = { ...runningTool, progressOutput: 'test log' };
+    const failed = { ...live, status: 'failed' as const, failed: true, result: 'Terminal command exited with code 1\nprivate stack trace' };
+    const view = render(<InlineProcessFlow items={[live]} streaming runId="failed-command" />);
+    expect(screen.getByTestId('inline-process-tool-details')).toBeTruthy();
+    view.rerender(<InlineProcessFlow items={[failed]} streaming runId="failed-command" toolCallExpandedByDefault />);
+    expect(screen.queryByTestId('inline-process-tool-details')).toBeNull();
+    expect(screen.getByTestId('inline-process-tool-error-summary').textContent).toContain('Terminal command exited with code 1');
+    fireEvent.click(screen.getByTestId('inline-process-tool').querySelector('.shell-inline-process__tool-toggle')!);
+    view.rerender(<InlineProcessFlow items={[{ ...failed, result: failed.result + '\nextra context' }]} streaming runId="failed-command" />);
+    expect(screen.getByTestId('inline-process-tool-result').textContent).toContain('private stack trace');
   });
 
   it('renders nothing when there are no items', () => {
@@ -150,6 +165,28 @@ describe('InlineProcessFlow', () => {
 
     fireEvent.click(screen.getByTestId('process-panel-toggle'));
     expect(screen.getByTestId('inline-process-reasoning')).toBeTruthy();
+  });
+
+  it.each(['failed', 'cancelled', 'paused'] as const)('folds %s execution after a final answer even with failure counts and disabled collapse preferences', terminalState => {
+    const { rerender } = render(<InlineProcessFlow items={[failedToolItem]} runId="end-always" streaming
+      collapseExecutionProcess={false} defaultOpen totalFailedTools={20} totalTools={150} />);
+    expect(screen.getByTestId('process-panel-body')).toBeTruthy();
+    rerender(<InlineProcessFlow items={[failedToolItem]} runId="end-always" terminalState={terminalState}
+      answerStarted collapseExecutionProcess={false} defaultOpen totalFailedTools={20} totalTools={150} />);
+    const toggle = screen.getByTestId('process-panel-toggle');
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(toggle.textContent).toContain('20 项失败');
+    expect(toggle.textContent).toContain('150');
+    expect(screen.queryByTestId('inline-process-tool')).toBeNull();
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getByTestId('inline-process-tool')).toBeTruthy();
+  });
+
+  it('folds a finished terminal notice without hiding the failure summary', () => {
+    render(<InlineProcessFlow items={[failedToolItem]} terminalState="failed" runId="failure-only" />);
+    expect(screen.getByTestId('process-panel-toggle').getAttribute('aria-expanded')).toBe('false');
+    expect(screen.getByTestId('process-panel-toggle').textContent).toContain('失败');
   });
 
   it('requests lazy process details only when a folded panel opens', () => {
@@ -223,7 +260,7 @@ describe('InlineProcessFlow', () => {
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
   });
 
-  it('preserves a manual process-panel choice for the current run and resets on a new run', () => {
+  it('preserves manual choices while running, resets on completion, and allows reopening the completed result', () => {
     const { rerender } = render(
       <InlineProcessFlow items={[reasoningItem]} runId="run-a" streaming />,
     );
@@ -238,6 +275,10 @@ describe('InlineProcessFlow', () => {
     rerender(
       <InlineProcessFlow items={[reasoningItem]} runId="run-a" streaming={false} answerStarted />,
     );
+    expect(screen.getByTestId('process-panel-toggle').getAttribute('aria-expanded')).toBe('false');
+    fireEvent.click(screen.getByTestId('process-panel-toggle'));
+    expect(screen.getByTestId('process-panel-toggle').getAttribute('aria-expanded')).toBe('true');
+    rerender(<InlineProcessFlow items={[reasoningItem, failedToolItem]} runId="run-a" streaming={false} answerStarted />);
     expect(screen.getByTestId('process-panel-toggle').getAttribute('aria-expanded')).toBe('true');
 
     rerender(
@@ -643,6 +684,8 @@ describe('InlineProcessFlow', () => {
       />,
     );
 
+    expect(screen.getByTestId('process-panel-toggle').getAttribute('aria-expanded')).toBe('false');
+    fireEvent.click(screen.getByTestId('process-panel-toggle'));
     const folds = screen.getAllByTestId('process-action-summary');
     expect(folds).toHaveLength(2);
     expect(folds[0].textContent).toContain('探索了 2 个文件');
@@ -779,7 +822,7 @@ describe('InlineProcessFlow', () => {
       <InlineProcessFlow
         items={[reasoningItem, toolItem]}
         collapseExecutionProcess={false}
-        answerStarted
+        streaming
       />,
     );
 
@@ -910,8 +953,9 @@ describe('InlineProcessFlow', () => {
 
     expect(
       tools[2].querySelector('.shell-inline-process__tool-toggle')?.getAttribute('aria-expanded'),
-    ).toBe('true');
-    expect(screen.getByTestId('inline-process-tool-result').textContent).toContain('boom');
+    ).toBe('false');
+    expect(screen.queryByTestId('inline-process-tool-result')).toBeNull();
+    expect(screen.getByTestId('inline-process-tool-error-summary').textContent).toContain('boom');
   });
 
   it('uses one Harness waiting row instead of a branded sync-thinking footer', () => {
@@ -1166,7 +1210,7 @@ describe('InlineProcessFlow', () => {
     expect(status.getAttribute('aria-label')).toBe('失败');
     expect(status.textContent).toBe('');
     expect(screen.getByTestId('inline-process-tool').querySelector('.shell-inline-process__tool-toggle')?.textContent).not.toContain('失败');
-    expect(screen.getByTestId('inline-process-tool-result').textContent).toContain('执行失败');
+    expect(screen.queryByTestId('inline-process-tool-result')).toBeNull();
     expect(summary.textContent).toBe('Error: command failed');
     expect(summary.classList.contains('is-failed')).toBe(true);
     expect(document.querySelector('.shell-inline-process__state-dot')).toBeTruthy();
@@ -1175,6 +1219,7 @@ describe('InlineProcessFlow', () => {
   it('explains a failed tool whose provider returned no error body', () => {
     render(<InlineProcessFlow items={[{ ...failedToolItem, result: '' }]} defaultOpen />);
 
+    fireEvent.click(screen.getByTestId('inline-process-tool').querySelector('.shell-inline-process__tool-toggle')!);
     expect(screen.getByTestId('inline-process-tool-result').textContent).toContain(
       '工具未返回错误详情',
     );
@@ -1422,6 +1467,9 @@ describe('InlineProcessFlow', () => {
     );
 
     expect(screen.queryByTestId('delegation-anchor-note')).toBeNull();
+    expect(screen.queryByTestId('inline-process-tool-result')).toBeNull();
+    expect(screen.getByTestId('inline-process-tool-error-summary').textContent).toContain('-32602');
+    fireEvent.click(screen.getByTestId('inline-process-tool').querySelector('.shell-inline-process__tool-toggle')!);
     expect(screen.getByTestId('inline-process-tool-result').textContent).toContain('-32602');
   });
 
@@ -1571,7 +1619,7 @@ describe('paged process reading state', () => {
     const fixture = render(
       <InlineProcessFlow items={[failedToolItem]} answerStarted totalFailedTools={10} />,
     );
-    expect(screen.getByTestId('process-panel-toggle').getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getByTestId('process-panel-toggle').getAttribute('aria-expanded')).toBe('false');
     fixture.rerender(<InlineProcessFlow items={[toolItem]} answerStarted totalFailedTools={10} />);
     expect(screen.getByTestId('process-panel-toggle').getAttribute('aria-expanded')).toBe('false');
   });
@@ -1691,7 +1739,7 @@ describe('approval wait presentation', () => {
 
 describe('Be UI tool result integration', () => {
   afterEach(cleanup);
-  it('shows actual log chunks, preserves manual reading through completion and resets for a new run', () => {
+  it('shows actual log chunks, folds at completion, and keeps the final output available on manual reopen', () => {
     cleanup();
     const live = { ...runningTool, progressOutput: 'first\nsecond\n', progressBytes: 13 };
     const fixture = render(<InlineProcessFlow items={[live]} streaming runId="logs-a" />);
@@ -1700,7 +1748,9 @@ describe('Be UI tool result integration', () => {
     expect(result.textContent).toContain('second');
     fireEvent.wheel(result, { deltaY: -100 });
     fixture.rerender(<InlineProcessFlow items={[{ ...live, status: 'completed', result: 'final output' }]} answerStarted runId="logs-a" />);
-    expect(screen.getByTestId('process-panel-toggle').getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getByTestId('process-panel-toggle').getAttribute('aria-expanded')).toBe('false');
+    expect(screen.queryByTestId('inline-process-tool-result')).toBeNull();
+    fireEvent.click(screen.getByTestId('process-panel-toggle'));
     expect(screen.getByTestId('inline-process-tool-result').textContent).toContain('final output');
     expect(screen.getByTestId('inline-process-tool-result').textContent).not.toContain('first');
     fixture.rerender(<InlineProcessFlow items={[toolItem]} answerStarted runId="logs-b" />);

@@ -797,9 +797,17 @@ export async function buildWindowsInstaller(options = {}) {
     ...signing.builderArgs,
   ];
   const buildStartedAt = performance.now();
+  const builderEnv = { ...signing.builderEnv };
+  if (process.platform === 'win32') {
+    builderEnv.SYNC_THINK_NSIS_READONLY_UNINSTALLER = '1';
+    builderEnv.NODE_OPTIONS = [
+      process.env.NODE_OPTIONS,
+      '--require ' + JSON.stringify(join(SCRIPT_DIR, 'windows-builder-uninstaller.cjs')),
+    ].filter(Boolean).join(' ');
+  }
   await runCommand(cli.command, args, {
     cwd: workspaceRoot,
-    env: signing.builderEnv,
+    env: builderEnv,
   });
   const buildDurationMs = performance.now() - buildStartedAt;
 

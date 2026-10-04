@@ -1,3 +1,4 @@
+import { embedShellReleaseHistory } from './shell-release-history.mjs';
 import { buildDesignPreviews } from './build-design-previews.mjs';
 import { execFileSync } from 'node:child_process';
 import {
@@ -93,10 +94,6 @@ try {
     target: 'chrome120',
     define: {
       'process.env.NODE_ENV': JSON.stringify(optimized ? 'production' : 'development'),
-      // 双 stringify：内层得到 JSON 文本，外层把它变成产物里合法的字符串字面量，
-      // 于是运行时的 __SYNC_THINK_RELEASE_HISTORY__ 是一个 JSON 字符串，
-      // 渲染层 JSON.parse 之后再逐项校验（typeof 守卫兜住测试环境没有注入的情况）。
-      __SYNC_THINK_RELEASE_HISTORY__: JSON.stringify(JSON.stringify(releaseHistory)),
     },
     legalComments: 'external',
   };
@@ -181,7 +178,9 @@ try {
     ],
     { stdio: 'inherit' },
   );
-  copyFileSync(join(shellSrc, 'index.html'), join(staging, 'index.html'));
+  writeFileSync(join(staging, 'index.html'), embedShellReleaseHistory(
+    readFileSync(join(shellSrc, 'index.html'), 'utf8'), releaseHistory,
+  ));
   // The avatar library is bundled, so ship its MIT notice with the renderer.
   copyFileSync(
     join(dirname(require.resolve('bot-avatars/package.json')), 'LICENSE'),

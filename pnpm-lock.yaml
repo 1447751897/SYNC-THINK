@@ -88,9 +88,6 @@ importers:
 
   apps/desktop:
     dependencies:
-      '@mermaid-js/layout-elk':
-        specifier: ^0.2.3
-        version: 0.2.3(mermaid@11.16.1)
       '@sync-think/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol
@@ -103,12 +100,6 @@ importers:
       '@sync-think/workers':
         specifier: workspace:*
         version: link:../../packages/workers
-      bot-avatars:
-        specifier: 0.1.1
-        version: 0.1.1(react@18.3.1)
-      dompurify:
-        specifier: 3.4.13
-        version: 3.4.13
       electron-updater:
         specifier: 6.8.9
         version: 6.8.9
@@ -137,6 +128,9 @@ importers:
       '@excalidraw/excalidraw':
         specifier: 0.18.1
         version: 0.18.1(@types/react-dom@18.3.7(@types/react@18.3.31))(@types/react@18.3.31)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
+      '@mermaid-js/layout-elk':
+        specifier: ^0.2.3
+        version: 0.2.3(mermaid@11.16.1)
       '@radix-ui/react-dialog':
         specifier: ^1.1.20
         version: 1.1.20(@types/react-dom@18.3.7(@types/react@18.3.31))(@types/react@18.3.31)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
@@ -176,9 +170,15 @@ importers:
       agentation:
         specifier: 3.1.2
         version: 3.1.2(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
+      bot-avatars:
+        specifier: 0.1.1
+        version: 0.1.1(react@18.3.1)
       clsx:
         specifier: ^2.1.1
         version: 2.1.1
+      dompurify:
+        specifier: 3.4.13
+        version: 3.4.13
       electron:
         specifier: ^33.2.1
         version: 33.4.11

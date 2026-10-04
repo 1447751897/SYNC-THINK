@@ -59,11 +59,47 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  document.getElementById('sync-think-release-history')?.remove();
   cleanup();
   vi.clearAllMocks();
 });
 
 describe('DesktopUpdatePanel', () => {
+  it('reads complete offline history when the update feed is unavailable', async () => {
+    const data = document.createElement('script');
+    data.id = 'sync-think-release-history';
+    data.type = 'application/json';
+    data.textContent = JSON.stringify([
+      { version: '0.1.0-rc.8', date: '2026-10-04', notes: '### 修复\n1. 视频随聊天区域自适应' },
+      { version: '0.1.0-rc.7', date: '2026-09-15', notes: '### 优化\n1. 全部历史日志离线可读' },
+    ]);
+    document.head.append(data);
+    updates.getState.mockResolvedValue({
+      ...baseSnapshot, phase: 'disabled', configured: false, currentVersion: '0.1.0-rc.8',
+    });
+
+    render(<DesktopUpdatePanel />);
+    fireEvent.click(await screen.findByRole('button', { name: '查看更新日志' }));
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByText('视频随聊天区域自适应')).toBeTruthy();
+    expect(within(dialog).getByText('全部历史日志离线可读')).toBeTruthy();
+    expect(updates.checkForUpdates).not.toHaveBeenCalled();
+    expect(updates.downloadUpdate).not.toHaveBeenCalled();
+    expect(updates.installUpdate).not.toHaveBeenCalled();
+  });
+
+  it('keeps the notes dialog usable when embedded history is malformed', async () => {
+    const data = document.createElement('script');
+    data.id = 'sync-think-release-history';
+    data.type = 'application/json';
+    data.textContent = '{bad json';
+    document.head.append(data);
+
+    render(<DesktopUpdatePanel />);
+    fireEvent.click(await screen.findByRole('button', { name: '查看更新日志' }));
+    expect(await screen.findByRole('dialog')).toBeTruthy();
+  });
+
   it('loads the compact about controls and starts a manual update check', async () => {
     render(<DesktopUpdatePanel />);
 

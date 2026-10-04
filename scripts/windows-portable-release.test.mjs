@@ -37,8 +37,9 @@ test('desktop production dependencies exclude bundled renderer libraries', async
     '@sync-think/shared',
     '@sync-think/workers',
     'electron-updater',
+    'node-pty',
   ]);
-  for (const name of ['@excalidraw/excalidraw', '@sync-think/ui-kit', 'lucide-react', 'mermaid']) {
+  for (const name of ['@excalidraw/excalidraw', '@sync-think/ui-kit', '@mermaid-js/layout-elk', 'bot-avatars', 'dompurify', 'lucide-react', 'mermaid']) {
     assert.ok(desktop.devDependencies[name]);
   }
 });

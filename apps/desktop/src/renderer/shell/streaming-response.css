@@ -31,6 +31,17 @@ SOFTWARE.
   min-width: 0;
   overflow-wrap: anywhere;
 }
+/* A plain response is normal document flow, not a borderless card. Reset
+   only its wrapper so code, tables and HTML previews keep their own surfaces. */
+.shell-streaming-response[data-variant='plain'] > .shell-response__content {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  padding: 0;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
 /* The answer is the speech bubble; process details, sources and actions stay
    outside it. Keeping this on the existing content node preserves streamed DOM. */
 .shell-streaming-response[data-variant='bubble'] > .shell-response__content:not(:empty) {

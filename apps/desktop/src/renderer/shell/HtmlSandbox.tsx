@@ -1,5 +1,5 @@
 // NewMax HtmlPreview: a ```html (or ```htm) fence renders as a sanitized
-// iframe srcDoc with a fixed 420px stage. No JSON UI-kit schema, no tag-stack
+// iframe srcDoc with a measured, window-adaptive stage. No JSON UI-kit schema, no tag-stack
 // validator, and no "format invalid" card — DOMPurify + the browser parse the
 // markup the same way NewMax does.
 import { useCallback, useMemo, useState, type ReactNode } from 'react';
@@ -13,9 +13,12 @@ import {
   ExternalLink,
   FileCode2,
   Eye,
+  Scan,
 } from 'lucide-react';
 import { highlightSource } from './highlight.js';
 import type { OpenHtmlInBrowser } from './html-browser.js';
+import { AdaptiveHtmlPreview } from './AdaptiveHtmlPreview.js';
+import type { HtmlPreviewSizing } from './html-preview-sizing.js';
 
 interface HtmlSandboxProps {
   code: string;
@@ -29,7 +32,7 @@ const MAX_OPEN_HTML = 8 * 1024 * 1024;
 
 type ViewMode = 'preview' | 'source';
 
-function sanitizeHtmlDocument(source: string): string {
+export function sanitizeHtmlDocument(source: string): string {
   const purifier = typeof window === 'undefined' ? null : createDOMPurify(window);
   const sanitized =
     purifier?.sanitize(source.replace(/\n$/, ''), {
@@ -57,6 +60,7 @@ function sanitizeHtmlDocument(source: string): string {
 export function HtmlSandbox({ code, actions, onOpenInBrowser }: HtmlSandboxProps) {
   const [collapsed, setCollapsed] = useState(false);
   const [view, setView] = useState<ViewMode>('preview');
+  const [previewSizing, setPreviewSizing] = useState<HtmlPreviewSizing>('content');
   const [copied, setCopied] = useState(false);
   const [openError, setOpenError] = useState<string | null>(null);
   const source = code.replace(/\n$/, '');
@@ -137,6 +141,20 @@ export function HtmlSandbox({ code, actions, onOpenInBrowser }: HtmlSandboxProps
             <FileCode2 size={12} />
             <span>源码</span>
           </button>
+        {(['content', 'fit', 'actual'] as const).map((sizing) => (
+          <button
+            key={sizing}
+            type="button"
+            className={`shell-html__view-tab${previewSizing === sizing ? ' is-active' : ''}`}
+            onClick={() => setPreviewSizing(sizing)}
+            aria-pressed={previewSizing === sizing}
+            title={sizing === 'content' ? '适应宽度并随内容撑高，与智能体预览一致'
+              : sizing === 'fit' ? '按宽高等比缩放，完整显示页面' : '以 100% 大小查看页面'}
+          >
+            <Scan size={12} />
+            <span>{sizing === 'content' ? '完整显示' : sizing === 'fit' ? '适应窗口' : '原始大小'}</span>
+          </button>
+        ))}
         </div>
         <div className="shell-md-code__actions">
           <button
@@ -185,9 +203,7 @@ export function HtmlSandbox({ code, actions, onOpenInBrowser }: HtmlSandboxProps
             </pre>
           </div>
         ) : (
-          <div className="shell-html__content" data-testid="html-sandbox-content">
-            <iframe srcDoc={previewHtml} sandbox="allow-scripts" title="HTML 预览" />
-          </div>
+          <AdaptiveHtmlPreview html={previewHtml} sizing={previewSizing} />
         )
       ) : null}
     </div>

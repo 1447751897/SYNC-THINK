@@ -1,6 +1,7 @@
 /** @vitest-environment jsdom */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { boardDataHtml } from '@sync-think/shared';
 import { InlineVisualizationPreview } from './InlineVisualizationPreview.js';
 
 const readProjectFile = vi.fn();
@@ -35,6 +36,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   vi.restoreAllMocks();
   vi.clearAllMocks();
   Reflect.deleteProperty(window, 'syncThink');
@@ -42,6 +44,59 @@ afterEach(() => {
 });
 
 describe('InlineVisualizationPreview', () => {
+  it('keeps video tall enough for its width and resizes without restarting the guest', async () => {
+    readProjectFile.mockResolvedValue({ content: '<video controls src="http://127.0.0.1:4318/out/film.mp4"></video>', error: null });
+    let resized!: () => void;
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(callback: () => void) { resized = callback; }
+      observe() {}
+      disconnect() {}
+    });
+    try {
+      render(<InlineVisualizationPreview file="video/player.html" projectFolder="D:/work/demo" />);
+      const webview = await screen.findByTestId('inline-visualization-webview');
+      const stage = screen.getByTestId('inline-visualization');
+      let width = 1000;
+      Object.defineProperty(stage, 'clientWidth', { configurable: true, get: () => width + 16 });
+      act(() => {
+        resized();
+        dispatchGuestMessage(webview, 'sync-think-visualization:height', { height: 120 });
+        dispatchGuestMessage(webview, 'sync-think-visualization:ready');
+      });
+      await waitFor(() => expect(webview.style.height).toBe('563px'));
+      const src = webview.getAttribute('src');
+      act(() => { width = 640; resized(); });
+      await waitFor(() => expect(webview.style.height).toBe('360px'));
+      expect(stage.getAttribute('aria-busy')).toBe('false');
+      expect(screen.getByTestId('inline-visualization-webview')).toBe(webview);
+      expect(webview.getAttribute('src')).toBe(src);
+      expect(readProjectFile).toHaveBeenCalledTimes(1);
+      // The floor does not discard a taller authored page's heading/footer.
+      act(() => dispatchGuestMessage(webview, 'sync-think-visualization:height', { height: 750 }));
+      expect(webview.style.height).toBe('750px');
+      act(() => {
+        width = 320; resized();
+        dispatchGuestMessage(webview, 'sync-think-visualization:height', { height: 120 });
+      });
+      expect(webview.style.height).toBe('180px');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('does not apply the video floor to an ordinary visualization', async () => {
+    render(<InlineVisualizationPreview file="visualizations/demo.html" projectFolder="D:/work/demo" />);
+    const webview = await screen.findByTestId('inline-visualization-webview');
+    const stage = screen.getByTestId('inline-visualization');
+    Object.defineProperty(stage, 'clientWidth', { configurable: true, value: 1016 });
+    act(() => {
+      window.dispatchEvent(new Event('resize'));
+      dispatchGuestMessage(webview, 'sync-think-visualization:height', { height: 120 });
+      dispatchGuestMessage(webview, 'sync-think-visualization:ready');
+    });
+    expect(webview.style.height).toBe('120px');
+  });
+
   it('shows a skeleton, reads the project HTML, and sizes from the guest report', async () => {
     render(
       <InlineVisualizationPreview

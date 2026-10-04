@@ -41,23 +41,23 @@
 :root[data-shell-design='agent'] .shell-normal-workspace .shell-sidebar-theme button[aria-pressed='true'] { background: var(--color-surface); color: var(--color-text); box-shadow: var(--wb-surface-shadow); }
 :root[data-shell-design='agent'] .shell-normal-workspace [data-testid='sidebar-settings-box'] { margin-top: 0; background: var(--color-hover); border-radius: 14px; }
 /* Empty chat keeps its real shortcuts, but the input stays anchored like a thread. */
-:root[data-shell-design='agent'] .shell-normal-workspace .shell-chat-column--empty-newmax { justify-content: flex-start; padding: 0; overflow-y: auto; }
-:root[data-shell-design='agent'] .shell-normal-workspace .shell-welcome--newmax { order: 0; margin-top: auto; margin-bottom: 20px; padding-block: 28px 0; }
-:root[data-shell-design='agent'] .shell-normal-workspace .shell-welcome-title { font-size: clamp(24px, 2vw, 30px); font-weight: 500; letter-spacing: -.04em; }
-:root[data-shell-design='agent'] .shell-normal-workspace .shell-empty-newmax-scenarios { order: 1; margin: 0 16px 16px; }
-:root[data-shell-design='agent'] .shell-normal-workspace .shell-empty-newmax-tips { order: 2; margin: 0 auto auto; padding-inline: 16px; font-size: 12px; }
-:root[data-shell-design='agent'] .shell-normal-workspace .shell-empty-newmax-composer-wrap { order: 3; width: 100%; margin-top: 32px; padding: 0 14px 12px; }
-:root[data-shell-design='agent'] .shell-normal-workspace .shell-chat-column--empty-newmax .shell-chat-content--composer { max-width: 1040px; }
-:root[data-shell-design='agent'] .shell-normal-workspace .shell-chat-content-wrap { padding-inline: 16px; }
-:root[data-shell-design='agent'] .shell-normal-workspace .shell-chat-content { max-width: 1040px; }
-:root[data-shell-design='agent'] .shell-normal-workspace .shell-chat-content--composer { max-width: 1040px; }
-:root[data-shell-design='agent'] .shell-normal-workspace .shell-chat-message-scroller { padding-top: 16px; padding-bottom: 0; }
-:root[data-shell-design='agent'] .shell-normal-workspace .shell-chat-message-scroller > .shell-chat-content { min-height: 100%; justify-content: flex-end; }
-:root[data-shell-design='agent'] .shell-normal-workspace .shell-message-window-item { padding-bottom: 20px; }
-:root[data-shell-design='agent'] .shell-normal-workspace .shell-user-bubble { max-width: min(84%, 580px); border-radius: 18px; padding: 12px 14px; font-size: 13px; line-height: 1.55; }
-:root[data-shell-design='agent'] .shell-normal-workspace .shell-streaming-response[data-variant='bubble'] > .shell-response__content:not(:empty) { padding: 0; background: transparent; border-radius: 0; font-size: 13px; }
-:root[data-shell-design='agent'] .shell-normal-workspace .shell-response__footer { padding-inline: 0; }
-:root[data-shell-design='agent'] .shell-normal-workspace .shell-md-code { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 16px; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-chat-column--empty-newmax:not(.agent-chat-workspace *) { justify-content: flex-start; padding: 0; overflow-y: auto; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-welcome--newmax:not(.agent-chat-workspace *) { order: 0; margin-top: auto; margin-bottom: 20px; padding-block: 28px 0; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-welcome-title:not(.agent-chat-workspace *) { font-size: clamp(24px, 2vw, 30px); font-weight: 500; letter-spacing: -.04em; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-empty-newmax-scenarios:not(.agent-chat-workspace *) { order: 1; margin: 0 16px 16px; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-empty-newmax-tips:not(.agent-chat-workspace *) { order: 2; margin: 0 auto auto; padding-inline: 16px; font-size: 12px; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-empty-newmax-composer-wrap:not(.agent-chat-workspace *) { order: 3; width: 100%; margin-top: 32px; padding: 0 14px 12px; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-chat-column--empty-newmax:not(.agent-chat-workspace *) .shell-chat-content--composer:not(.agent-chat-workspace *) { max-width: 1040px; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-chat-content-wrap:not(.agent-chat-workspace *) { padding-inline: 16px; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-chat-content:not(.agent-chat-workspace *) { max-width: 1040px; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-chat-content--composer:not(.agent-chat-workspace *) { max-width: 1040px; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-chat-message-scroller:not(.agent-chat-workspace *) { padding-top: 16px; padding-bottom: 0; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-chat-message-scroller:not(.agent-chat-workspace *) > .shell-chat-content:not(.agent-chat-workspace *) { min-height: 100%; justify-content: flex-end; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-message-window-item:not(.agent-chat-workspace *) { padding-bottom: 20px; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-user-bubble:not(.agent-chat-workspace *) { max-width: min(84%, 580px); border-radius: 18px; padding: 12px 14px; font-size: 13px; line-height: 1.55; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-streaming-response:not(.agent-chat-workspace *)[data-variant='bubble'] > .shell-response__content:not(:empty) { padding: 0; background: transparent; border-radius: 0; font-size: 13px; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-response__footer:not(.agent-chat-workspace *) { padding-inline: 0; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-md-code:not(.agent-chat-workspace *) { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 16px; }
 /* Compact input: every visible action uses the existing runtime implementation. */
 :root[data-shell-design='agent'] .shell-normal-workspace .shell-newmax-composer-frame[data-presentation='pill'] { display: flex; flex-direction: column; width: 100%; }
 :root[data-shell-design='agent'] .shell-normal-workspace .shell-newmax-composer-frame[data-presentation='pill'] > .shell-compose { display: grid; grid-template-columns: 34px minmax(0, 1fr) auto; align-items: end; gap: 6px; min-height: 52px; padding: 7px; border: 1px solid var(--color-border); border-radius: 26px; box-shadow: var(--wb-surface-shadow); }
@@ -137,12 +137,12 @@
 :root[data-shell-design='agent'] .shell-normal-workspace .shell-workbench__quick-spacer { flex: 1; min-width: 0; }
 :root[data-shell-design='agent'] .shell-normal-workspace .shell-workbench__quick-views + .shell-workbench__tabbar { height: 38px; min-height: 38px; padding-top: 2px; padding-bottom: 4px; }
 
-:root[data-shell-design='agent'] .shell-normal-workspace .shell-chat-column--empty-newmax > .shell-panel-load-state { order: 2; margin: 0 auto auto; min-height: 24px; font-size: 12px; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-chat-column--empty-newmax:not(.agent-chat-workspace *) > .shell-panel-load-state { order: 2; margin: 0 auto auto; min-height: 24px; font-size: 12px; }
 
 /* Tall-composer overlap must not obscure the compact input or its actions. */
-:root[data-shell-design='agent'] .shell-normal-workspace .shell-chat-content--composer:has([data-presentation='pill']) { --composer-banner-overlap: 0px; }
-:root[data-shell-design='agent'] .shell-normal-workspace .shell-chat-content--composer:has([data-presentation='pill']) .shell-composer-peek-surface { margin-bottom: 8px; }
-:root[data-shell-design='agent'] .shell-normal-workspace .shell-chat-content--composer:has([data-presentation='pill']) .shell-composer-peek-surface.is-exiting { margin-bottom: 0; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-chat-content--composer:not(.agent-chat-workspace *):has([data-presentation='pill']) { --composer-banner-overlap: 0px; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-chat-content--composer:not(.agent-chat-workspace *):has([data-presentation='pill']) .shell-composer-peek-surface { margin-bottom: 8px; }
+:root[data-shell-design='agent'] .shell-normal-workspace .shell-chat-content--composer:not(.agent-chat-workspace *):has([data-presentation='pill']) .shell-composer-peek-surface.is-exiting { margin-bottom: 0; }
 :root[data-shell-design='agent'] .shell-normal-workspace .shell-newmax-composer-frame[data-presentation='pill'] > .shell-newmax-composer-frame__mode { margin-bottom: 8px; }
 :root[data-shell-design='agent'] .shell-normal-workspace .shell-newmax-composer-frame[data-presentation='pill'] > .shell-newmax-composer-frame__mode.is-exiting { margin-bottom: 0; }
 

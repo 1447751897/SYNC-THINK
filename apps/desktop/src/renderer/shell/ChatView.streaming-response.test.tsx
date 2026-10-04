@@ -192,3 +192,18 @@ it.each(['agent', 'team'] as const)('also hides file summaries in non-workspace 
   await waitFor(() => expect(runtime.getConversationRunProcess).toHaveBeenCalled());
   expect(screen.queryByText(/编辑了 1 个文件/)).toBeNull();
 });
+
+it.each(['model', 'agent', 'team'] as const)('keeps user bubbles and selects only the assistant surface for %s conversations', async track => {
+  runtime.listConversationMessages.mockResolvedValue({ messages: [
+    { id: 'user-presentation', threadId: 'thread-response', role: 'user', sequence: 1,
+      createdAt: '2026-09-24T12:00:00Z', blocks: [{ type: 'text', text: '对话样式测试' }] },
+    reply(),
+  ], hasMore: false });
+  renderChat(false, track);
+  await screen.findByText(answer);
+  const expected = track === 'model' ? 'plain' : 'bubble';
+  expect(screen.getByTestId('streaming-response').getAttribute('data-variant')).toBe(expected);
+  const user = screen.getByText('对话样式测试').closest('[data-message-surface]')!;
+  expect(user.getAttribute('data-message-surface')).toBe('bubble');
+  expect(user.classList.contains('shell-user-bubble')).toBe(true);
+});

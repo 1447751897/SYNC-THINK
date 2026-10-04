@@ -90,12 +90,12 @@ function parseReleaseHistory(raw: string): ReleaseHistoryEntry[] {
  *
  * 更新源只在「有可安装版本」时携带 releaseNotes、且只带当前发布的那一版，所以光靠
  * 更新源，用户永远只看得到「即将升到的那版」或「刚装上的那版」，翻不到历史。
- * 这一份让弹窗在任何阶段都能回看全部版本。测试环境没有注入该常量，
- * 故用 `typeof` 守卫取值而不是直接引用。
+ * 这一份让弹窗在任何阶段都能回看全部版本。历史日志作为 HTML 内的纯 JSON
+ * 数据随页面离线携带，不进入 JavaScript 包；测试环境没有数据节点时退回空日志。
  */
-const RELEASE_HISTORY: ReleaseHistoryEntry[] = parseReleaseHistory(
-  typeof __SYNC_THINK_RELEASE_HISTORY__ === 'string' ? __SYNC_THINK_RELEASE_HISTORY__ : '',
-);
+function readReleaseHistory(): ReleaseHistoryEntry[] {
+  return parseReleaseHistory(document.getElementById('sync-think-release-history')?.textContent ?? '');
+}
 
 /**
  * Release notes are plain text: the Main process strips control characters and
@@ -327,6 +327,7 @@ function ReleaseNotesDialog({
 }
 
 export function DesktopUpdatePanel() {
+  const [releaseHistory] = useState(readReleaseHistory);
   const { snapshot, loadFailed, applySnapshot } = useDesktopUpdateState();
   const [pendingAction, setPendingAction] = useState<UpdateActionKind | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -452,7 +453,7 @@ export function DesktopUpdatePanel() {
         : RefreshCw;
 
   // 更新源为「即将升到的那版」提供日志时，把它置顶；历史版本由随包固化的
-  // RELEASE_HISTORY 提供 —— 两者互不替代，而不是二选一。
+  // releaseHistory 提供 —— 两者互不替代，而不是二选一。
   const pendingReleaseNotes = (snapshot?.releaseNotes ?? '').trim();
   const showsPendingNotes = pendingReleaseNotes.length > 0 && Boolean(snapshot?.availableVersion);
   const dialogVersion = showsPendingNotes
@@ -581,7 +582,7 @@ export function DesktopUpdatePanel() {
         <ReleaseNotesDialog
           version={dialogVersion}
           pendingNotes={pendingDialogNotes}
-          history={RELEASE_HISTORY}
+          history={releaseHistory}
           currentVersion={snapshot?.currentVersion ?? null}
           onClose={() => setReleaseNotesOpen(false)}
         />

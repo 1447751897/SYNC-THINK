@@ -19,8 +19,9 @@ import { VISUALIZATION_UI_KIT_VERSION, type VisualizationTheme } from './design-
 const VIEWPORT_GUTTER_PX = 8;
 
 /**
- * NewMax's CSP: inline scripts/styles only, no network. Adopted verbatim so a
- * generated page cannot phone home. `blob:` is kept for worker/image inputs.
+ * Offline baseline: inline scripts/styles only, no network. Documents with
+ * declared media receive narrowly scoped media/poster URL exceptions below;
+ * scripts, fetch, frames and other network capabilities stay blocked.
  */
 export const VISUALIZATION_CSP = [
   "default-src 'none'",
@@ -36,6 +37,49 @@ export const VISUALIZATION_CSP = [
   "base-uri 'none'",
   "form-action 'none'",
 ].join('; ');
+
+/** An exact CSP URL source, never a scheme/host wildcard or a directive. */
+function mediaPolicyUrl(value: string | null): string | null {
+  if (!value) return null;
+  try {
+    const url = new URL(value);
+    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) return null;
+    if (!/^(?:[a-z0-9.-]+|\[[a-f0-9:]+\])$/i.test(url.hostname)) return null;
+    // A trailing slash would allow a whole directory. CSP delimiters must not
+    // turn an authored URL into another directive or source expression.
+    if (url.pathname.endsWith('/') || /[\s;'"<>\\]/.test(url.pathname)) return null;
+    // Queries/fragments are not part of CSP path matching; avoid copying
+    // signed URL credentials into the policy. The media element keeps them.
+    return `${url.origin}${url.pathname}`;
+  } catch {
+    return null;
+  }
+}
+
+/** Let a chat guest play declared media without enabling arbitrary network access. */
+function visualizationContentSecurityPolicy(source: string): string {
+  if (!/<(?:video|audio)\b/i.test(source) || typeof DOMParser === 'undefined') {
+    return VISUALIZATION_CSP;
+  }
+  const document = new DOMParser().parseFromString(source, 'text/html');
+  const media = new Set<string>();
+  const posters = new Set<string>();
+  document.querySelectorAll(
+    'video[src], audio[src], video source[src], audio source[src], video track[src], audio track[src]',
+  ).forEach(element => {
+    const url = mediaPolicyUrl(element.getAttribute('src'));
+    if (url) media.add(url);
+  });
+  document.querySelectorAll('video[poster]').forEach(element => {
+    const url = mediaPolicyUrl(element.getAttribute('poster'));
+    if (url) posters.add(url);
+  });
+  return VISUALIZATION_CSP.split('; ').map(directive => {
+    const urls = directive.startsWith('media-src ') ? media
+      : directive.startsWith('img-src ') ? posters : null;
+    return urls?.size ? `${directive} ${Array.from(urls).join(' ')}` : directive;
+  }).join('; ');
+}
 
 export const VISUALIZATION_UI_KIT_STYLES = `
 :root {
@@ -154,6 +198,9 @@ button, input, select, textarea, a { outline-color: var(--ds-brand-primary); }
 button { border: 0; }
 a { color: var(--ds-brand-primary); }
 svg, canvas, img { display: block; max-width: 100%; }
+/* Native chat video fills its container; metadata supplies the actual ratio.
+   Authored page styles still follow this baseline and remain authoritative. */
+:where(video[controls]) { display: block; width: 100%; max-width: 100%; height: auto; aspect-ratio: auto 16 / 9; object-fit: contain; }
 .viz-root { width: 100%; min-width: 0; }
 .viz-title { margin: 0; color: var(--ds-text-primary); font-size: 18px; font-weight: 600; line-height: 1.35; }
 .viz-subtitle { margin: 3px 0 0; color: var(--ds-text-secondary); font-size: 13px; }
@@ -369,7 +416,7 @@ export function buildVisualizationDocumentHtml(
     '<meta name="viewport" content="width=device-width, initial-scale=1">',
     `<meta name="${HEAD_MARKER}" content="1">`,
     `<meta name="${HEAD_MARKER}-ui-kit" content="${VISUALIZATION_UI_KIT_VERSION}">`,
-    `<meta http-equiv="Content-Security-Policy" content="${VISUALIZATION_CSP}">`,
+    `<meta http-equiv="Content-Security-Policy" content="${visualizationContentSecurityPolicy(source)}">`,
     `<style>${VISUALIZATION_UI_KIT_STYLES}</style>`,
     buildThemeBootstrap(options.tokens),
     // Design drafts fill the host pane so 100vh layouts track the window, but

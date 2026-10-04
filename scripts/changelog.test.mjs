@@ -128,7 +128,7 @@ test('the repository changelog parses and covers every shipped version', async (
   const markdown = await readFile(REAL_CHANGELOG_PATH, 'utf8');
   const { entries } = parseChangelog(markdown);
 
-  for (const version of ['0.1.0-rc.5', '0.1.0-rc.4', '0.1.0-rc.2', '0.1.0-rc.1']) {
+  for (const version of ['0.1.0-rc.7', '0.1.0-rc.6', '0.1.0-rc.5', '0.1.0-rc.4', '0.1.0-rc.2', '0.1.0-rc.1']) {
     const entry = findChangelogEntry(entries, version);
     assert.ok(entry, `CHANGELOG.md is missing a section for ${version}`);
     assert.match(entry.date, /^\d{4}-\d{2}-\d{2}$/);
@@ -138,11 +138,28 @@ test('the repository changelog parses and covers every shipped version', async (
 
 test('the repository changelog produces usable release notes for the current version', async () => {
   const markdown = await readFile(REAL_CHANGELOG_PATH, 'utf8');
-  const notes = resolveChangelogReleaseNotes(markdown, '0.1.0-rc.5');
+  const rootPackage = JSON.parse(await readFile(join(REPO_ROOT, 'package.json'), 'utf8'));
+  const notes = resolveChangelogReleaseNotes(markdown, rootPackage.version);
 
-  assert.match(notes, /### 新功能/);
-  assert.match(notes, /### 修复/);
+  const { entries } = parseChangelog(markdown);
+  const entry = findChangelogEntry(entries, rootPackage.version);
+  assert.ok(entry);
+  for (const section of entry.sections) {
+    assert.ok(notes.includes(`### ${section.title}`), `missing rendered section: ${section.title}`);
+  }
   assert.match(notes, /\n1\. /);
   // The renderer truncates past 8 KiB, so the published notes must stay under it.
   assert.ok(notes.length < 8 * 1024, `release notes are ${notes.length} chars, over the 8 KiB client cap`);
+});
+
+test('release metadata matches the newest changelog entry without duplicate versions', async () => {
+  const markdown = await readFile(REAL_CHANGELOG_PATH, 'utf8');
+  const rootPackage = JSON.parse(await readFile(join(REPO_ROOT, 'package.json'), 'utf8'));
+  const desktopPackage = JSON.parse(await readFile(join(REPO_ROOT, 'apps/desktop/package.json'), 'utf8'));
+  const { entries } = parseChangelog(markdown);
+
+  assert.equal(desktopPackage.version, rootPackage.version, 'desktop and root release versions differ');
+  assert.equal(entries[0].version, rootPackage.version, 'the newest notes must describe the version being built');
+  assert.equal(new Set(entries.map((entry) => entry.version)).size, entries.length, 'duplicate release notes');
+  assert.match(entries[0].date, /^\d{4}-\d{2}-\d{2}$/);
 });

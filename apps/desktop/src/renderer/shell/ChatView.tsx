@@ -6545,6 +6545,7 @@ export function ChatView({
                     </div>
                   ) : null}
                   <MessageBubble
+                    conversationTrack={conversation.track}
                     agentWorkspace={agentWorkspace}
                     showFileChanges={conversation.track === 'model'}
                     onEditAgent={onEditAgent}
@@ -6615,6 +6616,7 @@ export function ChatView({
                   data-message-role={msg.role}
                 >
                   <MessageBubble
+                    conversationTrack={conversation.track}
                     agentWorkspace={agentWorkspace}
                     showFileChanges={conversation.track === 'model'}
                     onEditAgent={onEditAgent}
@@ -7893,6 +7895,7 @@ export const DelegatedAgentTasks = memo(function DelegatedAgentTasks({
 });
 
 const MessageBubble = memo(function MessageBubble({
+  conversationTrack,
   showFileChanges = true,
   agentWorkspace = false,
   onEditAgent,
@@ -7922,6 +7925,7 @@ const MessageBubble = memo(function MessageBubble({
   dismissLocalError,
 }: {
   showFileChanges?: boolean;
+  conversationTrack?: Conversation['track'];
   agentWorkspace?: boolean;
   onEditAgent?(id: string): void;
   message: ChatMessage;
@@ -8384,7 +8388,7 @@ const MessageBubble = memo(function MessageBubble({
             </div>
           ) : null}
           {visibleText ? (
-            <div className="shell-user-bubble max-w-full rounded-2xl bg-[color-mix(in_srgb,var(--color-elevated)_88%,var(--color-text)_12%)] px-4 py-2.5 text-[13.5px] leading-relaxed text-text shadow-sm">
+            <div data-message-surface="bubble" className="shell-user-bubble max-w-full rounded-2xl bg-[color-mix(in_srgb,var(--color-elevated)_88%,var(--color-text)_12%)] px-4 py-2.5 text-[13.5px] leading-relaxed text-text shadow-sm">
               <MessageTextContent
                 text={visibleText}
                 parts={visibleText === message.text ? message.textParts : undefined}
@@ -8626,7 +8630,7 @@ const MessageBubble = memo(function MessageBubble({
           {executionTrace}
         </AgentExecutionStatus> : executionTrace}
         <StreamingResponse
-          variant="bubble"
+          variant={conversationTrack === 'model' ? 'plain' : 'bubble'}
           showContent={Boolean(message.answerText || (!message.processItems?.length && message.text)) || Boolean(showFileChanges && !agentWorkspace && !message.streaming && processView?.fileChanges.length)}
           status={responseStatus({
             streaming: message.streaming,

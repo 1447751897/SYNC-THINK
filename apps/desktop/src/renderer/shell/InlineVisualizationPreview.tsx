@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { RefreshCw, TriangleAlert } from 'lucide-react';
 import {
   buildVisualizationDocument,
@@ -37,6 +37,18 @@ export function InlineVisualizationPreview({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const requestRef = useRef(0);
+  const stageRef = useRef<HTMLElement>(null);
+  const reportedHeightRef = useRef(DEFAULT_HEIGHT);
+  const [stageWidth, setStageWidth] = useState(0);
+  const hasVideoPlayer = useMemo(() => {
+    if (!source || typeof DOMParser === 'undefined' || !/<video\b/i.test(source)) return false;
+    return Boolean(new DOMParser().parseFromString(source, 'text/html').querySelector('video[controls]:not([hidden])'));
+  }, [source]);
+  const videoHeightFloor = hasVideoPlayer ? Math.ceil(stageWidth * 9 / 16) : 0;
+  const resolveReportedHeight = useCallback((reported: number) => {
+    reportedHeightRef.current = reported;
+    return Math.max(MIN_HEIGHT, Math.min(Math.max(Math.ceil(reported), videoHeightFloor), MAX_HEIGHT));
+  }, [videoHeightFloor]);
 
   const load = useCallback(async () => {
     const requestId = ++requestRef.current;
@@ -97,9 +109,36 @@ export function InlineVisualizationPreview({
     initialHeight: DEFAULT_HEIGHT,
     minHeight: MIN_HEIGHT,
     maxHeight: MAX_HEIGHT,
+    resolveReportedHeight,
   });
   const failed = !loading && (error !== null || guest.status === 'error');
   const ready = !loading && source !== null && guest.status === 'ready';
+
+  // A media guest can report its minimum height before metadata/layout settles.
+  // Keep a width-based floor without resetting the guest handshake on resize.
+  useLayoutEffect(() => {
+    const stage = stageRef.current;
+    if (!stage || !hasVideoPlayer || failed) return;
+    const resize = () => {
+      const width = stage.clientWidth - SHADOW_GUTTER * 2;
+      if (width > 0) setStageWidth(width);
+    };
+    resize();
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(resize);
+    observer?.observe(stage);
+    window.addEventListener('resize', resize);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener('resize', resize);
+    };
+  }, [hasVideoPlayer, failed]);
+
+  const setGuestHeight = guest.setHeight;
+  useLayoutEffect(() => {
+    if (hasVideoPlayer && !failed) {
+      setGuestHeight(resolveReportedHeight(reportedHeightRef.current));
+    }
+  }, [hasVideoPlayer, failed, resolveReportedHeight, setGuestHeight]);
 
   if (failed) {
     return (
@@ -123,6 +162,7 @@ export function InlineVisualizationPreview({
 
   return (
     <section
+      ref={stageRef}
       className="shell-inline-vis"
       data-testid="inline-visualization"
       data-file={file}

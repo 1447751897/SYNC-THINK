@@ -1484,7 +1484,7 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
         if (item.kind !== 'tool') continue;
         const itemKey = processItemKey(item, index);
         if (userToggledItemKeysRef.current.has(itemKey)) continue;
-        if (toolCallExpandedByDefault || toolStatusOf(item) === 'failed' ||
+        if ((toolCallExpandedByDefault && toolStatusOf(item) !== 'failed') ||
           (toolStatusOf(item) === 'running' && (Boolean(item.result) || item.progressOutput !== undefined)))
           next.add(itemKey);
         else next.delete(itemKey);
@@ -1517,18 +1517,18 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
     const timer = window.setInterval(() => setClockNow(Date.now()), 1_000);
     return () => window.clearInterval(timer);
   }, [ticking]);
-  // A completed turn only folds when it has a real final answer beside the
-  // trace. Commentary-only and terminal-only turns stay open so the entire
-  // assistant response never collapses into an empty-looking header.
-  const hasFailedResult = orderedItems.some((item) => item.kind === 'tool' && toolStatusOf(item) === 'failed');
-  const [readingActivity, setReadingActivity] = useState(false);
+  // A final response is the end of the live execution phase, even if tools
+  // failed or the run ended with a terminal notice. Reset running-time manual
+  // overrides at that boundary; after completion the user can reopen freely.
+  const settled = !streaming && !waitingForApproval && Boolean(answerStarted || terminalState);
   const activityState = agentActivityState({ streaming, waitingForApproval, terminalState, answerStarted, completedAt });
-  const automaticPanelOpen = defaultOpen ?? Boolean(streaming || waitingForApproval || terminalState || readingActivity || !answerStarted || hasFailedResult);
+  const automaticPanelOpen = settled ? false : defaultOpen ?? Boolean(streaming || waitingForApproval || !answerStarted);
   const { open: disclosedPanelOpen, toggle: togglePanel, keepOpen: keepPanelOpen } = useAutoDisclosure({
     autoOpen: automaticPanelOpen,
-    resetKey: runId,
+    resetKey: JSON.stringify([runId, settled]),
   });
-  const panelOpen = collapseExecutionProcess ? disclosedPanelOpen : true;
+  const collapsible = settled || collapseExecutionProcess;
+  const panelOpen = collapsible ? disclosedPanelOpen : true;
   const userToggledToolRunsRef = useRef(new Set<string>());
   const toolRunResetKeyRef = useRef(runId);
   const [openToolRuns, setOpenToolRuns] = useState<ReadonlySet<string>>(() =>
@@ -1696,7 +1696,7 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
         data-failed={failedToolCount > 0 ? 'true' : 'false'}
       >
         <div className="shell-process-panel__header">
-          {collapseExecutionProcess ? (
+          {collapsible ? (
             <button
               type="button"
               className="shell-process-panel__toggle"
@@ -1733,7 +1733,7 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
         ) : null}
         {panelOpen ? (
           <div className="shell-process-panel__body" data-testid="process-panel-body">
-            <AgentActivityViewport state={activityState} runId={runId} onInspect={keepPanelOpen} onReadingChange={setReadingActivity}>
+            <AgentActivityViewport state={activityState} runId={runId} onInspect={keepPanelOpen}>
             {pageControls}
             {agentTaskContent ? (
               <section className="shell-process-agent-tasks" data-testid="process-agent-tasks">
