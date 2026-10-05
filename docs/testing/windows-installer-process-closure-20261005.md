@@ -113,3 +113,5 @@
 
 现场证据目录：`D:\projects\SYNC-THINK\.data\installer-live-20261005`。其中 `live-rc8-to-rc10-result.json`、`live-clean-rc10-result.json`、`live-rc10-running-desktop-result.json`、`desktop-rc10-harness-proof.json`、`rc10-source-evidence.json` 和实际 installer.log 共同证明真实安装，不仅是路径分类单测。是否已线上激活以 `docs/releases/0.1.0-rc.10.md` 与激活证据为准，不把本地产物准备好当成发布完成。
 
+
+追加回归记录：为默认正常交付路径新增清理断言后，首次全套出现 43/44，失败仅在测试清理路径的短路径/长路径规范化比较，不在安装器执行。保留 `regression-default-export-cleanup-path-failure.log`，改为先对许可父目录执行 `realpath` 后做边界检查，没有放宽删除边界。再跑完整套件 **44/44**，无跳过。最终发布 EXE 字节未因测试修正改变。

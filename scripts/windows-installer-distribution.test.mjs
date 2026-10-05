@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import test from 'node:test';
 import {
@@ -159,7 +159,10 @@ test(
         assert.ok(
           fallbackContainer
             .toLowerCase()
-            .startsWith(resolve(local, 'SYNC-THINK-Releases').toLowerCase() + '\\'),
+            .startsWith(
+              (await realpath(resolve(local, 'SYNC-THINK-Releases'))).toLowerCase() + '\\',
+            ),
+          `Unexpected export cleanup path: ${fallbackContainer}; LOCALAPPDATA=${local}`,
         );
         await rm(fallbackContainer, { recursive: true, force: true, maxRetries: 3 });
       }
