@@ -1,10 +1,14 @@
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { prepareDirectExtractionScript } from './windows-installer-extraction.mjs';
+import {
+  assertNormalWindowsIntegrity,
+  prepareWindowsInstallerDistribution,
+} from './windows-installer-distribution.mjs';
 
 import {
   DEFAULT_WINDOWS_RELEASE_DIR,
@@ -339,6 +343,13 @@ export async function verifyWindowsInstallerLayout(installerDir, options = {}) {
   if (artifacts.length > 1) errors.push('installer.artifact_ambiguous');
   for (const artifact of artifacts) {
     if (!(await isNonEmptyFile(artifact))) errors.push('installer.artifact_empty');
+    if (options.requireNormalIntegrity === true) {
+      try {
+        await assertNormalWindowsIntegrity(artifact, options.inspectIntegrity);
+      } catch (error) {
+        errors.push(error instanceof Error ? error.message : String(error));
+      }
+    }
   }
 
   let manifest = null;
@@ -803,7 +814,9 @@ export async function buildWindowsInstaller(options = {}) {
     builderEnv.NODE_OPTIONS = [
       process.env.NODE_OPTIONS,
       '--require ' + JSON.stringify(join(SCRIPT_DIR, 'windows-builder-uninstaller.cjs')),
-    ].filter(Boolean).join(' ');
+    ]
+      .filter(Boolean)
+      .join(' ');
   }
   await runCommand(cli.command, args, {
     cwd: workspaceRoot,
@@ -818,6 +831,13 @@ export async function buildWindowsInstaller(options = {}) {
   if (blockmapPaths.length !== artifacts.length) {
     throw new Error('installer.blockmap_count_invalid:' + blockmapPaths.length);
   }
+  // NSIS validates TEMP before custom hooks run. Keep an opt-in, per-process
+  // temporary-directory launcher next to manual installer builds.
+  await copyFile(
+    join(workspaceRoot, 'apps/desktop/build/run-installer.cmd'),
+    join(paths.installerDir, 'Run-Installer.cmd'),
+  );
+
   const signatureEvidence = new Map();
   if (signing.required) {
     for (const artifact of artifacts) {
@@ -840,7 +860,11 @@ export async function buildWindowsInstaller(options = {}) {
     'utf8',
   );
 
-  const verification = await verifyWindowsInstallerLayout(paths.installerDir, {
+  const distribution = await prepareWindowsInstallerDistribution(paths.installerDir, {
+    exportDir: options.exportDir,
+  });
+  const verification = await verifyWindowsInstallerLayout(distribution.installerDir, {
+    requireNormalIntegrity: true,
     allowUnsignedFixture: signing.mode === 'unsigned-fixture',
     requireCurrentManifest: true,
     expectedSignerSha1: signing.expectedSignerSha1,
@@ -849,7 +873,14 @@ export async function buildWindowsInstaller(options = {}) {
   if (!verification.ok) {
     throw new Error('installer.layout_invalid:' + JSON.stringify({ errors: verification.errors }));
   }
-  return { ...paths, manifest, verification };
+  return {
+    ...paths,
+    buildDirectory: paths.installerDir,
+    installerDir: distribution.installerDir,
+    integrity: distribution.integrity,
+    manifest,
+    verification,
+  };
 }
 
 function readPathArgument(args, name) {
@@ -874,6 +905,7 @@ async function main() {
       installerDir,
       portableDir: readPathArgument(args, '--prepackaged') ?? DEFAULT_WINDOWS_RELEASE_DIR,
       version: readValueArgument(args, '--version'),
+      exportDir: readPathArgument(args, '--export-dir'),
       compression: readValueArgument(args, '--compression'),
       signingMode: readValueArgument(args, '--signing-mode'),
       timestampServer: readValueArgument(args, '--timestamp-server'),
@@ -888,6 +920,8 @@ async function main() {
       JSON.stringify(
         {
           installerDir: result.installerDir,
+          buildDirectory: result.buildDirectory,
+          executionIntegrity: result.integrity,
           appId: result.manifest.appId,
           version: result.manifest.version,
           signed: result.manifest.signed,
@@ -904,8 +938,9 @@ async function main() {
     return;
   }
   if (command === 'verify') {
-    assertSafeReleaseOutput(DEFAULT_WORKSPACE_ROOT, installerDir);
+    // Verification is read-only and also accepts an exported distribution.
     const result = await verifyWindowsInstallerLayout(installerDir, {
+      requireNormalIntegrity: true,
       allowUnsignedFixture: args.includes('--allow-unsigned-fixture'),
       requireCurrentManifest: true,
       expectedSignerSha1:

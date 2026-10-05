@@ -1,6 +1,10 @@
 import { access, copyFile, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
+import {
+  createLegacyUninstallerMigrationScript,
+  createUninstallerDiagnosticScript,
+} from './windows-installer-migration.mjs';
 
 export function escapeNsisPath(value) {
   if (/[\r\n\0]/.test(value)) throw new Error('installer.extraction_path_invalid');
@@ -61,6 +65,16 @@ export async function prepareDirectExtractionScript(workspaceRoot, outputDir, cu
       }
     }
   }
+  const installUtilPath = join(includeRoot, 'installUtil.nsh');
+  await writeFile(
+    installUtilPath,
+    createLegacyUninstallerMigrationScript(await readFile(installUtilPath, 'utf8')),
+  );
+  const uninstallerPath = join(includeRoot, 'uninstaller.nsh');
+  await writeFile(
+    uninstallerPath,
+    createUninstallerDiagnosticScript(await readFile(uninstallerPath, 'utf8')),
+  );
   const script = createDirectExtractionScript({
     ...tools,
     extractionTemplate: await readFile(

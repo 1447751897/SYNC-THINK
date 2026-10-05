@@ -12,7 +12,7 @@ $ErrorActionPreference = 'Stop'
 
 $WorkspaceRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $ReleaseRoot = Join-Path $WorkspaceRoot 'apps\desktop\release'
-$SmokeDataRoot = Join-Path $WorkspaceRoot '.data'
+$SmokeDataRoot = Join-Path $env:LOCALAPPDATA 'SYNC-THINK-Installer-Smoke'
 $DefaultInstallerDir = Join-Path $ReleaseRoot 'installer'
 $DefaultUpgradeInstallerDir = Join-Path $ReleaseRoot 'installer-smoke-upgrade'
 $DefaultUpgradePortableDir = Join-Path $ReleaseRoot 'win-unpacked-smoke-upgrade'
@@ -89,7 +89,7 @@ function Invoke-NodeCommand([string[]]$Arguments) {
 
 function Invoke-Installer([string]$InstallerPath, [string]$Destination) {
   $arguments = @('/S', "/D=$Destination")
-  $process = Start-Process -FilePath $InstallerPath -ArgumentList $arguments -PassThru -Wait
+  $process = Start-Process -FilePath $InstallerPath -ArgumentList $arguments -WindowStyle Hidden -PassThru -Wait
   if ($process.ExitCode -ne 0) {
     throw "installer_smoke.install_failed:$($process.ExitCode):$InstallerPath"
   }
@@ -109,7 +109,7 @@ function Invoke-Uninstaller([string]$InstallDirectory) {
   if (-not (Test-Path -LiteralPath $uninstaller -PathType Leaf)) {
     throw "installer_smoke.uninstaller_missing:$uninstaller"
   }
-  $process = Start-Process -FilePath $uninstaller -ArgumentList @('/currentuser', '/S') -PassThru -Wait
+  $process = Start-Process -FilePath $uninstaller -ArgumentList @('/currentuser', '/S') -WindowStyle Hidden -PassThru -Wait
   if ($process.ExitCode -ne 0) {
     throw "installer_smoke.uninstall_failed:$($process.ExitCode)"
   }
@@ -165,8 +165,8 @@ function Test-SnapshotContinuity($Expected, $Actual) {
   }
 }
 
-function Get-RuntimePid([string]$LocalAppDataDirectory, [string]$InstallId) {
-  $pidPath = Join-Path $LocalAppDataDirectory "SYNC-THINK\runtime-$InstallId.pid"
+function Get-RuntimePid([string]$DatabasePath, [string]$InstallId) {
+  $pidPath = Join-Path (Split-Path -Path $DatabasePath -Parent) "runtime-$InstallId.pid"
   if (-not (Test-Path -LiteralPath $pidPath -PathType Leaf)) { return $null }
   $value = 0
   if ([int]::TryParse((Get-Content -LiteralPath $pidPath -Raw).Trim(), [ref]$value) -and $value -gt 0) {
@@ -212,6 +212,19 @@ function Start-SmokeDesktop(
       if (-not (Test-Path -LiteralPath $stdoutPath -PathType Leaf)) { return $false }
       $log = Get-Content -LiteralPath $stdoutPath -Raw -ErrorAction SilentlyContinue
       if ([string]::IsNullOrEmpty($log)) { return $false }
+      # Packaged daemon redirects Runtime stdout to its own log, not the
+      # desktop's stdout. Inspect both; an empty desktop log is not a Runtime
+      # failure, and a rendered window alone is not a successful hello.
+      $identityPath = Join-Path $UserDataDirectory $IdentityMetadataName
+      if (Test-Path -LiteralPath $identityPath -PathType Leaf) {
+        try {
+          $identityMetadata = Get-Content -LiteralPath $identityPath -Raw | ConvertFrom-Json
+          $runtimeLog = Join-Path (Split-Path -Path $DatabasePath -Parent) ("runtime-" + $identityMetadata.installId + ".log")
+          if (Test-Path -LiteralPath $runtimeLog -PathType Leaf) {
+            $log += Get-Content -LiteralPath $runtimeLog -Raw
+          }
+        } catch { return $false }
+      }
       foreach ($marker in $RuntimeReadyMarkers) {
         if (-not $log.Contains($marker)) { return $false }
       }
@@ -219,7 +232,7 @@ function Start-SmokeDesktop(
     } 90 "installer_smoke.runtime_timeout:$Phase"
 
     $identity = Get-IdentitySnapshot $UserDataDirectory $DatabasePath -SkipDatabaseHash
-    $runtimePid = Get-RuntimePid $LocalAppDataDirectory $identity.InstallId
+    $runtimePid = Get-RuntimePid $DatabasePath $identity.InstallId
     if ($null -eq $runtimePid -or $null -eq (Get-Process -Id $runtimePid -ErrorAction SilentlyContinue)) {
       throw "installer_smoke.runtime_pid_missing:$Phase"
     }
@@ -238,7 +251,7 @@ function Start-SmokeDesktop(
       $metadataPath = Join-Path $UserDataDirectory $IdentityMetadataName
       if (Test-Path -LiteralPath $metadataPath -PathType Leaf) {
         $identity = Get-Content -LiteralPath $metadataPath -Raw | ConvertFrom-Json
-        $runtimePid = Get-RuntimePid $LocalAppDataDirectory ([string]$identity.installId)
+        $runtimePid = Get-RuntimePid $DatabasePath ([string]$identity.installId)
       }
     } catch {}
     if ($null -ne $process -and -not $process.HasExited) {
@@ -325,12 +338,21 @@ if ($env:OS -ne 'Windows_NT') {
   throw 'installer_smoke.windows_only'
 }
 
-$baseManifest = Read-InstallerManifest $DefaultInstallerDir
+# Tests must cross the real Medium-integrity boundary. A Low-labelled build
+# and Low-labelled target can pass together while both fail on users' machines.
+function Assert-NormalIntegrity([string]$Path) {
+  Invoke-NodeCommand @((Join-Path $WorkspaceRoot 'scripts\windows-installer-distribution.mjs'), 'inspect', $Path)
+}
+New-Item -ItemType Directory -Path $SmokeDataRoot -Force | Out-Null
+Assert-NormalIntegrity $SmokeDataRoot
 if ($BaseInstaller) {
-  $BaseInstaller = Assert-SafeChildPath $ReleaseRoot $BaseInstaller 'installer_smoke.base_installer_unsafe'
+  $BaseInstaller = Resolve-FullPath $BaseInstaller
+  $baseManifest = Read-InstallerManifest (Split-Path -Path $BaseInstaller -Parent)
 } else {
+  $baseManifest = Read-InstallerManifest $DefaultInstallerDir
   $BaseInstaller = $baseManifest.ArtifactPath
 }
+Assert-NormalIntegrity $BaseInstaller
 if (-not (Test-Path -LiteralPath $BaseInstaller -PathType Leaf)) {
   throw "installer_smoke.base_installer_missing:$BaseInstaller"
 }
@@ -339,6 +361,7 @@ if (-not $UpgradeVersion) {
   $UpgradeVersion = Get-DefaultUpgradeVersion $baseManifest.Version
 }
 if (-not $UpgradeInstaller) {
+  $UpgradeDistributionDir = Join-Path $SmokeDataRoot ('artifact-' + [Guid]::NewGuid().ToString('N'))
   Invoke-NodeCommand @(
     (Join-Path $WorkspaceRoot 'scripts\windows-portable-release.mjs'),
     'stage',
@@ -349,15 +372,17 @@ if (-not $UpgradeInstaller) {
     (Join-Path $WorkspaceRoot 'scripts\windows-installer-release.mjs'),
     'build',
     '--out', $DefaultUpgradeInstallerDir,
+    '--export-dir', $UpgradeDistributionDir,
     '--prepackaged', $DefaultUpgradePortableDir,
     '--version', $UpgradeVersion
   )
-  $upgradeManifest = Read-InstallerManifest $DefaultUpgradeInstallerDir
+  $upgradeManifest = Read-InstallerManifest $UpgradeDistributionDir
   $UpgradeInstaller = $upgradeManifest.ArtifactPath
 } else {
-  $UpgradeInstaller = Assert-SafeChildPath $ReleaseRoot $UpgradeInstaller 'installer_smoke.upgrade_installer_unsafe'
+  $UpgradeInstaller = Resolve-FullPath $UpgradeInstaller
   $upgradeManifest = Read-InstallerManifest (Split-Path -Path $UpgradeInstaller -Parent)
 }
+Assert-NormalIntegrity $UpgradeInstaller
 if ($upgradeManifest.Version -eq $baseManifest.Version) {
   throw 'installer_smoke.upgrade_version_not_changed'
 }
@@ -382,6 +407,7 @@ $LocalAppDataDirectory = Join-Path $SmokeRoot 'local-app-data'
 $LogsDirectory = Join-Path $SmokeRoot 'logs'
 $ResultPath = Join-Path $SmokeRoot 'smoke-result.json'
 New-Item -ItemType Directory -Path $InstallDirectory, $UserDataDirectory, $RuntimeDataDirectory, $LocalAppDataDirectory, $LogsDirectory -Force | Out-Null
+Assert-NormalIntegrity $InstallDirectory
 
 $result = [ordered]@{
   schemaVersion = 1

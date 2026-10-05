@@ -1,7 +1,7 @@
 {
   "name": "sync-think",
   "private": true,
-  "version": "0.1.0-rc.9",
+  "version": "0.1.0-rc.10",
   "license": "MIT",
   "description": "SYNC-THINK local-first multi-model Agent desktop workspace",
   "packageManager": "pnpm@10.28.2",
@@ -45,7 +45,7 @@
     "release:stage:win": "node scripts/windows-portable-release.mjs stage",
     "release:verify:win": "node scripts/windows-portable-release.mjs verify",
     "test:installer:win": "node --test scripts/windows-installer-release.test.mjs",
-    "test:installer:hooks:win": "node --test scripts/windows-installer-hooks.test.mjs scripts/windows-installer-extraction.test.mjs",
+    "test:installer:hooks:win": "node --test scripts/windows-installer-hooks.test.mjs scripts/windows-installer-extraction.test.mjs scripts/windows-installer-processes.test.mjs scripts/windows-installer-temp.test.mjs scripts/windows-installer-migration.test.mjs scripts/windows-installer-distribution.test.mjs",
     "prepare:update-feed-fixture:win": "pnpm build && node scripts/windows-portable-release.mjs stage --signing-mode unsigned-fixture && node scripts/windows-installer-release.mjs build --signing-mode unsigned-fixture",
     "test:update-feed:prepared:win": "node --test scripts/windows-generic-update-feed.test.mjs && node scripts/selftest-windows-update-feed-e2e.mjs",
     "test:update-feed:win": "pnpm prepare:update-feed-fixture:win && pnpm test:update-feed:prepared:win",
